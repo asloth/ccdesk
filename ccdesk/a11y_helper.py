@@ -36,6 +36,7 @@ STATES = {
     "expanded": Atspi.StateType.EXPANDED,
     "required": Atspi.StateType.REQUIRED,
 }
+EDITABLE = {"entry", "text", "password text", "document text"}
 MAX_VISIT = 20000
 MAX_TEXT = 200
 
@@ -79,6 +80,19 @@ def text_of(obj, role):
     return text or None
 
 
+def child_text(obj):
+    """Rich-text editors (X, Slack, Gmail) keep the typed text in unnamed child paragraphs."""
+    parts = []
+    for _, child in children(obj):
+        text = text_of(child, "")
+        if text:
+            parts.append(text)
+        if sum(map(len, parts)) > MAX_TEXT:
+            break
+    text = " / ".join(parts)
+    return (text[:MAX_TEXT] + "…" if len(text) > MAX_TEXT else text) or None
+
+
 def describe(obj, path, depth):
     try:
         role = obj.get_role_name() or ""
@@ -100,6 +114,8 @@ def describe(obj, path, depth):
     if flags:
         node["states"] = flags
     value = text_of(obj, role)
+    if not value and role in EDITABLE:
+        value = child_text(obj)
     if value and value != name:
         node["value"] = value
     return node
