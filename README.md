@@ -58,7 +58,7 @@ claude mcp add --scope user ccdesk -- ccdesk mcp
 mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.claude/skills/computer-use/
 ```
 
-Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 13 tools.
+Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 15 tools.
 
 ## Tools
 
@@ -76,6 +76,8 @@ Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 13 tools.
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
 | `wait(seconds)` | Sleeps, up to 60 s. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
+| `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
+| `click_element(ref, button="left", count=1)` | Clicks the centre of an element from the latest `ui_tree()`; refuses if it changed or left the screen. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -138,6 +140,24 @@ capture is ~2,800 tokens, and 17 of them were about 70% of the context the sessi
 | one monitor, `scale=0.6` | 1152x648 | ~995 |
 | one monitor, `scale=0.5` (still readable) | 960x540 | ~691 |
 | region around a form field | 600x300 | ~240 |
+
+The cheapest way to look is not a picture at all. `ui_tree()` reads the accessibility tree
+(AT-SPI, what screen readers use) and returns the on-screen elements as text: a form is
+usually 100 to 600 tokens, and on a test form a full fill-and-save took two `ui_tree()` calls
+of ~150 tokens each and no screenshots. Clicks land on the element's real box instead of an
+estimate from pixels.
+
+Apps only publish the tree when accessibility is on when they start:
+
+```sh
+gsettings set org.gnome.desktop.interface toolkit-accessibility true   # GTK apps and Firefox
+# or start them with GNOME_ACCESSIBILITY=1; Chromium/Electron: --force-renderer-accessibility
+```
+
+The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python with PyGObject
+(`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
+no compiled dependencies. `CCDESK_A11Y_PYTHON` picks another interpreter. `ccdesk doctor`
+lists the apps that publish a tree.
 
 The skill tells Claude to orient at `scale=0.5`, then act and verify with small full-scale
 regions, and to pull long page text through the clipboard instead of reading it from pixels.

@@ -4,6 +4,7 @@ import json
 
 import pytest
 
+from ccdesk.a11y import A11y
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
 from ccdesk.parsing import Window
@@ -79,16 +80,55 @@ def fake():
     return FakeBackend()
 
 
+FORM_NODES = [
+    {"path": "3.0.29", "role": "document web", "name": "Form", "depth": 5, "showing": True,
+     "box": [4, 90, 1280, 886], "states": ["focused"]},
+    {"path": "3.0.29.2", "role": "entry", "name": "Feedback email", "depth": 6, "showing": True,
+     "box": [135, 179, 148, 21], "value": "me@x.org"},
+    {"path": "3.0.29.3.1.0", "role": "check box", "name": "Peru", "depth": 8, "showing": True,
+     "box": [32, 232, 14, 14], "states": ["checked"]},
+    {"path": "3.0.29.5", "role": "push button", "name": "Save", "depth": 6, "showing": True,
+     "box": [80, 263, 38, 22]},
+]
+
+
+class FakeA11yHelper:
+    """Stands in for a11y_helper.py: answers requests from canned nodes."""
+
+    def __init__(self):
+        self.nodes = {n["path"]: dict(n) for n in FORM_NODES}
+        self.requests = []
+
+    def __call__(self, argv, timeout):
+        req = json.loads(argv[-1])
+        self.requests.append(req)
+        if req["op"] == "apps":
+            return json.dumps({"apps": [{"name": "Firefox", "pid": 1, "windows": ["Form — Mozilla Firefox"]}]})
+        if req["op"] == "tree":
+            nodes = list(self.nodes.values())
+            if req.get("query"):
+                nodes = [n for n in nodes if req["query"].lower() in n["name"].lower()]
+            return json.dumps({"window": "Form — Mozilla Firefox", "app": "Firefox", "pid": 1,
+                               "nodes": nodes[: req["max_nodes"]], "truncated": len(nodes) > req["max_nodes"]})
+        node = self.nodes.get(req["path"])
+        return json.dumps({"node": node} if node else {"error": "element is gone; call ui_tree() again"})
+
+
+@pytest.fixture
+def helper():
+    return FakeA11yHelper()
+
+
 @pytest.fixture
 def audit_path(tmp_path):
     return tmp_path / "audit.log"
 
 
 @pytest.fixture
-def make_desk(fake, audit_path, tmp_path):
+def make_desk(fake, audit_path, tmp_path, helper):
     def make(**policy):
         return Desktop(backend=fake, policy=Policy(**policy), audit=AuditLog(audit_path),
-                       shots_dir=tmp_path / "shots")
+                       shots_dir=tmp_path / "shots", a11y=A11y(runner=helper, pythons=("/bin/sh",)))
     return make
 
 

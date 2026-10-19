@@ -16,7 +16,7 @@ from ccdesk.server import TOOL_NAMES, build_server  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
-              "activate_window", "clipboard", "wait", "doctor", "launch"}
+              "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element"}
 
 
 def test_registered_tools(make_desk):
@@ -35,6 +35,8 @@ def test_registered_tools(make_desk):
     assert props["press_key"] == {"key", "modifiers", "confirm"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
+    assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
+    assert props["click_element"] == {"ref", "button", "count"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
 
 

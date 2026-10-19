@@ -21,13 +21,15 @@ INSTRUCTIONS = """\
 ccdesk drives the local Linux desktop. Work in a loop: screenshot(), Read the PNG it returns,
 do ONE action, then screenshot() again to verify before the next action. Coordinates are
 screen pixels in the screenshot's space (origin top-left). For region screenshots add the
-returned origin. Save tokens: scale=0.5 to orient, small regions to act and verify.
+returned origin. Save tokens: try ui_tree() first (text, no pixels) and click_element(ref);
+use screenshot(scale=0.5) to orient and small regions to verify.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
 
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
+    "ui_tree", "click_element",
 )
 
 
@@ -95,6 +97,22 @@ def build_server(desktop: Desktop) -> MCPServer:
     def activate_window(title_or_id: str) -> dict:
         """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title."""
         return desktop.activate_window(title_or_id)
+
+    @tool
+    def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,
+                max_nodes: int = 300) -> dict:
+        """The on-screen elements of a window as text, from the accessibility tree: one line per
+        button, field, checkbox, link, heading or text, with its value, states and screen box.
+        Usually 5-20x cheaper than a screenshot. window: title substring (default: the active
+        window). page=true: only the web page in a browser. query: only elements containing it.
+        Act on a line with click_element(ref)."""
+        return desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes)
+
+    @tool
+    def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1) -> dict:
+        """Click the centre of an element from the latest ui_tree() result, e.g. ref="e12".
+        Fails if the element changed or left the screen; call ui_tree() again then."""
+        return desktop.click_element(ref, button=button, count=count)
 
     @tool
     def clipboard(action: Literal["get", "set"] = "get", text: str | None = None) -> dict:

@@ -7,7 +7,8 @@ description: Drive the Linux desktop through the ccdesk MCP server - take screen
 
 You control the real desktop through the `ccdesk` MCP tools: `screenshot`, `click`, `move`,
 `drag`, `scroll`, `type_text`, `press_key`, `list_windows`, `activate_window`, `clipboard`,
-`wait`, `doctor`, and `launch` (only if the server was started with `--allow-launch`).
+`wait`, `doctor`, `ui_tree`, `click_element`, and `launch` (only if the server was started
+with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
 
@@ -18,10 +19,35 @@ Every action lands on the user's actual screen. Be deliberate and keep it short.
 2. Call `doctor()` once per session. Check `ready`, the backend (`x11` or `wayland`), the
    screen size, and `warnings`. If it isn't ready, stop and tell the user what is missing.
 
-## The loop: screenshot, act once, verify
+## Look with text first: ui_tree
+
+`ui_tree()` reads the screen from the accessibility tree, the same data screen readers use.
+It returns one line per button, field, checkbox, link, heading or paragraph:
 
 ```
-screenshot()  ->  Read the PNG  ->  ONE action  ->  screenshot()  ->  Read  ->  ...
+e2 entry "Feedback email" ="qa@example.org" [focused] @135,179 148x21
+e3 check box "Peru" [checked] @32,232 14x14
+e5 push button "Save" @80,263 38x22
+```
+
+A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800. Prefer it:
+
+- `ui_tree()` reads the active window; `ui_tree(window="Firefox")` picks one by title.
+- In a browser, `page=true` drops the tabs and toolbars and lists only the page.
+- On big pages, `query="email"` returns only the matching elements.
+- `click_element("e5")` clicks the centre of that element. Refs belong to the latest
+  `ui_tree()` result only; after the page changes, call `ui_tree()` again.
+- Type with `click_element` on the field, then `type_text`. Verify by calling `ui_tree()`
+  again: the field shows `="value"`, checkboxes show `[checked]`.
+- Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
+- Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
+  (`doctor().a11y.apps` lists those that do), canvas or image content, games, or when you
+  need to see the layout. `doctor()` warnings say how to switch accessibility on.
+
+## The loop: look, act once, verify
+
+```
+ui_tree() or screenshot()  ->  ONE action  ->  ui_tree() or screenshot()  ->  ...
 ```
 
 - **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,

@@ -158,9 +158,16 @@ def test_only_stdlib_and_mcp_are_imported():
         mods = set(_imported_modules(path)) - allowed
         if path.name == "server.py":
             mods -= {"mcp"}
+        if path.name == "a11y_helper.py":
+            mods -= {"gi"}  # runs in a separate system Python, never imported by ccdesk
         if mods:
             offenders[str(path.relative_to(ROOT))] = sorted(mods)
     assert offenders == {}
+
+
+def test_a11y_helper_is_standalone():
+    # It runs under `python3 -I` from the system, where ccdesk may not be importable.
+    assert "ccdesk" not in set(_imported_modules(PKG / "a11y_helper.py"))
 
 
 def test_core_imports_without_mcp():

@@ -21,7 +21,7 @@ def _mcp_version() -> str | None:
         return None
 
 
-def build_report(backend: Backend, policy: Policy, audit_path: str | Path) -> dict:
+def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None) -> dict:
     env = backend.env
     problem = backend.available()
     tools = backend.tools_report()
@@ -72,6 +72,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path) -> di
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
+    report["a11y"] = _a11y_report(a11y, warnings)
     if report["mcp"] is None:
         warnings.append("python package 'mcp' is not installed: `ccdesk mcp` will not start")
     if report["cua_driver"]:
@@ -79,6 +80,29 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path) -> di
             f"cua-driver found at {report['cua_driver']}; ccdesk works independently and does not use it"
         )
     return report
+
+
+A11Y_HINT = (
+    "apps missing from the accessibility tree need it switched on before they start: GTK apps and "
+    "Firefox read `gsettings set org.gnome.desktop.interface toolkit-accessibility true` "
+    "(or GNOME_ACCESSIBILITY=1); Chromium and Electron apps need --force-renderer-accessibility"
+)
+
+
+def _a11y_report(a11y, warnings: list[str]) -> dict:
+    if a11y is None:
+        from ccdesk.a11y import A11y
+
+        a11y = A11y()
+    try:
+        apps = a11y.apps()
+    except CcdeskError as exc:
+        warnings.append(f"ui_tree unavailable: {exc}")
+        return {"ready": False, "apps": [], "error": str(exc)}
+    names = [a["name"] for a in apps if a.get("windows")]
+    if not any(n.lower() in ("firefox", "chromium", "google-chrome") for n in names):
+        warnings.append(A11Y_HINT)
+    return {"ready": True, "apps": names}
 
 
 def format_report(report: dict) -> str:
@@ -107,6 +131,7 @@ def format_report(report: dict) -> str:
         lines.append(f"  {mark}{cap + ':':<12} {', '.join(parts)}")
     lines += [
         "",
+        f"ui_tree:      {', '.join(report['a11y']['apps']) or 'no apps' if report['a11y']['ready'] else 'unavailable'}",
         f"cua-driver:   {report['cua_driver'] or 'not found'}",
         f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}",
         f"audit log:    {report['audit_log']}",

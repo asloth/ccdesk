@@ -13,6 +13,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from ccdesk.a11y import A11y
 from ccdesk.backends import Backend, get_backend
 from ccdesk.errors import CcdeskError, PolicyError, ValidationError
 from ccdesk.parsing import (
@@ -35,8 +36,10 @@ KEEP_SCREENSHOTS = 200
 
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
-                 audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None):
+                 audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
+                 a11y: A11y | None = None):
         self.backend = backend or get_backend()
+        self.a11y = a11y or A11y()
         self.policy = policy or Policy()
         self.audit = audit or AuditLog()
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
@@ -230,6 +233,39 @@ class Desktop:
 
         return self._act("activate_window", {"title_or_id": title_or_id}, do)
 
+    def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
+                max_nodes: int = 300) -> dict:
+        def do():
+            limit = check_int("max_nodes", max_nodes, 1, 2000)
+            result = self.a11y.tree(window or None, (query or "").strip() or None, bool(page), limit)
+            text = result["tree"]
+            result["approx_tokens"] = len(text) // 4
+            if result["truncated"]:
+                result["note"] = "truncated: narrow it with query=..., page=true or window=..."
+            if self.backend.name == "wayland":
+                result["note"] = "on Wayland, @x,y may be relative to the window; verify with a screenshot"
+            return result
+
+        args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes}
+        return self._act("ui_tree", args, do,
+                         loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
+
+    def click_element(self, ref: str, button: str = "left", count: int = 1) -> dict:
+        def do():
+            self._ready()
+            btn = parse_button(button)
+            n = check_int("count", count, 1, 10)
+            node = self.a11y.resolve(ref)
+            label = f'{node["role"]} {node["name"]!r}'
+            if not node.get("showing") or not node.get("box"):
+                raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            x, y, w, h = node["box"]
+            px, py = self._point(x + w // 2, y + h // 2)
+            self.backend.click(px, py, btn, n)
+            return {"clicked": {"x": px, "y": py}, "element": label, "button": button, "count": n}
+
+        return self._act("click_element", {"ref": ref, "button": button, "count": count}, do)
+
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()
 
@@ -283,5 +319,5 @@ class Desktop:
     def doctor(self) -> dict:
         from ccdesk.doctor import build_report
 
-        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path),
+        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y),
                          loggable=lambda r: {"backend": r["backend"], "ready": r["ready"], "missing": r["missing"]})
