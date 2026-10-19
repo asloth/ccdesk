@@ -33,6 +33,10 @@ screenshot()  ->  Read the PNG  ->  ONE action  ->  screenshot()  ->  Read  ->  
   work out why. Don't repeat the action blindly.
 - **Wait for slow things.** After launching an app or loading a page, call `wait(1)` to
   `wait(3)`, then screenshot. Don't stack long waits; check in between.
+- **One monitor at a time.** With several monitors the full screenshot is very wide and
+  gets shown to you heavily downscaled, so small text becomes hard to read.
+  `doctor().monitors` lists each monitor's `x, y, width, height`; pass that as the
+  `region` to see one monitor at full resolution.
 - **Save tokens with regions.** Once you know where the action is, use
   `screenshot(region="x,y,width,height")` to look at just that area.
 
@@ -62,8 +66,11 @@ screenshot()  ->  Read the PNG  ->  ONE action  ->  screenshot()  ->  Read  ->  
   cursor is there.
 - For long text (more than a few hundred characters), use `clipboard(action="set", text=...)`
   then `press_key("ctrl+v")`.
-- `Alt+F4`, `Ctrl+Q`, `Ctrl+W` and `Super+Q` are refused unless you pass `confirm=true`.
-  Pass it only after a screenshot shows that the focused window is the one you mean to close.
+- `Alt+F4`, `Ctrl+Q`, `Ctrl+W`, `Super+Q`, `Ctrl+Alt+Delete`, `Ctrl+Alt+BackSpace` and any
+  combos the user listed with `--confirm-keys` (`doctor().policy.confirm_keys`) are refused
+  unless you pass `confirm=true`. Pass it only after a screenshot shows that the focused
+  window is the one you mean to close, and never for session or power keys unless the user
+  asked for exactly that.
 
 ## Recipe: Firefox
 

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import re
+
 from ccdesk.backends.base import Backend, interpolate
 from ccdesk.errors import CommandError
 from ccdesk.parsing import (
@@ -12,7 +14,9 @@ from ccdesk.parsing import (
     parse_shell_vars,
     parse_wmctrl_lgx,
     parse_xprop_wm_class,
+    parse_xrandr_monitors,
     parse_xrdb_dpi,
+    parse_xwininfo_size,
 )
 
 # X button numbers for the scroll wheel.
@@ -27,6 +31,7 @@ class X11Backend(Backend):
         "windows": ("wmctrl", "xdotool", "xprop"),
         "clipboard": ("xclip", "xsel"),
         "scale": ("xrdb",),
+        "screen size": ("xwininfo", "xdotool"),
     }
 
     def available(self) -> str | None:
@@ -39,6 +44,12 @@ class X11Backend(Backend):
         return self.run(["xdotool", *args], **kw)
 
     def screen_size(self) -> tuple[int, int]:
+        # The root window spans every monitor. Recent xdotool releases report only one
+        # monitor from getdisplaygeometry, which would make the others unclickable.
+        if self.which("xwininfo"):
+            size = parse_xwininfo_size(self.try_run(["xwininfo", "-root"]) or "")
+            if size:
+                return size
         return parse_display_geometry(self._xdotool("getdisplaygeometry"))
 
     def scale_info(self) -> dict:
@@ -48,6 +59,11 @@ class X11Backend(Backend):
             if dpi:
                 info["Xft.dpi"] = dpi
         return info
+
+    def monitors(self) -> list[dict]:
+        if not self.which("xrandr"):
+            return []
+        return parse_xrandr_monitors(self.try_run(["xrandr", "--listmonitors"]) or "")
 
     def screenshot(self, path: str, region: Region | None) -> None:
         attempts = []
@@ -60,7 +76,8 @@ class X11Backend(Backend):
             argv = ["import", "-silent", "-window", "root"]
             if region:
                 argv += ["-crop", region.geometry(), "+repage"]
-            attempts.append(argv + [f"png:{path}"])
+            # PNG24: 8-bit RGB like scrot. Plain png: picks a 4-bit palette on low-colour screens.
+            attempts.append(argv + [f"PNG24:{path}"])
         if not attempts:
             self.need("screenshot", "scrot", "import")
         errors = []
@@ -114,32 +131,48 @@ class X11Backend(Backend):
         return self._xdotool_windows()
 
     def _xdotool_windows(self) -> list[Window]:
-        try:
-            out = self._xdotool("search", "--onlyvisible", "--name", ".")
-        except CommandError:
-            return []  # xdotool search exits 1 when nothing matches
+        ids = self._client_list()
+        if ids is None:
+            try:
+                ids = self._xdotool("search", "--onlyvisible", "--name", ".").split()
+            except CommandError:
+                return []  # xdotool search exits 1 when nothing matches
         windows = []
-        for wid in dict.fromkeys(out.split()):
+        for wid in dict.fromkeys(ids):
             title = (self.try_run(["xdotool", "getwindowname", wid]) or "").strip()
             if not title:
                 continue
             geo = parse_shell_vars(self.try_run(["xdotool", "getwindowgeometry", "--shell", wid]) or "")
-            wm_class = self._window_class(wid)
+            props = (self.try_run(["xprop", "-id", wid, "WM_CLASS", "_NET_WM_DESKTOP"]) or ""
+                     if self.which("xprop") else "")
+            desktop = re.search(r"_NET_WM_DESKTOP\(CARDINAL\) = (\d+)", props)
             try:
                 windows.append(Window(
-                    id=f"0x{int(wid):08x}", title=title, wm_class=wm_class,
+                    id=f"0x{int(wid):08x}", title=title, wm_class=self._window_class(wid, props),
                     x=int(geo.get("X", 0)), y=int(geo.get("Y", 0)),
                     width=int(geo.get("WIDTH", 0)), height=int(geo.get("HEIGHT", 0)),
+                    desktop=int(desktop.group(1)) if desktop else None,
                 ))
             except ValueError:
                 continue
         return windows
 
-    def _window_class(self, wid: str) -> str:
-        if self.which("xprop"):
-            cls = parse_xprop_wm_class(self.try_run(["xprop", "-id", wid, "WM_CLASS"]) or "")
-            if cls:
-                return cls
+    def _client_list(self) -> list[str] | None:
+        """Decimal ids of the windows an EWMH window manager manages, or None without one.
+
+        This is the list wmctrl uses. Without it, xdotool search also returns WM internals
+        such as bspwm's per-monitor root windows and panels like polybar.
+        """
+        if not self.which("xprop"):
+            return None
+        out = self.try_run(["xprop", "-root", "_NET_CLIENT_LIST"]) or ""
+        ids = re.findall(r"0x[0-9a-fA-F]+", out.partition("#")[2])
+        return [str(int(i, 16)) for i in ids] or None
+
+    def _window_class(self, wid: str, props: str) -> str:
+        cls = parse_xprop_wm_class(props.split("\n", 1)[0] if "WM_CLASS" in props else "")
+        if cls:
+            return cls
         # getwindowclassname only exists in newer xdotool releases.
         return (self.try_run(["xdotool", "getwindowclassname", wid]) or "").strip()
 

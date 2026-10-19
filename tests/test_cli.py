@@ -82,6 +82,18 @@ def fake_claude(tmp_path, monkeypatch):
     return log
 
 
+def test_install_forwards_confirm_keys(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--read-only", "--confirm-keys", "super+x,ctrl+alt+super+p"]) == 0
+    assert log.read_text().splitlines()[1].endswith("mcp --read-only --confirm-keys super+x,ctrl+alt+super+p")
+
+
+def test_bad_confirm_keys_rejected(capsys):
+    with pytest.raises(SystemExit):
+        main(["mcp", "--confirm-keys", "super+x,bad key"])
+    assert "invalid key name" in capsys.readouterr().err
+
+
 def test_install_dry_run_writes_nothing(home, tmp_path, monkeypatch, capsys):
     log = fake_claude(tmp_path, monkeypatch)
     assert main(["install", "--dry-run", "--read-only"]) == 0

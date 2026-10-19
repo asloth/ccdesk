@@ -13,7 +13,7 @@ Python; the only dependency is the official `mcp` package.
 
 ```sh
 # system tools (Debian/Ubuntu; X11)
-sudo apt install xdotool scrot wmctrl xclip x11-utils
+sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils
 # optional: imagemagick (fallback screenshots), xvfb + python3-tk (to run the test suite)
 
 pipx install .            # from a checkout of this repo
@@ -22,8 +22,11 @@ ccdesk install --dry-run  # show what install would write and run
 ccdesk install            # register the MCP server + install the skill
 ```
 
-On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop`. On Arch:
-`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop`.
+On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
+`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
+`xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
+monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
+one monitor only.
 
 ## Wiring it into Claude Code
 
@@ -34,9 +37,9 @@ On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop`. On Arch:
 2. Runs `claude mcp add --scope user ccdesk -- /path/to/ccdesk mcp`, after removing any
    earlier `ccdesk` registration.
 
-Flags you pass to `install` are forwarded to the server: `ccdesk install --read-only` or
-`ccdesk install --allow-launch`. `--dry-run` prints the exact file, size, checksum and
-commands, and changes nothing:
+Flags you pass to `install` are forwarded to the server: `ccdesk install --read-only`,
+`ccdesk install --allow-launch` or `ccdesk install --confirm-keys "super+x"`. `--dry-run`
+prints the exact file, size, checksum and commands, and changes nothing:
 
 ```text
 $ ccdesk install --dry-run
@@ -132,9 +135,11 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
 - **No launching by default.** `launch(command)` refuses unless the server was started with
   `--allow-launch`. Even then it runs the command without a shell (`shlex.split`, no pipes,
   redirects or `;`) in a new session.
-- **Destructive shortcuts need confirmation.** `Alt+F4`, `Ctrl+Q`, `Ctrl+W` and `Super+Q`
-  are refused unless the call passes `confirm=true`. Supersets such as `Ctrl+Shift+W` count
-  too.
+- **Destructive shortcuts need confirmation.** `Alt+F4`, `Ctrl+Q`, `Ctrl+W`, `Super+Q`,
+  `Ctrl+Alt+Delete` and `Ctrl+Alt+BackSpace` are refused unless the call passes
+  `confirm=true`. Supersets such as `Ctrl+Shift+W` count too. Window managers bind their own
+  close, quit and power keys, so add yours with `--confirm-keys`, for example on bspwm:
+  `ccdesk install --confirm-keys "super+x,ctrl+alt+super+p,ctrl+alt+super+r,ctrl+alt+super+q"`.
 - **Audit log.** Every call, including denied and failed ones, is appended as one JSON line
   to `~/.cache/ccdesk/audit.log` (mode 0600; override with `--audit-log` or
   `CCDESK_AUDIT_LOG`). Each line has a timestamp, the tool, its arguments, the status

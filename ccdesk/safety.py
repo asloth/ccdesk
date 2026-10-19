@@ -5,7 +5,7 @@ from __future__ import annotations
 import json
 import os
 import threading
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 
@@ -34,6 +34,7 @@ def default_audit_path() -> Path:
 class Policy:
     read_only: bool = False
     allow_launch: bool = False
+    confirm_keys: tuple[KeyCombo, ...] = field(default_factory=tuple)
 
     def check(self, tool: str) -> None:
         if self.read_only and tool in INPUT_TOOLS:
@@ -42,9 +43,9 @@ class Policy:
             raise PolicyError("launch is disabled: restart the server with `ccdesk mcp --allow-launch`")
 
     def check_key(self, combo: KeyCombo, confirm: bool) -> None:
-        if is_destructive(combo) and not confirm:
+        if is_destructive(combo, self.confirm_keys) and not confirm:
             raise PolicyError(
-                f"{combo} can close windows or quit applications; "
+                f"{combo} can close windows, quit applications or end the session; "
                 "take a screenshot to verify the target, then call again with confirm=true"
             )
 

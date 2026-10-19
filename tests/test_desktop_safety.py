@@ -7,9 +7,10 @@ import sys
 
 import pytest
 
-from ccdesk.errors import PolicyError, UnsupportedError, ValidationError
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
+from ccdesk.errors import PolicyError, UnsupportedError, ValidationError
+from ccdesk.parsing import parse_confirm_keys
 from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, default_audit_path
 
 
@@ -139,6 +140,17 @@ def test_destructive_keys_need_confirm(make_desk, fake, read_audit, combo):
     assert read_audit()[-1]["status"] == "denied"
     d.press_key(combo, confirm=True)
     assert fake.calls and fake.calls[-1][0] == "press_key"
+
+
+def test_extra_confirm_keys(make_desk, fake, read_audit):
+    d = make_desk(confirm_keys=parse_confirm_keys("super+x"))
+    with pytest.raises(PolicyError, match="confirm=true"):
+        d.press_key("super+shift+x")
+    assert fake.calls == []
+    assert read_audit()[-1]["status"] == "denied"
+    d.press_key("super+x", confirm=True)
+    d.press_key("super+Return")
+    assert [c[0] for c in fake.calls] == ["press_key", "press_key"]
 
 
 def test_destructive_via_modifiers_list(make_desk, fake):

@@ -108,7 +108,7 @@ def test_x11_screenshot_prefers_scrot_and_falls_back():
 
     b, r = make(X11Backend, X11_ALL, fail=("scrot",))
     b.screenshot("/tmp/a.png", Region(1, 2, 3, 4))
-    assert r.calls[-1][0] == ["import", "-silent", "-window", "root", "-crop", "3x4+1+2", "+repage", "png:/tmp/a.png"]
+    assert r.calls[-1][0] == ["import", "-silent", "-window", "root", "-crop", "3x4+1+2", "+repage", "PNG24:/tmp/a.png"]
 
     b, r = make(X11Backend, {"xdotool"})
     with pytest.raises(CommandError, match="scrot, import"):
@@ -150,6 +150,41 @@ def test_x11_window_class_prefers_xprop():
     b, r = make(X11Backend, X11_ALL | {"xprop"}, responses=responses, fail=("wmctrl",))
     assert b.list_windows()[0].wm_class == "tk.Tk"
     assert not any(c[0][:2] == ["xdotool", "getwindowclassname"] for c in r.calls)
+
+
+def test_x11_list_windows_uses_ewmh_client_list():
+    # bspwm without wmctrl: xdotool search would also return monitor roots and polybar.
+    responses = {
+        "xprop -root": "_NET_CLIENT_LIST(WINDOW): window id # 0x2000016, 0x260000e\n",
+        "xdotool getwindowname": "Mozilla Firefox\n",
+        "xprop -id": 'WM_CLASS(STRING) = "Navigator", "firefox"\n_NET_WM_DESKTOP(CARDINAL) = 2\n',
+    }
+    b, r = make(X11Backend, (X11_ALL - {"wmctrl"}) | {"xprop"}, responses=responses)
+    wins = b.list_windows()
+    assert [w.id for w in wins] == ["0x02000016", "0x0260000e"]
+    assert wins[0].wm_class == "Navigator.firefox" and wins[0].desktop == 2
+    assert not any(c[0][:2] == ["xdotool", "search"] for c in r.calls)
+
+
+def test_x11_screen_size_spans_all_monitors():
+    # xdotool getdisplaygeometry reports one monitor on recent releases; the root window is the real screen.
+    responses = {"xwininfo -root": "  Width: 3840\n  Height: 1080\n", "xdotool getdisplaygeometry": "1920 1080\n"}
+    b, _ = make(X11Backend, X11_ALL | {"xwininfo"}, responses=responses)
+    assert b.screen_size() == (3840, 1080)
+    b, _ = make(X11Backend, X11_ALL, responses=responses)
+    assert b.screen_size() == (1920, 1080)
+    b, _ = make(X11Backend, X11_ALL | {"xwininfo"}, responses=responses, fail=("xwininfo",))
+    assert b.screen_size() == (1920, 1080)
+
+
+def test_x11_monitors():
+    out = "Monitors: 2\n 0: +*HDMI-1 1920/480x1080/270+1920+0  HDMI-1\n 1: +eDP-1 1920/344x1080/193+0+0  eDP-1\n"
+    b, _ = make(X11Backend, X11_ALL | {"xrandr"}, responses={"xrandr --listmonitors": out})
+    assert b.monitors() == [
+        {"name": "HDMI-1", "x": 1920, "y": 0, "width": 1920, "height": 1080, "primary": True},
+        {"name": "eDP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "primary": False},
+    ]
+    assert make(X11Backend, X11_ALL)[0].monitors() == []
 
 
 def test_x11_activate_fallbacks():

@@ -111,6 +111,10 @@ class Backend:
                 info[var] = self.env[var]
         return info
 
+    def monitors(self) -> list[dict]:
+        """Monitor rectangles in screen coordinates, or [] when unknown."""
+        return []
+
     def screenshot(self, path: str, region: Region | None) -> None:
         self._unsupported("screenshot")
 

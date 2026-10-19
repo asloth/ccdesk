@@ -7,6 +7,7 @@ from ccdesk.parsing import (
     check_point,
     is_destructive,
     parse_button,
+    parse_confirm_keys,
     parse_display_geometry,
     parse_key_combo,
     parse_region,
@@ -61,9 +62,33 @@ def test_parse_key_combo_rejects(key, mods):
     ("F4", None, False),
     ("alt+q", None, False),
     ("shift+w", None, False),
+    ("ctrl+alt+Delete", None, True),
+    ("ctrl+alt+BackSpace", None, True),
+    ("ctrl+BackSpace", None, False),
 ])
 def test_destructive(key, mods, destructive):
     assert is_destructive(parse_key_combo(key, mods)) is destructive
+
+
+@pytest.mark.parametrize("key,destructive", [
+    ("super+x", True),
+    ("super+shift+x", True),  # supersets count, as with the built-ins
+    ("ctrl+super+x", True),
+    ("x", False),
+    ("ctrl+alt+super+p", True),
+    ("super+p", False),
+])
+def test_destructive_extra(key, destructive):
+    extra = parse_confirm_keys("super+x, ctrl+alt+super+p")
+    assert is_destructive(parse_key_combo(key), extra) is destructive
+
+
+def test_parse_confirm_keys():
+    assert parse_confirm_keys(None) == ()
+    assert parse_confirm_keys(" ") == ()
+    assert parse_confirm_keys("win+X,") == (KeyCombo("X", ("super",)),)
+    with pytest.raises(ValidationError):
+        parse_confirm_keys("super+x,bad key")
 
 
 def test_keycombo_str():

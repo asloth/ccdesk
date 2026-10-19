@@ -12,6 +12,19 @@ from ccdesk import __version__
 def _policy_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--allow-launch", action="store_true", help="enable the launch(command) tool")
     p.add_argument("--read-only", action="store_true", help="disable every input tool (screenshots only)")
+    p.add_argument("--confirm-keys", metavar="COMBOS", type=_confirm_keys,
+                   help='extra key combos that need confirm=true, e.g. "super+x,ctrl+alt+super+p"')
+
+
+def _confirm_keys(spec: str) -> str:
+    from ccdesk.errors import ValidationError
+    from ccdesk.parsing import parse_confirm_keys
+
+    try:
+        parse_confirm_keys(spec)
+    except ValidationError as exc:
+        raise argparse.ArgumentTypeError(str(exc)) from None
+    return spec
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -56,11 +69,14 @@ def main(argv: list[str] | None = None) -> int:
         from ccdesk.install import install
 
         flags = [f for f, on in (("--allow-launch", args.allow_launch), ("--read-only", args.read_only)) if on]
+        if args.confirm_keys:
+            flags += ["--confirm-keys", args.confirm_keys]
         return install(flags, dry_run=args.dry_run)
 
     if args.command == "mcp":
         from ccdesk.backends import get_backend
         from ccdesk.desktop import Desktop
+        from ccdesk.parsing import parse_confirm_keys
         from ccdesk.safety import AuditLog, Policy
 
         try:
@@ -70,11 +86,13 @@ def main(argv: list[str] | None = None) -> int:
             return 1
         desktop = Desktop(
             backend=get_backend(args.backend),
-            policy=Policy(read_only=args.read_only, allow_launch=args.allow_launch),
+            policy=Policy(read_only=args.read_only, allow_launch=args.allow_launch,
+                          confirm_keys=parse_confirm_keys(args.confirm_keys)),
             audit=AuditLog(args.audit_log),
         )
         desktop.audit.record("server_start", {"read_only": args.read_only, "allow_launch": args.allow_launch,
-                                              "backend": desktop.backend.name}, "ok")
+                                              "confirm_keys": args.confirm_keys, "backend": desktop.backend.name},
+                             "ok")
         serve(desktop)
         return 0
 

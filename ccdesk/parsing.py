@@ -79,6 +79,8 @@ DESTRUCTIVE_COMBOS = (
     (frozenset({"ctrl"}), "q"),
     (frozenset({"ctrl"}), "w"),
     (frozenset({"super"}), "q"),
+    (frozenset({"ctrl", "alt"}), "delete"),
+    (frozenset({"ctrl", "alt"}), "backspace"),
 )
 
 BUTTONS = {"left": 1, "middle": 2, "right": 3}
@@ -140,10 +142,22 @@ def parse_key_combo(key: str, modifiers: list[str] | tuple[str, ...] | None = No
     )
 
 
-def is_destructive(combo: KeyCombo) -> bool:
+def is_destructive(combo: KeyCombo, extra: tuple[KeyCombo, ...] = ()) -> bool:
     mods = set(combo.modifiers)
     key = combo.key.lower()
-    return any(key == k and need <= mods for need, k in DESTRUCTIVE_COMBOS)
+    rules = [*DESTRUCTIVE_COMBOS, *((frozenset(c.modifiers), c.key.lower()) for c in extra)]
+    return any(key == k and need <= mods for need, k in rules)
+
+
+def parse_confirm_keys(spec: str | None) -> tuple[KeyCombo, ...]:
+    """Parse "super+x,ctrl+alt+super+p" into combos that need confirm=true.
+
+    Window managers bind their own close/quit/power keys (bspwm's super+x, i3's
+    super+shift+q), so users add theirs on top of the built-in list.
+    """
+    if not spec or not spec.strip():
+        return ()
+    return tuple(parse_key_combo(item.strip()) for item in spec.split(",") if item.strip())
 
 
 def parse_button(button: str | int) -> int:
@@ -295,6 +309,29 @@ def parse_display_geometry(output: str) -> tuple[int, int]:
     if len(parts) < 2:
         raise ValidationError(f"cannot parse display geometry {output!r}")
     return int(parts[0]), int(parts[1])
+
+
+_XRANDR_MONITOR_RE = re.compile(r"^\s*\d+:\s+\+?(\*?)(\S+)\s+(\d+)/\d+x(\d+)/\d+\+(-?\d+)\+(-?\d+)")
+
+
+def parse_xrandr_monitors(output: str) -> list[dict]:
+    """Parse `xrandr --listmonitors` lines like " 0: +*HDMI-1 1920/480x1080/270+1920+0  HDMI-1"."""
+    monitors = []
+    for line in output.splitlines():
+        m = _XRANDR_MONITOR_RE.match(line)
+        if m:
+            star, name, w, h, x, y = m.groups()
+            monitors.append({"name": name, "x": int(x), "y": int(y), "width": int(w), "height": int(h),
+                             "primary": bool(star)})
+    return monitors
+
+
+def parse_xwininfo_size(output: str) -> tuple[int, int] | None:
+    """Width and height from `xwininfo -root`, or None if they are missing."""
+    vals = dict(re.findall(r"^\s*(Width|Height):\s*(\d+)", output, re.MULTILINE))
+    if "Width" in vals and "Height" in vals:
+        return int(vals["Width"]), int(vals["Height"])
+    return None
 
 
 def parse_xrdb_dpi(output: str) -> float | None:
