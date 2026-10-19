@@ -1,0 +1,43 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "ccdesk"
+dynamic = ["version"]
+description = "Desktop control for Claude Code on Linux: an MCP server for screenshots, mouse, keyboard and windows."
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+authors = [{ name = "Sara Benel" }]
+requires-python = ">=3.10"
+dependencies = ["mcp>=1.2"]
+keywords = ["claude", "claude-code", "mcp", "computer-use", "linux", "x11", "wayland", "xdotool"]
+classifiers = [
+    "Environment :: X11 Applications",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Desktop Environment",
+]
+
+[project.optional-dependencies]
+test = ["pytest>=7"]
+
+[project.scripts]
+ccdesk = "ccdesk.cli:main"
+
+[tool.hatch.version]
+path = "ccdesk/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["ccdesk"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"skills/computer-use/SKILL.md" = "ccdesk/skill/SKILL.md"
+
+[tool.hatch.build.targets.sdist]
+include = ["ccdesk", "skills", "tests", "README.md", "LICENSE", "SPEC.md"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = ["display: needs an X display (run under xvfb-run)"]
