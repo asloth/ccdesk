@@ -39,6 +39,10 @@ class FakeBackend(Backend):
         w, h = (region.width, region.height) if region else self.size
         write_png(path, w, h)
 
+    def scale_png(self, path, width, height):
+        self.calls.append(("scale_png", width, height))
+        write_png(path, width, height)
+
     def move(self, x, y):
         self.calls.append(("move", x, y))
 

@@ -183,6 +183,15 @@ def check_int(name: str, value, minimum: int | None = None, maximum: int | None 
     return value
 
 
+def check_scale(value) -> float:
+    """Screenshot downscale factor: 0.1 to 1.0 (1.0 means full resolution)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ValidationError(f"scale must be a number between 0.1 and 1, got {value!r}")
+    if not 0.1 <= value <= 1:
+        raise ValidationError(f"scale must be between 0.1 and 1, got {value}")
+    return float(value)
+
+
 def check_point(x, y, screen: tuple[int, int] | None = None) -> tuple[int, int]:
     """Validate a screen coordinate; when the screen size is known, enforce bounds."""
     x = check_int("x", x, 0, screen[0] - 1 if screen else None)

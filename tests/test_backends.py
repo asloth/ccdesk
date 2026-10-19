@@ -177,6 +177,17 @@ def test_x11_screen_size_spans_all_monitors():
     assert b.screen_size() == (1920, 1080)
 
 
+def test_scale_png_uses_imagemagick():
+    b, r = make(X11Backend, X11_ALL | {"convert"})
+    b.scale_png("/tmp/a.png", 960, 540)
+    assert r.calls[-1][0] == ["convert", "/tmp/a.png", "-resize", "960x540!", "PNG24:/tmp/a.png"]
+    b, r = make(X11Backend, X11_ALL | {"magick", "convert"})
+    b.scale_png("/tmp/a.png", 960, 540)
+    assert r.calls[-1][0][0] == "magick"
+    with pytest.raises(UnsupportedError, match="ImageMagick"):
+        make(X11Backend, X11_ALL)[0].scale_png("/tmp/a.png", 1, 1)
+
+
 def test_x11_monitors():
     out = "Monitors: 2\n 0: +*HDMI-1 1920/480x1080/270+1920+0  HDMI-1\n 1: +eDP-1 1920/344x1080/193+0+0  eDP-1\n"
     b, _ = make(X11Backend, X11_ALL | {"xrandr"}, responses={"xrandr --listmonitors": out})

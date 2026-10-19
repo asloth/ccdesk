@@ -118,6 +118,13 @@ class Backend:
     def screenshot(self, path: str, region: Region | None) -> None:
         self._unsupported("screenshot")
 
+    def scale_png(self, path: str, width: int, height: int) -> None:
+        """Resize a PNG in place. ImageMagick is the only resizer; the core stays stdlib-only."""
+        tool = self.first_tool("magick", "convert")
+        if not tool:
+            raise UnsupportedError("screenshot(scale=...) needs ImageMagick (magick or convert)")
+        self.run([tool, path, "-resize", f"{width}x{height}!", f"PNG24:{path}"], timeout=30)
+
     def move(self, x: int, y: int) -> None:
         self._unsupported("move")
 

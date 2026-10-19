@@ -64,7 +64,7 @@ Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 13 tools.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?)` | Saves a PNG and returns `{path, width, height}`. `region` is `"x,y,w,h"`; region results also include `origin`. |
+| `screenshot(region?, path?, scale=1)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `scale=0.5` halves each side (needs ImageMagick). |
 | `click(x, y, button="left", count=1)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
 | `drag(from_x, from_y, to_x, to_y, duration_ms=400)` | Left-button drag along a smooth path. |
@@ -124,6 +124,23 @@ When the session ended, the app reported `label: "submitted:hello from Claude"`.
 Code a typical request looks like *"open Firefox, go to news.ycombinator.com and tell me the
 top story"*. The skill makes Claude find or focus Firefox, use `ctrl+l` for the address bar,
 type the URL, wait, screenshot and read the page.
+
+## Token cost
+
+Screenshots are most of what a ccdesk session costs. The model pays about `width*height/750`
+input tokens per image it reads (each result includes `approx_tokens`), and the image stays in
+context for every later turn. Measured on a real Play Console session: a 1920x1080 monitor
+capture is ~2,800 tokens, and 17 of them were about 70% of the context the session used.
+
+| Capture | Size | Tokens |
+| --- | --- | --- |
+| one monitor, full scale | 1920x1080 | ~2,765 |
+| one monitor, `scale=0.6` | 1152x648 | ~995 |
+| one monitor, `scale=0.5` (still readable) | 960x540 | ~691 |
+| region around a form field | 600x300 | ~240 |
+
+The skill tells Claude to orient at `scale=0.5`, then act and verify with small full-scale
+regions, and to pull long page text through the clipboard instead of reading it from pixels.
 
 ## Security model
 

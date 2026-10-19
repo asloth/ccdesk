@@ -19,6 +19,7 @@ from ccdesk.parsing import (
     Window,
     check_int,
     check_point,
+    check_scale,
     parse_button,
     parse_key_combo,
     parse_region,
@@ -80,22 +81,34 @@ class Desktop:
 
     # -- tools ------------------------------------------------------------------
 
-    def screenshot(self, region=None, path: str | None = None) -> dict:
+    def screenshot(self, region=None, path: str | None = None, scale: float = 1.0) -> dict:
         def do():
             self._ready()
             reg = parse_region(region, self.screen_size())
+            factor = check_scale(scale)
             out = self._shot_path(path)
             self.backend.screenshot(str(out), reg)
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
             width, height = png_size(out)
-            result = {"path": str(out), "width": width, "height": height}
+            if factor < 1:
+                self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
+                width, height = png_size(out)
+            # Image input costs about width*height/750 tokens once the model reads it.
+            result = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750)}
+            if factor < 1:
+                result["scale"] = factor
             if reg:
                 result["origin"] = {"x": reg.x, "y": reg.y}
+            if reg and factor < 1:
+                result["note"] = "pixel (px,py) in this image is screen (origin.x+px/scale, origin.y+py/scale)"
+            elif reg:
                 result["note"] = "pixel (px,py) in this image is screen (origin.x+px, origin.y+py)"
+            elif factor < 1:
+                result["note"] = "pixel (px,py) in this image is screen (px/scale, py/scale)"
             return result
 
-        return self._act("screenshot", {"region": region, "path": path}, do)
+        return self._act("screenshot", {"region": region, "path": path, "scale": scale}, do)
 
     def _shot_path(self, path: str | None) -> Path:
         if path:

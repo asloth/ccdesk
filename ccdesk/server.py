@@ -21,7 +21,8 @@ INSTRUCTIONS = """\
 ccdesk drives the local Linux desktop. Work in a loop: screenshot(), Read the PNG it returns,
 do ONE action, then screenshot() again to verify before the next action. Coordinates are
 screen pixels in the screenshot's space (origin top-left). For region screenshots add the
-returned origin. Never type passwords or secrets; never dismiss dialogs you have not read.
+returned origin. Save tokens: scale=0.5 to orient, small regions to act and verify.
+Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
 
 TOOL_NAMES = (
@@ -48,10 +49,11 @@ def build_server(desktop: Desktop) -> MCPServer:
         return server.tool()(reporting)
 
     @tool
-    def screenshot(region: str | None = None, path: str | None = None) -> dict:
-        """Capture the screen (or region "x,y,width,height") to a PNG. Returns path, width, height.
-        Read the returned path to see the image. Default path is under ~/.cache/ccdesk/screenshots."""
-        return desktop.screenshot(region=region, path=path)
+    def screenshot(region: str | None = None, path: str | None = None, scale: float = 1.0) -> dict:
+        """Capture the screen (or region "x,y,width,height") to a PNG. Returns path, width, height
+        and approx_tokens (what reading it costs). scale=0.5 halves each side for ~4x fewer tokens;
+        then divide image pixels by scale to get screen pixels. Read the returned path to see it."""
+        return desktop.screenshot(region=region, path=path, scale=scale)
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1) -> dict:

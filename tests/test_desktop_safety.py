@@ -196,9 +196,30 @@ def test_screenshot_results(make_desk, fake, tmp_path):
     assert full["path"].startswith(str(tmp_path / "shots"))
     region = d.screenshot(region="10,20,30,40", path=str(tmp_path / "out" / "r.png"))
     assert region == {
-        "path": str(tmp_path / "out" / "r.png"), "width": 30, "height": 40,
+        "path": str(tmp_path / "out" / "r.png"), "width": 30, "height": 40, "approx_tokens": 2,
         "origin": {"x": 10, "y": 20}, "note": region["note"],
     }
+    assert full["approx_tokens"] == 640
+
+
+def test_screenshot_scale(make_desk, fake):
+    d = make_desk()
+    half = d.screenshot(scale=0.5)
+    assert (half["width"], half["height"], half["scale"], half["approx_tokens"]) == (400, 300, 0.5, 160)
+    assert fake.calls[-1] == ("scale_png", 400, 300)
+    crop = d.screenshot(region="100,100,200,100", scale=0.25)
+    assert (crop["width"], crop["height"]) == (50, 25)
+    assert "origin.x+px/scale" in crop["note"]
+    n = len(fake.calls)
+    assert "scale" not in d.screenshot(scale=1)
+    assert len(fake.calls) == n + 1  # no resize at full scale
+
+
+@pytest.mark.parametrize("bad", [0, 0.05, 1.5, "half", True, None])
+def test_screenshot_bad_scale(make_desk, fake, bad):
+    with pytest.raises(ValidationError):
+        make_desk().screenshot(scale=bad)
+    assert fake.calls == []
 
 
 def test_screenshot_pruning(make_desk, tmp_path, monkeypatch):

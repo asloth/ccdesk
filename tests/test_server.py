@@ -28,7 +28,7 @@ def test_registered_tools(make_desk):
     by_name = {t.name: t.model_dump(by_alias=True, mode="json") for t in tools}
     assert set(by_name) == SPEC_TOOLS == set(TOOL_NAMES)
     props = {name: set(t["inputSchema"]["properties"]) for name, t in by_name.items()}
-    assert props["screenshot"] == {"region", "path"}
+    assert props["screenshot"] == {"region", "path", "scale"}
     assert props["click"] == {"x", "y", "button", "count"}
     assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms"}
     assert props["scroll"] == {"x", "y", "dx", "dy"}

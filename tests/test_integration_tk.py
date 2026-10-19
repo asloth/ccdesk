@@ -203,3 +203,15 @@ def test_read_only_blocks_input_but_allows_screenshots(app, tmp_path):
     with pytest.raises(PolicyError):
         ro.type_text("nope")
     assert app.state()["label"] == "waiting"
+
+
+@pytest.mark.skipif(not (shutil.which("magick") or shutil.which("convert")), reason="ImageMagick not installed")
+def test_scaled_screenshot_click(app, desk):
+    w, h = desk.screen_size()
+    result, img = shot(desk, scale=0.5)
+    assert (img.width, img.height) == (round(w * 0.5), round(h * 0.5)) and result["scale"] == 0.5
+    button = img.find_color(MAGENTA)
+    assert button, "button not visible in the half-size screenshot"
+    px, py = center(button)
+    desk.click(round(px / result["scale"]), round(py / result["scale"]))
+    assert app.wait_for(lambda s: s["label"] == "clicked")["label"] == "clicked"

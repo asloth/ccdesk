@@ -37,13 +37,28 @@ screenshot()  ->  Read the PNG  ->  ONE action  ->  screenshot()  ->  Read  ->  
   gets shown to you heavily downscaled, so small text becomes hard to read.
   `doctor().monitors` lists each monitor's `x, y, width, height`; pass that as the
   `region` to see one monitor at full resolution.
-- **Save tokens with regions.** Once you know where the action is, use
-  `screenshot(region="x,y,width,height")` to look at just that area.
+
+## Token budget
+
+Screenshots are almost all of the cost. Reading an image costs about `width*height/750`
+tokens (`approx_tokens` in the result), and it stays in context for every later turn. A
+1920x1080 capture is ~2,800 tokens; 960x540 is ~700; a 600x300 crop is ~240.
+
+- **Orient cheaply.** For a first look at a screen or page, use `scale=0.5` (a quarter of
+  the tokens). It is enough to find windows, sections and buttons. Image pixel `(px, py)`
+  is screen `(px/scale, py/scale)`, plus `origin` for a region.
+- **Act and verify with crops.** Once you know where you are working, screenshot a region
+  just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
+  typed value or a toggled checkbox with a crop, not the whole monitor.
+- **Full resolution only to read.** Use a full-scale monitor capture when you must read
+  small text across the page. Prefer scrolling and cropping to repeated full captures.
+- **Text beats pixels.** To read a long page, `press_key("ctrl+a")`, `press_key("ctrl+c")`,
+  `clipboard()` gets the text for far fewer tokens, then click to clear the selection.
 
 ## Coordinate rules
 
-- Coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They match the
-  full-screen screenshot pixel for pixel. Do not rescale them.
+- Coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They match a
+  full-scale screenshot pixel for pixel. If the result has `scale`, divide by it.
 - If the screenshot you are reading was shown to you downscaled, convert back with
   `screen = seen * (width / displayed_width)`, using `width`/`height` from the tool result.
 - For a **region** screenshot, the result includes `origin`: screen point is
