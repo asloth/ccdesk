@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import functools
 import os
 import shutil
 import subprocess
@@ -29,7 +30,8 @@ class Backend:
                  runner: Callable | None = None):
         self.env = dict(os.environ if env is None else env)
         self._which = which
-        self._runner = runner or self._subprocess_run
+        # Tools run with this backend's env, not ccdesk's: it may point at another display.
+        self._runner = runner or functools.partial(self._subprocess_run, env=self.env)
 
     # -- process helpers -------------------------------------------------
 
@@ -50,16 +52,17 @@ class Backend:
 
     @staticmethod
     def _subprocess_run(argv: list[str], input: str | None = None, timeout: float = DEFAULT_TIMEOUT,
-                        detach: bool = False) -> str:
+                        detach: bool = False, env: dict | None = None) -> str:
         try:
             if detach:
                 # Clipboard owners (xclip, wl-copy) fork and keep serving the selection; never
                 # capture their output or we would wait for them forever.
-                proc = subprocess.run(argv, input=input, text=True, timeout=timeout,
+                proc = subprocess.run(argv, input=input, text=True, timeout=timeout, env=env,
                                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
                 out, err = "", ""
             else:
-                proc = subprocess.run(argv, input=input, text=True, timeout=timeout, capture_output=True)
+                proc = subprocess.run(argv, input=input, text=True, timeout=timeout, capture_output=True,
+                                      env=env)
                 out, err = proc.stdout, proc.stderr
         except FileNotFoundError:
             raise CommandError(f"{argv[0]} is not installed") from None
@@ -110,6 +113,11 @@ class Backend:
             if self.env.get(var):
                 info[var] = self.env[var]
         return info
+
+    def window_origin(self, pid: int | None, title: str | None) -> tuple[int, int] | None:
+        """Screen position of a window's content, for toolkits that report accessible boxes
+        relative to the window (Wayland). None means boxes are already screen coordinates."""
+        return None
 
     def monitors(self) -> list[dict]:
         """Monitor rectangles in screen coordinates, or [] when unknown."""

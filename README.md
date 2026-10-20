@@ -216,11 +216,18 @@ compositor allows:
 - **Screenshots** need `grim`, which requires wlr-screencopy (sway, Hyprland, river, Wayfire).
   GNOME falls back to `gnome-screenshot -f`, and only for full-screen captures. KDE has
   neither.
-- **Pointer input** needs `ydotool` 1.x with the `ydotoold` daemon running and access to
-  `/dev/uinput`. Absolute positioning depends on ydotool's pointer acceleration settings,
-  so verify clicks with screenshots.
+- **Pointer input** on sway goes through sway itself (`swaymsg seat - cursor set/press/release`):
+  exact positions, no root, nothing extra to install. Elsewhere it needs `ydotool` 1.x with
+  the `ydotoold` daemon and access to `/dev/uinput`; absolute positioning then depends on
+  ydotool's pointer acceleration, so verify clicks with screenshots.
 - **Keyboard** uses `wtype` (virtual-keyboard protocol, not available on GNOME) and falls
-  back to `ydotool type` for plain text. `press_key` requires `wtype`.
+  back to `ydotool type` for plain text. `press_key` requires `wtype`. Known issue: on a
+  headless sway with only virtual devices, a named key sent alone (Left, BackSpace) does not
+  reach GTK 3 apps, while typed text does; not yet checked on a real sway session.
+- **ui_tree** works on Wayland too. GTK and Qt report element boxes relative to their own
+  window there; on sway ccdesk adds the window's position from `swaymsg -t get_tree`, so
+  `click_element` lands on screen coordinates. On other compositors the result carries a
+  note to verify with a screenshot.
 - **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland).
   Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
 - **Clipboard** uses `wl-copy` / `wl-paste`.
@@ -235,13 +242,16 @@ compositor allows:
 | --- | --- | --- | --- | --- | --- | --- |
 | X11 (any WM/DE) | ✅ scrot / import | ✅ xdotool | ✅ xdotool | ✅ xdotool | ✅ wmctrl | ✅ xclip / xsel |
 | X11 without a WM (Xvfb) | ✅ | ✅ | ✅ | ✅ | ✅ xdotool + xprop fallback | ✅ |
-| Wayland: sway / Hyprland | ✅ grim | ⚠️ ydotool + ydotoold | ✅ wtype / ydotool | ✅ wtype | ✅ swaymsg / hyprctl | ✅ wl-clipboard |
+| Wayland: sway | ✅ grim | ✅ swaymsg seat | ✅ wtype / ydotool | ⚠️ wtype (see above) | ✅ swaymsg | ✅ wl-clipboard |
+| Wayland: Hyprland | ✅ grim | ⚠️ ydotool + ydotoold | ✅ wtype / ydotool | ✅ wtype | ✅ hyprctl | ✅ wl-clipboard |
 | Wayland: GNOME | ⚠️ full screen only | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | No display (SSH, CI) | ❌ (doctor explains) | ❌ | ❌ | ❌ | ❌ | ❌ |
 
-The X11 rows are exercised by the integration suite under Xvfb. The Wayland rows are
-covered by unit tests of the exact commands ccdesk builds, not on a live compositor.
+The X11 rows are exercised by the integration suite under Xvfb, and the sway row by
+`tests/test_integration_wayland.py` on a headless sway it starts itself (screenshots, window
+list, clipboard, `ui_tree` coordinates, clicks and typing in a real GTK app). The other
+Wayland rows are covered by unit tests of the exact commands ccdesk builds.
 Requires Python 3.10+. The full suite passes on Python 3.14 with both `mcp` 2.3 and `mcp` 1.30.
 
 ccdesk does not replace [Cua Driver](https://github.com/trycua/cua). If `cua-driver` is on
@@ -256,6 +266,13 @@ xvfb-run -a pytest -q        # unit tests + Tk integration test on a virtual X s
 pytest -q                    # without a display the integration tests are skipped
 xvfb-run -a ccdesk doctor
 ```
+
+The display tests skip themselves when `DISPLAY` looks like your real screen (`:0`, `:1`):
+they click and type for real. Set `CCDESK_TEST_REAL_DISPLAY=1` to override.
+
+The Wayland test needs `sway`, `grim`, `wtype`, `wl-clipboard`, a C compiler and
+`wayland-scanner`. It starts a headless sway on its own socket, plus a small virtual-pointer
+helper (`tests/wayland/vpointer.c`, compiled on the fly) because a headless seat has no mouse.
 
 The integration test (`tests/test_integration_tk.py`) starts a Tk window with a button, a
 label, an entry, a canvas and a list. It takes a screenshot, finds the button by its colour

@@ -26,6 +26,8 @@ class Ref:
     path: str
     role: str
     name: str
+    dx: int = 0  # added to the element's box: the window's screen position on Wayland
+    dy: int = 0
 
 
 def _run_helper(argv: list[str], timeout: float) -> str:
@@ -45,6 +47,9 @@ class A11y:
         self._by_path: dict[str, str] = {}
         self._last: dict | None = None  # the latest tree() request and its lines, for changes()
         self._lock = threading.Lock()
+        # (pid, title) -> screen position of that window's content, or None. Set by Desktop to the
+        # backend's window_origin, for toolkits that report boxes relative to their window.
+        self.locate = None
 
     def call(self, request: dict, timeout: float = 20) -> dict:
         errors = []
@@ -76,18 +81,34 @@ class A11y:
     def apps(self) -> list[dict]:
         return self.call({"op": "apps"})["apps"]
 
-    def _ref(self, n: dict) -> str:
+    def _ref(self, n: dict, offset: tuple[int, int]) -> str:
         """Same element (path and role), same ref across calls, so refs from an earlier tree stay valid."""
         ref = self._by_path.get(n["path"])
         if ref is None or self.refs[ref].role != n["role"]:
             ref = f"e{len(self.refs) + 1}"
             self._by_path[n["path"]] = ref
-        self.refs[ref] = Ref(n["path"], n["role"], n["name"])
+        self.refs[ref] = Ref(n["path"], n["role"], n["name"], *offset)
         return ref
+
+    def _offset(self, result: dict) -> tuple[int, int] | None:
+        """A frame at 0,0 means the toolkit reports window-relative boxes (Wayland): ask the
+        compositor where the window is. On X11 the frame has its real screen position."""
+        box = result.get("frame_box")
+        if not self.locate or not box or box[0] or box[1]:
+            return None
+        try:
+            return self.locate(result.get("pid"), result.get("window"))
+        except CcdeskError:
+            return None
 
     def _read(self, request: dict) -> tuple[dict, list[tuple[str, dict]]]:
         result = self.call(request)
-        return result, [(self._ref(n), n) for n in result["nodes"]]
+        offset = self._offset(result)
+        if offset:
+            result["origin"] = {"x": offset[0], "y": offset[1]}
+            for n in result["nodes"]:
+                shift(n, offset)
+        return result, [(self._ref(n, offset or (0, 0)), n) for n in result["nodes"]]
 
     def tree(self, window: str | None, query: str | None, page: bool, max_nodes: int) -> dict:
         request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
@@ -100,6 +121,8 @@ class A11y:
             lines.append(format_node(ref, n, min(n["depth"] - base, 8) if not query else 0))
         out = {"window": result["window"], "app": result["app"], "tree": "\n".join(lines),
                "count": len(nodes), "truncated": result["truncated"]}
+        if "origin" in result:
+            out["origin"] = result["origin"]
         if result.get("matches", 0) > 1:
             out["warning"] = (f"{result['matches']} windows match {window!r}; this is the active one if "
                               f"any is active, else the first. Check with a screenshot crop, or "
@@ -131,9 +154,17 @@ class A11y:
         if known is None:
             raise CcdeskError(f"unknown element {ref!r}; call ui_tree() for the current refs")
         node = self.call({"op": "resolve", "path": known.path})["node"]
+        if node is not None:
+            shift(node, (known.dx, known.dy))
         if node is None or node["role"] != known.role or node["name"] != known.name:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")
         return node
+
+
+def shift(node: dict, offset: tuple[int, int]) -> None:
+    if node.get("box") and any(offset):
+        x, y, w, h = node["box"]
+        node["box"] = [x + offset[0], y + offset[1], w, h]
 
 
 def format_node(ref: str, n: dict, indent: int) -> str:

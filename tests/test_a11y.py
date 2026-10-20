@@ -133,3 +133,22 @@ def test_many_changes_ask_for_a_new_tree(make_desk, helper, no_settle):
     for i in range(30):
         helper.nodes[f"8.{i}"] = {"path": f"8.{i}", "role": "link", "name": f"l{i}", "depth": 1, "showing": True}
     assert "call ui_tree()" in d.click(5, 5)["changes"]
+
+
+def test_window_relative_boxes_are_shifted(make_desk, helper, fake):
+    """Wayland toolkits put their own frame at 0,0; the compositor says where it really is."""
+    real = helper.__call__
+
+    def wayland(argv, timeout):
+        out = json.loads(real(argv, timeout))
+        if "nodes" in out:
+            out["frame_box"] = [0, 0, 1280, 960]
+        return json.dumps(out)
+
+    d = make_desk()
+    d.a11y._runner = wayland
+    d.a11y.locate = lambda pid, title: (100, 50)
+    r = d.ui_tree(query="save")
+    assert r["tree"] == 'e1 push button "Save" @180,313 38x22' and r["origin"] == {"x": 100, "y": 50}
+    d.click_element("e1")
+    assert fake.calls[-1] == ("click", 199, 324, 1, 1)

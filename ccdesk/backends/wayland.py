@@ -1,8 +1,10 @@
-"""Wayland backend: grim for pixels, ydotool/wtype for input, wl-clipboard, sway/Hyprland IPC for windows.
+"""Wayland backend: grim for pixels, sway's seat or ydotool/wtype for input, wl-clipboard,
+sway/Hyprland IPC for windows.
 
 Wayland deliberately hides other clients from each other, so coverage depends on the compositor:
-grim needs wlr-screencopy (sway, Hyprland, river, ...), ydotool needs access to /dev/uinput and
-its daemon, and window listing only works through compositor IPC (swaymsg, hyprctl) or, for
+grim needs wlr-screencopy (sway, Hyprland, river, ...). On sway the pointer goes through
+`swaymsg seat - cursor`, which needs no root; elsewhere ydotool needs access to /dev/uinput and
+its daemon. Window listing only works through compositor IPC (swaymsg, hyprctl) or, for
 XWayland apps only, through xdotool.
 """
 
@@ -20,6 +22,10 @@ from ccdesk.parsing import KeyCombo, Region, Window, png_size
 # ydotool 1.x click codes: 0x40 = down, 0x80 = up, 0xC0 = down+up; low nibble = button.
 YDOTOOL_BUTTON = {1: 0x00, 2: 0x02, 3: 0x01}
 WTYPE_MODIFIER = {"ctrl": "ctrl", "alt": "alt", "shift": "shift", "super": "logo"}
+# X11-style button numbers that sway's `cursor press` understands; 4-7 are the wheel.
+WHEEL = {"up": 4, "down": 5, "left": 6, "right": 7}
+# wtype uploads its own keymap first; apps that have not applied it yet drop the first key.
+WTYPE_SETTLE = ["-s", "60"]
 
 
 def parse_sway_tree(tree: dict) -> list[Window]:
@@ -41,6 +47,28 @@ def parse_sway_tree(tree: dict) -> list[Window]:
     return windows
 
 
+def sway_content_origin(tree: dict, pid: int | None, title: str | None) -> tuple[int, int] | None:
+    """Screen position of a window's content (inside border and title bar), found by pid and title.
+
+    GTK and Qt on Wayland report accessible boxes relative to their own window; adding this
+    turns them into screen coordinates."""
+    found = []
+
+    def walk(node: dict) -> None:
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            if child.get("pid") and (pid is None or child["pid"] == pid):
+                found.append(child)
+            walk(child)
+
+    walk(tree)
+    if title is not None and len(found) > 1:
+        found = [c for c in found if c.get("name") == title] or found
+    if not found:
+        return None
+    rect, inner = found[0].get("rect", {}), found[0].get("window_rect", {})
+    return rect.get("x", 0) + inner.get("x", 0), rect.get("y", 0) + inner.get("y", 0)
+
+
 def parse_hyprctl_clients(clients: list) -> list[Window]:
     out = []
     for c in clients:
@@ -57,7 +85,7 @@ class WaylandBackend(Backend):
     name = "wayland"
     TOOLS = {
         "screenshot": ("grim", "gnome-screenshot"),
-        "pointer": ("ydotool",),
+        "pointer": ("swaymsg", "ydotool"),
         "keyboard": ("wtype", "ydotool"),
         "windows": ("swaymsg", "hyprctl", "xdotool"),
         "clipboard": ("wl-copy", "wl-paste"),
@@ -74,7 +102,21 @@ class WaylandBackend(Backend):
             return X11Backend(env=self.env, which=self._which, runner=self._runner)
         return None
 
+    def _sway(self) -> bool:
+        return bool(self.which("swaymsg") and self.env.get("SWAYSOCK"))
+
+    def _swaymsg(self, *args: str) -> str:
+        return self.run(["swaymsg", *args])
+
+    def _seat(self, command: str) -> None:
+        self._swaymsg(f"seat - cursor {command}")
+
     def screen_size(self) -> tuple[int, int]:
+        if self._sway():
+            outputs = [o["rect"] for o in json.loads(self._swaymsg("-t", "get_outputs", "-r"))
+                       if o.get("active")]
+            if outputs:
+                return (max(r["x"] + r["width"] for r in outputs), max(r["y"] + r["height"] for r in outputs))
         # Compositors disagree on how to report outputs; a full grab is the portable answer.
         fd, tmp = tempfile.mkstemp(prefix="ccdesk-size-", suffix=".png")
         os.close(fd)
@@ -103,10 +145,26 @@ class WaylandBackend(Backend):
         return self.run(["ydotool", *args])
 
     def move(self, x: int, y: int) -> None:
-        self._ydotool("mousemove", "--absolute", "-x", str(x), "-y", str(y))
+        if self._sway():
+            self._seat(f"set {x} {y}")
+        else:
+            self._ydotool("mousemove", "--absolute", "-x", str(x), "-y", str(y))
+
+    def _press(self, button: int, down: bool) -> None:
+        if self._sway():
+            self._seat(f"{'press' if down else 'release'} button{button}")
+        else:
+            self._ydotool("click", hex((0x40 if down else 0x80) | YDOTOOL_BUTTON[button]))
 
     def click(self, x: int, y: int, button: int, count: int) -> None:
         self.move(x, y)
+        if self._sway():
+            for i in range(count):
+                if i:
+                    self.sleep(0.08)
+                self._press(button, True)
+                self._press(button, False)
+            return
         code = 0xC0 | YDOTOOL_BUTTON[button]
         self._ydotool("click", "--repeat", str(count), "--next-delay", "80", hex(code))
 
@@ -114,29 +172,35 @@ class WaylandBackend(Backend):
         steps = self.drag_steps(duration_ms)
         pause = duration_ms / 1000 / steps
         self.move(x0, y0)
-        self._ydotool("click", hex(0x40))
+        self._press(1, True)
         try:
             for x, y in interpolate(x0, y0, x1, y1, steps):
                 self.sleep(pause)
                 self.move(x, y)
         finally:
-            self._ydotool("click", hex(0x80))
+            self._press(1, False)
 
     def scroll(self, x: int, y: int, dx: int, dy: int) -> None:
         self.move(x, y)
+        if self._sway():
+            for amount, neg, pos in ((dy, "up", "down"), (dx, "left", "right")):
+                for _ in range(abs(amount)):
+                    self._seat(f"press button{WHEEL[pos if amount > 0 else neg]}")
+                    self._seat(f"release button{WHEEL[pos if amount > 0 else neg]}")
+            return
         # ydotool wheel: positive y scrolls up, so invert to keep "dy > 0 means down".
         self._ydotool("mousemove", "--wheel", "-x", str(dx), "-y", str(-dy))
 
     def type_text(self, text: str) -> None:
         if self.which("wtype"):
-            self.run(["wtype", "-d", "12", "--", text], timeout=max(15, len(text) * 0.05 + 5))
+            self.run(["wtype", *WTYPE_SETTLE, "-d", "12", "--", text], timeout=max(15, len(text) * 0.05 + 5))
         else:
             self._ydotool("type", "--key-delay", "12", "--", text)
 
     def press_key(self, combo: KeyCombo) -> None:
         if not self.which("wtype"):
             raise UnsupportedError("press_key on Wayland needs wtype (ydotool only speaks raw keycodes)")
-        argv = ["wtype"]
+        argv = ["wtype", *WTYPE_SETTLE]
         for m in combo.modifiers:
             argv += ["-M", WTYPE_MODIFIER[m]]
         argv += ["-k", combo.key]
@@ -144,8 +208,13 @@ class WaylandBackend(Backend):
             argv += ["-m", WTYPE_MODIFIER[m]]
         self.run(argv)
 
+    def window_origin(self, pid: int | None, title: str | None) -> tuple[int, int] | None:
+        if self._sway():
+            return sway_content_origin(json.loads(self._swaymsg("-t", "get_tree", "-r")), pid, title)
+        return None
+
     def list_windows(self) -> list[Window]:
-        if self.which("swaymsg") and self.env.get("SWAYSOCK"):
+        if self._sway():
             return parse_sway_tree(json.loads(self.run(["swaymsg", "-t", "get_tree", "-r"])))
         if self.which("hyprctl") and self.env.get("HYPRLAND_INSTANCE_SIGNATURE"):
             return parse_hyprctl_clients(json.loads(self.run(["hyprctl", "clients", "-j"])))
@@ -157,7 +226,7 @@ class WaylandBackend(Backend):
         )
 
     def activate_window(self, window: Window) -> None:
-        if self.which("swaymsg") and self.env.get("SWAYSOCK"):
+        if self._sway():
             self.run(["swaymsg", f"[con_id={window.id}]", "focus"])
         elif self.which("hyprctl") and self.env.get("HYPRLAND_INSTANCE_SIGNATURE"):
             self.run(["hyprctl", "dispatch", "focuswindow", f"address:{window.id}"])

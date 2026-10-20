@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 
 import pytest
 
@@ -139,3 +140,15 @@ def read_audit(audit_path):
             return []
         return [json.loads(line) for line in audit_path.read_text().splitlines()]
     return read
+
+
+def pytest_collection_modifyitems(config, items):
+    """Display tests click and type for real: keep them off the user's own screen."""
+    display = os.environ.get("DISPLAY", "")
+    if os.environ.get("CCDESK_TEST_REAL_DISPLAY") == "1" or display not in (":0", ":0.0", ":1"):
+        return
+    skip = pytest.mark.skip(reason=f"DISPLAY={display} looks like your real screen; run under xvfb-run "
+                                   f"(or set CCDESK_TEST_REAL_DISPLAY=1)")
+    for item in items:
+        if "display" in item.keywords:
+            item.add_marker(skip)

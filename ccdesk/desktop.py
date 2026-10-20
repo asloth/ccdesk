@@ -41,6 +41,7 @@ class Desktop:
                  a11y: A11y | None = None):
         self.backend = backend or get_backend()
         self.a11y = a11y or A11y()
+        self.a11y.locate = self.backend.window_origin
         self.policy = policy or Policy()
         self.audit = audit or AuditLog()
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
@@ -256,8 +257,9 @@ class Desktop:
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
                 result["note"] = "truncated: narrow it with query=..., page=true or window=..."
-            if self.backend.name == "wayland":
-                result["note"] = "on Wayland, @x,y may be relative to the window; verify with a screenshot"
+            if self.backend.name == "wayland" and "origin" not in result:
+                result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
+                                  "not say where it is); verify with a screenshot")
             return result
 
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes}

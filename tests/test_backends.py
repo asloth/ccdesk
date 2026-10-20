@@ -1,5 +1,7 @@
 """Backend command construction and session detection, with a recording runner (no display needed)."""
 
+import os
+
 import pytest
 
 from ccdesk.backends import Backend, WaylandBackend, X11Backend, detect_session, get_backend
@@ -247,8 +249,8 @@ def test_wayland_input_commands():
         ["ydotool", "click", "--repeat", "2", "--next-delay", "80", "0xc1"],
         ["ydotool", "mousemove", "--absolute", "-x", "1", "-y", "2"],
         ["ydotool", "mousemove", "--wheel", "-x", "0", "-y", "-3"],
-        ["wtype", "-d", "12", "--", "hi"],
-        ["wtype", "-M", "logo", "-k", "q", "-m", "logo"],
+        ["wtype", "-s", "60", "-d", "12", "--", "hi"],
+        ["wtype", "-s", "60", "-M", "logo", "-k", "q", "-m", "logo"],
     ]
 
 
@@ -331,3 +333,46 @@ def test_base_backend_reports_unsupported():
     assert "no graphical session" in b.available()
     with pytest.raises(UnsupportedError):
         b.click(1, 1, 1, 1)
+
+
+SWAY_ENV = {"WAYLAND_DISPLAY": "w", "SWAYSOCK": "/s"}
+
+
+def test_sway_pointer_needs_no_ydotool():
+    b, r = make(WaylandBackend, {"grim", "wtype", "swaymsg"}, env=SWAY_ENV)
+    b.click(10, 20, 3, 2)
+    b.scroll(1, 2, 0, -1)
+    argvs = [c[0][1] for c in r.calls]
+    assert argvs == [
+        "seat - cursor set 10 20",
+        "seat - cursor press button3", "seat - cursor release button3",
+        "seat - cursor press button3", "seat - cursor release button3",
+        "seat - cursor set 1 2",
+        "seat - cursor press button4", "seat - cursor release button4",
+    ]
+    r.calls.clear()
+    b.drag(0, 0, 4, 4, 0)
+    assert r.calls[1][0][1] == "seat - cursor press button1" and r.calls[-1][0][1] == "seat - cursor release button1"
+
+
+def test_sway_screen_size_and_window_origin():
+    import json
+
+    outputs = [{"active": True, "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080}},
+               {"active": True, "rect": {"x": 1920, "y": 0, "width": 1280, "height": 1024}},
+               {"active": False, "rect": {"x": 9000, "y": 0, "width": 1, "height": 1}}]
+    tree = {"nodes": [{"nodes": [{"pid": 5, "name": "Signup", "rect": {"x": 300, "y": 200, "width": 564, "height": 669},
+                                  "window_rect": {"x": 2, "y": 27, "width": 560, "height": 640}},
+                                 {"pid": 6, "name": "Other", "rect": {"x": 0, "y": 0, "width": 1, "height": 1}}]}]}
+    b, _ = make(WaylandBackend, {"swaymsg", "grim"}, env=SWAY_ENV,
+                responses={"swaymsg -t": json.dumps(outputs)})
+    assert b.screen_size() == (3200, 1080)
+    b, _ = make(WaylandBackend, {"swaymsg"}, env=SWAY_ENV, responses={"swaymsg -t": json.dumps(tree)})
+    assert b.window_origin(5, "Signup") == (302, 227)
+    assert b.window_origin(7, "Nope") is None
+    assert WaylandBackend(env={"WAYLAND_DISPLAY": "w"}, which=lambda n: None).window_origin(5, "x") is None
+
+
+def test_tools_run_with_the_backend_env():
+    out = X11Backend(env={"PATH": os.environ["PATH"], "DISPLAY": ":42"}).run(["sh", "-c", "echo $DISPLAY"])
+    assert out.strip() == ":42"

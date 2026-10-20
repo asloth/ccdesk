@@ -201,8 +201,10 @@ def tree(req):
             walk(child, f"{p}.{i}", depth + 1, here)
 
     walk(frame, path, 0, False)
+    frame_node = describe(frame, path, 0) or {}
     return {"window": frame.get_name(), "app": app.get_name(), "pid": app.get_process_id(),
-            "nodes": out, "truncated": truncated, "matches": matching_windows(req.get("window"))}
+            "nodes": out, "truncated": truncated, "matches": matching_windows(req.get("window")),
+            "frame_box": frame_node.get("box")}
 
 
 def resolve(req):
