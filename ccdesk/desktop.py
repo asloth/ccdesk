@@ -6,6 +6,7 @@ Everything the MCP server exposes is a method here, so it can be tested without 
 from __future__ import annotations
 
 import os
+import re
 import shlex
 import shutil
 import subprocess
@@ -38,10 +39,13 @@ SETTLE = 0.3  # seconds an app gets to react before an action reports its change
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
-                 a11y: A11y | None = None):
+                 a11y: A11y | None = None, headless=None):
         self.backend = backend or get_backend()
         self.a11y = a11y or A11y()
         self.a11y.locate = self.backend.window_origin
+        self.headless = headless  # ccdesk.headless.Headless when the agent has its own screen
+        if headless is not None:
+            self.a11y.env = self.backend.env
         self.policy = policy or Policy()
         self.audit = audit or AuditLog()
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
@@ -323,6 +327,8 @@ class Desktop:
                 argv = shlex.split(command)
             except ValueError as exc:
                 raise ValidationError(f"cannot parse command: {exc}") from None
+            # No shell, so expand ~ here: `--profile ~/x` and `--user-data-dir=~/x` both work.
+            argv = [re.sub(r"(^|=)~(?=/|$)", lambda m: m.group(1) + os.path.expanduser("~"), a) for a in argv]
             if not shutil.which(argv[0]):
                 raise ValidationError(f"{argv[0]!r} not found on PATH")
             # No shell: the command is split into argv, so no pipes, redirects or `;` chaining.
@@ -336,5 +342,6 @@ class Desktop:
     def doctor(self) -> dict:
         from ccdesk.doctor import build_report
 
-        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y),
+        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y,
+                                                     self.headless),
                          loggable=lambda r: {"backend": r["backend"], "ready": r["ready"], "missing": r["missing"]})

@@ -27,6 +27,10 @@ verify instead of another ui_tree() or screenshot. Refs stay valid across ui_tre
 Use screenshot(scale=0.5) to orient and small regions to verify.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
+HEADLESS = """
+This server works on its own invisible screen, not the user's: it starts empty, so launch()
+the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
+or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR first)."""
 
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
@@ -36,7 +40,7 @@ TOOL_NAMES = (
 
 
 def build_server(desktop: Desktop) -> MCPServer:
-    kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS}
+    kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
         kwargs["version"] = __version__
     server = MCPServer(**kwargs)

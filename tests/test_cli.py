@@ -187,3 +187,15 @@ def test_install_always_load_uses_add_json(home, tmp_path, monkeypatch, capsys):
     assert add.startswith("mcp add-json --scope user ccdesk ")
     config = json.loads(add.split(" ccdesk ", 1)[1])
     assert config["alwaysLoad"] is True and config["args"][-2:] == ["mcp", "--read-only"]
+
+
+def test_install_forwards_headless(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--headless", "--size", "1600x900"]) == 0
+    assert log.read_text().splitlines()[1].endswith("mcp --headless --size 1600x900")
+
+
+def test_peek_without_a_headless_server(tmp_path, monkeypatch, capsys):
+    monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
+    assert main(["peek"]) == 1
+    assert "no headless ccdesk server" in capsys.readouterr().out

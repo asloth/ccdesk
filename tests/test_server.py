@@ -40,6 +40,15 @@ def test_registered_tools(make_desk):
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
 
 
+def test_headless_adds_instructions(make_desk):
+    from ccdesk.server import HEADLESS
+
+    desk = make_desk()
+    assert HEADLESS not in build_server(desk).instructions
+    desk.headless = object()
+    assert HEADLESS in build_server(desk).instructions
+
+
 class StdioClient:
     def __init__(self, *args, env):
         self.proc = subprocess.Popen([sys.executable, "-m", "ccdesk", "mcp", *args], cwd=ROOT, env=env,

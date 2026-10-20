@@ -21,7 +21,8 @@ def _mcp_version() -> str | None:
         return None
 
 
-def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None) -> dict:
+def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None,
+                 headless=None) -> dict:
     env = backend.env
     problem = backend.available()
     tools = backend.tools_report()
@@ -44,9 +45,12 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "policy": {"read_only": policy.read_only, "allow_launch": policy.allow_launch,
                    "confirm_keys": [str(c) for c in policy.confirm_keys]},
         "audit_log": str(audit_path),
+        "headless": headless.info() if headless else None,
         "warnings": [],
     }
     warnings = report["warnings"]
+    if headless:
+        warnings.extend(headless.notes)
     if problem:
         warnings.append(problem)
     else:
@@ -72,7 +76,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
-    report["a11y"] = _a11y_report(a11y, warnings)
+    report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus))
     if report["mcp"] is None:
         warnings.append("python package 'mcp' is not installed: `ccdesk mcp` will not start")
     if report["cua_driver"]:
@@ -89,7 +93,7 @@ A11Y_HINT = (
 )
 
 
-def _a11y_report(a11y, warnings: list[str]) -> dict:
+def _a11y_report(a11y, warnings: list[str], private: bool = False) -> dict:
     if a11y is None:
         from ccdesk.a11y import A11y
 
@@ -100,7 +104,7 @@ def _a11y_report(a11y, warnings: list[str]) -> dict:
         warnings.append(f"ui_tree unavailable: {exc}")
         return {"ready": False, "apps": [], "error": str(exc)}
     names = [a["name"] for a in apps if a.get("windows")]
-    if not any(n.lower() in ("firefox", "chromium", "google-chrome") for n in names):
+    if not any(n.lower() in ("firefox", "chromium", "google-chrome") for n in names) and not private:
         warnings.append(A11Y_HINT)
     return {"ready": True, "apps": names}
 
@@ -115,6 +119,9 @@ def format_report(report: dict) -> str:
     ]
     for var in SESSION_VARS:
         lines.append(f"  {var + ':':<20} {s.get(var) or '-'}")
+    if report.get("headless"):
+        hl = report["headless"]
+        lines.append(f"  headless:            {hl['display']} {hl['size']}, wm {hl['window_manager'] or 'none'}")
     lines += ["", f"Backend: {report['backend']} ({'ready' if report['ready'] else 'not ready'})"]
     screen = report["screen"]
     screen_text = "{width}x{height}".format(**screen) if screen else "unknown"

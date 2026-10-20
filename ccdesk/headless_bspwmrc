@@ -1,0 +1,5 @@
+#!/bin/sh
+# bspwm config for ccdesk --headless: one desktop, no gaps or borders, nothing else started.
+bspc monitor -d 1
+bspc config border_width 0
+bspc config window_gap 0

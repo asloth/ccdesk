@@ -63,6 +63,39 @@ mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.cla
 
 Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 15 tools.
 
+## Headless: let it work while you use your PC
+
+```sh
+ccdesk install --headless                 # or: ccdesk mcp --headless [--size 1600x900]
+ccdesk peek --open                        # see what the agent's screen shows right now
+```
+
+With `--headless` the server starts its own invisible screen and does everything there, so
+you keep your mouse, keyboard, windows and clipboard while Claude works. When Claude Code
+closes the server, the screen and everything on it go away (also if the server is killed:
+its helpers die with it).
+
+What it starts: `Xvfb` on a free display number, a window manager (the first of openbox,
+fluxbox, icewm, matchbox, xfwm4, else bspwm with a stub config; `--wm none|CMD` to choose),
+and a private D-Bus session with its own accessibility bus. The private bus means:
+
+- `ui_tree` sees only the agent's apps, never yours.
+- Apps don't hand their window to a copy already running on your screen (Firefox, GNOME apps).
+- Apps on that screen can't reach your keyring, notifications or other session services.
+- Accessibility is on for GTK, Qt and Firefox without touching your settings.
+
+The screen starts empty, so `--headless` turns on `launch`. A browser that is already open
+on your screen locks its profile; give the agent its own:
+`firefox --no-remote --profile ~/.cache/ccdesk/firefox` (create the folder first) or
+`chromium --user-data-dir=~/.cache/ccdesk/chromium --force-renderer-accessibility`.
+It runs X11 apps, and works the same from an X11 or a Wayland session (GNOME and KDE
+included): apps on it are told to use X11.
+
+Needs `Xvfb` (Arch: `xorg-server-xvfb`, Debian/Ubuntu: `xvfb`), plus `dbus-daemon` and
+`at-spi2-core`, which desktops already have. `ccdesk peek` saves a screenshot of every running
+headless screen to `~/.cache/ccdesk/peek-N.png`; for a live view, run
+`x11vnc -display :N -localhost` and any VNC viewer (`doctor()` shows the display).
+
 ## Tools
 
 | Tool | What it does |
@@ -246,11 +279,14 @@ compositor allows:
 | Wayland: Hyprland | ✅ grim | ⚠️ ydotool + ydotoold | ✅ wtype / ydotool | ✅ wtype | ✅ hyprctl | ✅ wl-clipboard |
 | Wayland: GNOME | ⚠️ full screen only | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
+| Headless (`--headless`, any session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ private clipboard |
 | No display (SSH, CI) | ❌ (doctor explains) | ❌ | ❌ | ❌ | ❌ | ❌ |
 
 The X11 rows are exercised by the integration suite under Xvfb, and the sway row by
 `tests/test_integration_wayland.py` on a headless sway it starts itself (screenshots, window
-list, clipboard, `ui_tree` coordinates, clicks and typing in a real GTK app). The other
+list, clipboard, `ui_tree` coordinates, clicks and typing in a real GTK app). The headless
+row by `tests/test_integration_headless.py`, which launches a GTK app on the private screen
+and checks that your session bus never sees it. The other
 Wayland rows are covered by unit tests of the exact commands ccdesk builds.
 Requires Python 3.10+. The full suite passes on Python 3.14 with both `mcp` 2.3 and `mcp` 1.30.
 
@@ -284,7 +320,8 @@ Layout:
 
 ```
 ccdesk/
-  cli.py          ccdesk doctor | install | mcp | version
+  cli.py          ccdesk doctor | install | mcp | peek | version
+  headless.py     --headless: private Xvfb screen, window manager and D-Bus
   server.py       MCP tool definitions (the only module importing `mcp`)
   desktop.py      validation + policy + audit around a backend
   safety.py       read-only / launch policy, destructive keys, JSONL audit log

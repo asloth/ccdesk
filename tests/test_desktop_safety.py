@@ -131,6 +131,13 @@ def test_launch_does_not_use_a_shell(make_desk, tmp_path):
     assert not target.exists()
 
 
+def test_launch_expands_home(make_desk, monkeypatch):
+    monkeypatch.setenv("HOME", "/home/ana")
+    result = make_desk(allow_launch=True).launch("true --profile ~/ff --data=~/c ~x a~/b")
+    os.waitpid(result["pid"], 0)
+    assert result["argv"] == ["true", "--profile", "/home/ana/ff", "--data=/home/ana/c", "~x", "a~/b"]
+
+
 @pytest.mark.parametrize("combo", ["alt+F4", "ctrl+q", "ctrl+w", "super+q", "ctrl+shift+w"])
 def test_destructive_keys_need_confirm(make_desk, fake, read_audit, combo):
     d = make_desk()

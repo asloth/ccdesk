@@ -12,6 +12,13 @@ with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
 
+**Headless mode.** If `doctor()` shows `headless`, you have your own invisible screen and the
+user keeps using theirs. It starts empty: `launch()` the apps you need, then `wait(2)`. A
+browser the user has open locks its profile, so start yours with a separate one, e.g.
+`firefox --no-remote --profile ~/.cache/ccdesk/firefox` (create the folder with Bash first) or
+`chromium --user-data-dir=... --force-renderer-accessibility`. The user's logins are not
+there; ask before working around that. Your clipboard is separate from theirs.
+
 ## Before you start
 
 1. Ask yourself whether a shell command would do the job. Use the desktop only when the task

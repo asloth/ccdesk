@@ -144,6 +144,8 @@ def pick_window(title):
     for picked in found:
         if is_active(picked[2]):
             return picked, None
+    if len(found) == 1:
+        return found[0], None  # no window manager to mark it active, but there is only one
     names = ", ".join(repr(f.get_name()) for _, _, f in found[:15])
     return None, f"no active accessible window; pass window=... (windows: {names})"
 

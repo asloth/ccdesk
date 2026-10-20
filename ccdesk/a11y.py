@@ -30,8 +30,8 @@ class Ref:
     dy: int = 0
 
 
-def _run_helper(argv: list[str], timeout: float) -> str:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False)
+def _run_helper(argv: list[str], timeout: float, env: dict | None = None) -> str:
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env=env)
     if proc.returncode != 0:
         raise CcdeskError(f"accessibility helper failed: {(proc.stderr or proc.stdout).strip()[-300:]}")
     return proc.stdout
@@ -39,7 +39,9 @@ def _run_helper(argv: list[str], timeout: float) -> str:
 
 class A11y:
     def __init__(self, runner=None, pythons: tuple[str, ...] | None = None):
-        self._runner = runner or _run_helper
+        # The helper talks to the accessibility bus of this env (a headless screen has its own).
+        self.env: dict | None = None
+        self._runner = runner or (lambda argv, timeout: _run_helper(argv, timeout, self.env))
         override = os.environ.get("CCDESK_A11Y_PYTHON")
         self._pythons = pythons or ((override,) if override else PYTHONS)
         self._python: str | None = None
