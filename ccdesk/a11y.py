@@ -82,8 +82,13 @@ class A11y:
             ref = f"e{i}"
             self.refs[ref] = Ref(n["path"], n["role"], n["name"])
             lines.append(format_node(ref, n, min(n["depth"] - base, 8) if not query else 0))
-        return {"window": result["window"], "app": result["app"], "tree": "\n".join(lines),
-                "count": len(nodes), "truncated": result["truncated"]}
+        out = {"window": result["window"], "app": result["app"], "tree": "\n".join(lines),
+               "count": len(nodes), "truncated": result["truncated"]}
+        if result.get("matches", 0) > 1:
+            out["warning"] = (f"{result['matches']} windows match {window!r}; this is the active one if "
+                              f"any is active, else the first. Check with a screenshot crop, or "
+                              f"pass a more specific title")
+        return out
 
     def resolve(self, ref: str) -> dict:
         known = self.refs.get(str(ref).strip())

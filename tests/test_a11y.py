@@ -87,3 +87,14 @@ def test_helper_python_fallback(tmp_path):
 def test_format_node_escapes():
     line = format_node("e9", {"role": "text", "name": 'say "hi"', "value": "a\nb"}, 1)
     assert line == '  e9 text "say \\"hi\\"" ="a\\nb"'
+
+
+def test_ui_tree_warns_when_several_windows_match():
+    def runner(argv, timeout):
+        return json.dumps({"window": "Signup", "app": "a", "nodes": [], "truncated": False, "matches": 2})
+
+    r = A11y(runner=runner, pythons=("/bin/sh",)).tree("Signup", None, False, 300)
+    assert "2 windows match 'Signup'" in r["warning"]
+    one = A11y(runner=lambda a, t: json.dumps({"window": "x", "app": "a", "nodes": [], "truncated": False}),
+               pythons=("/bin/sh",)).tree(None, None, False, 300)
+    assert "warning" not in one

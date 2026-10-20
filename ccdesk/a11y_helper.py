@@ -134,19 +134,30 @@ def pick_window(title):
         return None, "no application is publishing an accessibility tree (see ccdesk doctor)"
     if title:
         needle = title.lower()
-        for path, app, frame in found:
-            if needle in (frame.get_name() or "").lower():
-                return (path, app, frame), None
-        names = ", ".join(repr(f.get_name()) for _, _, f in found[:15])
-        return None, f"no accessible window title contains {title!r}; windows: {names}"
-    for path, app, frame in found:
-        try:
-            if frame.get_state_set().contains(Atspi.StateType.ACTIVE):
-                return (path, app, frame), None
-        except Exception:
-            continue
+        matches = [f for f in found if needle in (f[2].get_name() or "").lower()]
+        if not matches:
+            names = ", ".join(repr(f.get_name()) for _, _, f in found[:15])
+            return None, f"no accessible window title contains {title!r}; windows: {names}"
+        # Same title twice (two copies of an app, or apps on another X display): prefer the active one.
+        active = [m for m in matches if is_active(m[2])]
+        return (active or matches)[0], None
+    for picked in found:
+        if is_active(picked[2]):
+            return picked, None
     names = ", ".join(repr(f.get_name()) for _, _, f in found[:15])
     return None, f"no active accessible window; pass window=... (windows: {names})"
+
+
+def matching_windows(title):
+    needle = (title or "").lower()
+    return sum(1 for _, _, f in frames() if needle and needle in (f.get_name() or "").lower())
+
+
+def is_active(frame):
+    try:
+        return frame.get_state_set().contains(Atspi.StateType.ACTIVE)
+    except Exception:
+        return False
 
 
 def interesting(node):
@@ -191,7 +202,7 @@ def tree(req):
 
     walk(frame, path, 0, False)
     return {"window": frame.get_name(), "app": app.get_name(), "pid": app.get_process_id(),
-            "nodes": out, "truncated": truncated}
+            "nodes": out, "truncated": truncated, "matches": matching_windows(req.get("window"))}
 
 
 def resolve(req):
