@@ -7,6 +7,7 @@ Arms:
   none   no ccdesk. Bash + Read only; xdotool/scrot/ImageMagick are on PATH.
   shots  ccdesk without ui_tree/click_element: screenshots and coordinates.
   tree   ccdesk with every tool.
+  loaded ccdesk with every tool and alwaysLoad: schemas up front, no ToolSearch round trip.
 All arms: same prompt, same model, no user settings/plugins/hooks, Skill tool off.
 """
 
@@ -36,6 +37,7 @@ ARMS = {
     "none": {"mcp": False, "deny": []},
     "shots": {"mcp": True, "deny": ["mcp__ccdesk__ui_tree", "mcp__ccdesk__click_element"]},
     "tree": {"mcp": True, "deny": []},
+    "loaded": {"mcp": True, "deny": [], "always_load": True},
 }
 
 
@@ -71,6 +73,8 @@ def claude_cmd(arm, workdir, model):
     if ARMS[arm]["mcp"]:
         cfg["mcpServers"]["ccdesk"] = {"type": "stdio", "command": CCDESK,
                                        "args": ["mcp", "--audit-log", str(workdir / "audit.log")]}
+        if ARMS[arm].get("always_load"):
+            cfg["mcpServers"]["ccdesk"]["alwaysLoad"] = True
     (workdir / "mcp.json").write_text(json.dumps(cfg))
     return ["claude", "-p", PROMPT, "--model", model, "--output-format", "stream-json", "--verbose",
             "--setting-sources", "", "--strict-mcp-config", "--mcp-config", str(workdir / "mcp.json"),

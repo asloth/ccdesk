@@ -10,6 +10,7 @@ import json
 import os
 import shutil
 import subprocess
+import threading
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -17,6 +18,7 @@ from ccdesk.errors import CcdeskError, UnsupportedError
 
 HELPER = Path(__file__).with_name("a11y_helper.py")
 PYTHONS = ("/usr/bin/python3", "python3")
+MAX_CHANGES = 25
 
 
 @dataclass(frozen=True)
@@ -40,6 +42,9 @@ class A11y:
         self._pythons = pythons or ((override,) if override else PYTHONS)
         self._python: str | None = None
         self.refs: dict[str, Ref] = {}
+        self._by_path: dict[str, str] = {}
+        self._last: dict | None = None  # the latest tree() request and its lines, for changes()
+        self._lock = threading.Lock()
 
     def call(self, request: dict, timeout: float = 20) -> dict:
         errors = []
@@ -71,16 +76,27 @@ class A11y:
     def apps(self) -> list[dict]:
         return self.call({"op": "apps"})["apps"]
 
+    def _ref(self, n: dict) -> str:
+        """Same element (path and role), same ref across calls, so refs from an earlier tree stay valid."""
+        ref = self._by_path.get(n["path"])
+        if ref is None or self.refs[ref].role != n["role"]:
+            ref = f"e{len(self.refs) + 1}"
+            self._by_path[n["path"]] = ref
+        self.refs[ref] = Ref(n["path"], n["role"], n["name"])
+        return ref
+
+    def _read(self, request: dict) -> tuple[dict, list[tuple[str, dict]]]:
+        result = self.call(request)
+        return result, [(self._ref(n), n) for n in result["nodes"]]
+
     def tree(self, window: str | None, query: str | None, page: bool, max_nodes: int) -> dict:
-        result = self.call({"op": "tree", "window": window, "query": query, "page": page,
-                            "max_nodes": max_nodes})
-        nodes = result["nodes"]
-        self.refs = {}
+        request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
+        with self._lock:
+            result, nodes = self._read(request)
+            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes}}
         lines = []
-        base = min((n["depth"] for n in nodes), default=0)
-        for i, n in enumerate(nodes, start=1):
-            ref = f"e{i}"
-            self.refs[ref] = Ref(n["path"], n["role"], n["name"])
+        base = min((n["depth"] for _, n in nodes), default=0)
+        for ref, n in nodes:
             lines.append(format_node(ref, n, min(n["depth"] - base, 8) if not query else 0))
         out = {"window": result["window"], "app": result["app"], "tree": "\n".join(lines),
                "count": len(nodes), "truncated": result["truncated"]}
@@ -90,10 +106,30 @@ class A11y:
                               f"pass a more specific title")
         return out
 
+    def changes(self) -> str | None:
+        """Re-read the window of the latest tree() and return the lines that changed, or None if
+        tree() was never called. Lets an action report its own effect without another ui_tree()."""
+        with self._lock:
+            if self._last is None:
+                return None
+            _, nodes = self._read(self._last["request"])
+            before = self._last["lines"]
+            after = {ref: format_node(ref, n, 0) for ref, n in nodes}
+            self._last["lines"] = after
+        changed = [line for ref, line in after.items() if before.get(ref) != line]
+        gone = [ref for ref in before if ref not in after]
+        if not changed and not gone:
+            return "no change in the window yet (slow apps: wait(1), then ui_tree())"
+        if len(changed) + len(gone) > MAX_CHANGES:
+            return f"{len(changed)} elements changed, {len(gone)} gone: the view moved on; call ui_tree()"
+        if gone:
+            changed.append("gone: " + " ".join(gone))
+        return "\n".join(changed)
+
     def resolve(self, ref: str) -> dict:
         known = self.refs.get(str(ref).strip())
         if known is None:
-            raise CcdeskError(f"unknown element {ref!r}; call ui_tree() and use a ref from its latest result")
+            raise CcdeskError(f"unknown element {ref!r}; call ui_tree() for the current refs")
         node = self.call({"op": "resolve", "path": known.path})["node"]
         if node is None or node["role"] != known.role or node["name"] != known.name:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")

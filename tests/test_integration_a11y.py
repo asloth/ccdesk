@@ -91,18 +91,20 @@ def test_tree_click_type_and_toggle(gtk, desk):
 
     tree = desk.ui_tree(window="ccdesk-gtk")["tree"]
     desk.click_element(ref_of(tree, r'text "Display name"'))
-    desk.type_text("Sara")
+    typed = desk.type_text("Sara")
     gtk(lambda s: s["entry"] == "Sara")
+    assert re.search(r'text "Display name" ="Sara"', typed["changes"]), typed  # verified without a new tree
     tree = desk.ui_tree(window="ccdesk-gtk")["tree"]
     assert re.search(r'text "Display name" ="Sara"', tree), tree
 
-    desk.click_element(ref_of(tree, r'check box "I agree"'))
+    toggled = desk.click_element(ref_of(tree, r'check box "I agree"'))
     gtk(lambda s: s["agree"])
+    assert "checked" in toggled["changes"], toggled
     assert re.search(r'check box "I agree" \[[^]]*checked', desk.ui_tree(window="ccdesk-gtk", query="agree")["tree"])
 
 
-def test_stale_ref_after_new_tree(gtk, desk):
+def test_refs_survive_a_new_tree(gtk, desk):
     desk.ui_tree(window="ccdesk-gtk", query="agree")
     first = desk.a11y.refs["e1"]
-    desk.ui_tree(window="ccdesk-gtk", query="Apply")
-    assert desk.a11y.refs["e1"] != first  # refs belong to the latest tree only
+    tree = desk.ui_tree(window="ccdesk-gtk", query="Apply")["tree"]
+    assert desk.a11y.refs["e1"] == first and tree.startswith("e2 ")  # the button gets a new ref

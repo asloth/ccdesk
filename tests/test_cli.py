@@ -178,3 +178,12 @@ def test_core_imports_without_mcp():
     )
     proc = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, cwd=ROOT)
     assert proc.stdout.strip() == "ok", proc.stderr
+
+
+def test_install_always_load_uses_add_json(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--always-load", "--read-only"]) == 0
+    add = log.read_text().splitlines()[1]
+    assert add.startswith("mcp add-json --scope user ccdesk ")
+    config = json.loads(add.split(" ccdesk ", 1)[1])
+    assert config["alwaysLoad"] is True and config["args"][-2:] == ["mcp", "--read-only"]

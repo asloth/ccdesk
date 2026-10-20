@@ -98,3 +98,38 @@ def test_ui_tree_warns_when_several_windows_match():
     one = A11y(runner=lambda a, t: json.dumps({"window": "x", "app": "a", "nodes": [], "truncated": False}),
                pythons=("/bin/sh",)).tree(None, None, False, 300)
     assert "warning" not in one
+
+
+@pytest.fixture
+def no_settle(monkeypatch):
+    monkeypatch.setattr("ccdesk.desktop.SETTLE", 0)
+
+
+def test_refs_stay_stable_across_trees(make_desk, helper):
+    d = make_desk()
+    first = d.ui_tree()["tree"]
+    helper.nodes["9.9"] = {"path": "9.9", "role": "push button", "name": "New", "depth": 6, "showing": True,
+                           "box": [1, 1, 10, 10]}
+    second = d.ui_tree()["tree"]
+    assert second.startswith(first)  # old elements keep e1..e4, the new one gets e5
+    assert 'e5 push button "New"' in second
+
+
+def test_actions_report_changes_after_ui_tree(make_desk, helper, no_settle):
+    d = make_desk()
+    assert "changes" not in d.type_text("x")  # no ui_tree yet: nothing to compare with
+    d.ui_tree()
+    helper.nodes["3.0.29.2"]["value"] = "ana@example.org"
+    r = d.click_element("e2")
+    assert r["changes"] == 'e2 entry "Feedback email" ="ana@example.org" @135,179 148x21'
+    assert d.press_key("Tab")["changes"].startswith("no change")
+    del helper.nodes["3.0.29.2"]
+    assert d.type_text("y")["changes"] == "gone: e2"
+
+
+def test_many_changes_ask_for_a_new_tree(make_desk, helper, no_settle):
+    d = make_desk()
+    d.ui_tree()
+    for i in range(30):
+        helper.nodes[f"8.{i}"] = {"path": f"8.{i}", "role": "link", "name": f"l{i}", "depth": 1, "showing": True}
+    assert "call ui_tree()" in d.click(5, 5)["changes"]

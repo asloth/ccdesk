@@ -35,10 +35,15 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
 - `ui_tree()` reads the active window; `ui_tree(window="Firefox")` picks one by title.
 - In a browser, `page=true` drops the tabs and toolbars and lists only the page.
 - On big pages, `query="email"` returns only the matching elements.
-- `click_element("e5")` clicks the centre of that element. Refs belong to the latest
-  `ui_tree()` result only; after the page changes, call `ui_tree()` again.
-- Type with `click_element` on the field, then `type_text`. Verify by calling `ui_tree()`
-  again: the field shows `="value"`, checkboxes show `[checked]`.
+- `click_element("e5")` clicks the centre of that element. A ref keeps pointing at the same
+  element across `ui_tree()` calls; if it is gone or changed, the call says so.
+- Type with `click_element` on the field, then `type_text`.
+- **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
+  `type_text` and `press_key` return `changes`: the lines of that window that changed
+  (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
+  Read it instead of calling `ui_tree()` again. Call `ui_tree()` when it says
+  "no change yet" on a slow app (after `wait(1)`), or that the view moved on.
+- Independent actions (filling several fields) can go in one turn; check each `changes`.
 - Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
   (`doctor().a11y.apps` lists those that do), canvas or image content, games, or when you
@@ -47,7 +52,7 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
 ## The loop: look, act once, verify
 
 ```
-ui_tree() or screenshot()  ->  ONE action  ->  ui_tree() or screenshot()  ->  ...
+ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  ...
 ```
 
 - **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,

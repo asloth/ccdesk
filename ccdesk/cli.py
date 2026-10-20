@@ -37,6 +37,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("install", help="register the MCP server with Claude Code and install the skill")
     p.add_argument("--dry-run", action="store_true", help="print what would be written and run, then exit")
+    p.add_argument("--always-load", action="store_true",
+                   help="load the tool schemas in every session (saves a round trip when you use the "
+                        "desktop, costs ~2.6k tokens per request when you don't)")
     _policy_flags(p)
 
     p = sub.add_parser("mcp", help="run the MCP server over stdio")
@@ -71,7 +74,7 @@ def main(argv: list[str] | None = None) -> int:
         flags = [f for f, on in (("--allow-launch", args.allow_launch), ("--read-only", args.read_only)) if on]
         if args.confirm_keys:
             flags += ["--confirm-keys", args.confirm_keys]
-        return install(flags, dry_run=args.dry_run)
+        return install(flags, dry_run=args.dry_run, always_load=args.always_load)
 
     if args.command == "mcp":
         from ccdesk.backends import get_backend

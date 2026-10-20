@@ -21,8 +21,10 @@ INSTRUCTIONS = """\
 ccdesk drives the local Linux desktop. Work in a loop: screenshot(), Read the PNG it returns,
 do ONE action, then screenshot() again to verify before the next action. Coordinates are
 screen pixels in the screenshot's space (origin top-left). For region screenshots add the
-returned origin. Save tokens: try ui_tree() first (text, no pixels) and click_element(ref);
-use screenshot(scale=0.5) to orient and small regions to verify.
+returned origin. Save tokens: try ui_tree() first (text, no pixels) and click_element(ref).
+After a ui_tree(), actions return `changes` (the lines that changed in that window): use it to
+verify instead of another ui_tree() or screenshot. Refs stay valid across ui_tree() calls.
+Use screenshot(scale=0.5) to orient and small regions to verify.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
 

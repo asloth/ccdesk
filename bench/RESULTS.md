@@ -29,4 +29,27 @@ own usage report, not estimates. 3 runs per arm, all 9 succeeded.
 Not measured: big pages (a browser form like Play Console) and wide multi-monitor screens, where
 screenshots grow with the screen and the tree grows with the page. One small app, n=3.
 
+## After: actions report their `changes` (same day)
+
+Once `ui_tree()` has been called, `click_element`/`type_text`/`press_key` return the lines of
+the window that changed, so verifying needs no extra `ui_tree()` call.
+
+| | ui_tree, before | ui_tree + changes | + alwaysLoad |
+|---|---|---|---|
+| Input tokens, median | 64,519 | 63,361 | **56,681** |
+| Range | 63,943 to 79,490 | 62,757 to 64,233 | 56,681 (all 3) |
+| API requests | 5 to 6 | 5 | **4** |
+| ui_tree calls | 3 to 4 | **1** | 1 |
+| Fixed overhead per request | 10,242 | 10,312 | 12,908 |
+
+- `changes` removed the verify calls (ui_tree 3-4 → 1) and the variance, but most of those calls
+  already ran in parallel with other actions, so tokens dropped only ~2%. Five requests is the
+  floor for this flow: find the tools, look, fill, submit, answer.
+- The remaining fixed cost is the tool-search round trip (Claude Code defers MCP tools).
+  `alwaysLoad` removes it, −11% here, but it adds ~2.6k tokens to **every** request of every
+  session, desktop or not. Opt in with `ccdesk install --always-load` only if you mostly drive
+  the desktop; the default stays deferred.
+
+Overall vs no ccdesk: 89k → 63k (−29%), or 57k (−37%) with alwaysLoad.
+
 Reproduce: `PATH=~/.local/opt/xvfb/usr/bin:$PATH python3 bench/run.py --reps 3`

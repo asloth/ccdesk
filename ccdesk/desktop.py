@@ -32,6 +32,7 @@ from ccdesk.safety import AuditLog, Policy, cache_dir
 MAX_TEXT = 10_000
 MAX_WAIT = 60.0
 KEEP_SCREENSHOTS = 200
+SETTLE = 0.3  # seconds an app gets to react before an action reports its changes
 
 
 class Desktop:
@@ -64,6 +65,19 @@ class Desktop:
             raise
         self.audit.record(tool, args, "ok", result=loggable(result) if loggable else result,
                           duration_ms=(time.monotonic() - start) * 1000)
+        return result
+
+    def _changes(self, result: dict) -> dict:
+        """After ui_tree() has been used, add what the action changed in that window."""
+        if self.a11y._last is None:
+            return result
+        time.sleep(SETTLE)
+        try:
+            changes = self.a11y.changes()
+        except CcdeskError as exc:
+            changes = f"could not re-read the window: {exc}"
+        if changes is not None:
+            result["changes"] = changes
         return result
 
     def screen_size(self) -> tuple[int, int] | None:
@@ -140,7 +154,7 @@ class Desktop:
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             self.backend.click(px, py, btn, n)
-            return {"clicked": {"x": px, "y": py}, "button": button, "count": n}
+            return self._changes({"clicked": {"x": px, "y": py}, "button": button, "count": n})
 
         return self._act("click", {"x": x, "y": y, "button": button, "count": count}, do)
 
@@ -186,7 +200,7 @@ class Desktop:
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters; paste via clipboard instead")
             self.backend.type_text(text)
-            return {"typed_chars": len(text)}
+            return self._changes({"typed_chars": len(text)})
 
         return self._act("type_text", {"text": text}, do)
 
@@ -196,7 +210,7 @@ class Desktop:
             self.policy.check_key(combo, bool(confirm))
             self._ready()
             self.backend.press_key(combo)
-            return {"pressed": str(combo)}
+            return self._changes({"pressed": str(combo)})
 
         return self._act("press_key", {"key": key, "modifiers": modifiers or [], "confirm": confirm}, do)
 
@@ -262,7 +276,8 @@ class Desktop:
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             self.backend.click(px, py, btn, n)
-            return {"clicked": {"x": px, "y": py}, "element": label, "button": button, "count": n}
+            return self._changes({"clicked": {"x": px, "y": py}, "element": label, "button": button,
+                                  "count": n})
 
         return self._act("click_element", {"ref": ref, "button": button, "count": count}, do)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import shlex
 import shutil
@@ -62,10 +63,15 @@ class Plan:
         return "\n".join(lines)
 
 
-def make_plan(flags: list[str]) -> Plan:
+def make_plan(flags: list[str], always_load: bool = False) -> Plan:
     src = skill_source()
     claude = shutil.which("claude")
     cmd = server_command(flags)
+    add = ["claude", "mcp", "add", "--scope", "user", SERVER_NAME, "--", *cmd]
+    if always_load:
+        # Tool schemas go in every session's prompt up front: no tool-search round trip on first use.
+        config = {"type": "stdio", "command": cmd[0], "args": cmd[1:], "alwaysLoad": True}
+        add = ["claude", "mcp", "add-json", "--scope", "user", SERVER_NAME, json.dumps(config)]
     return Plan(
         skill_src=src,
         skill_dst=claude_config_dir() / "skills" / SKILL_NAME / "SKILL.md",
@@ -73,13 +79,13 @@ def make_plan(flags: list[str]) -> Plan:
         claude=claude,
         commands=[
             ["claude", "mcp", "remove", "--scope", "user", SERVER_NAME],
-            ["claude", "mcp", "add", "--scope", "user", SERVER_NAME, "--", *cmd],
+            add,
         ],
     )
 
 
-def install(flags: list[str], dry_run: bool = False, out=print) -> int:
-    plan = make_plan(flags)
+def install(flags: list[str], dry_run: bool = False, out=print, always_load: bool = False) -> int:
+    plan = make_plan(flags, always_load)
     out(plan.describe(dry_run))
     if dry_run:
         return 0

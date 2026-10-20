@@ -38,7 +38,10 @@ one monitor only.
    earlier `ccdesk` registration.
 
 Flags you pass to `install` are forwarded to the server: `ccdesk install --read-only`,
-`ccdesk install --allow-launch` or `ccdesk install --confirm-keys "super+x"`. `--dry-run`
+`ccdesk install --allow-launch` or `ccdesk install --confirm-keys "super+x"`.
+`--always-load` puts the tool schemas in every session's prompt instead of behind Claude
+Code's tool search: one round trip less when you use the desktop, ~2.6k tokens more per
+request when you don't (see `bench/RESULTS.md`). `--dry-run`
 prints the exact file, size, checksum and commands, and changes nothing:
 
 ```text
@@ -158,6 +161,16 @@ The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python wi
 (`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
 no compiled dependencies. `CCDESK_A11Y_PYTHON` picks another interpreter. `ccdesk doctor`
 lists the apps that publish a tree.
+
+After the first `ui_tree()`, actions (`click`, `click_element`, `type_text`, `press_key`)
+return `changes`: only the lines of that window that changed, such as
+`e5 check box "I accept the terms" [checked]`. The model verifies from that instead of
+reading the tree or the screen again. Refs stay stable across calls.
+
+Measured end to end (`bench/`, same form task, Claude Code's own usage numbers, 3 runs each):
+no ccdesk 89k input tokens, ccdesk with screenshots 118k, ccdesk with `ui_tree` and `changes`
+63k (−29%), 57k with `--always-load` (−37%). Without ccdesk Claude already screenshots just
+the window, so the saving is mostly fewer round trips, not smaller pictures.
 
 The skill tells Claude to orient at `scale=0.5`, then act and verify with small full-scale
 regions, and to pull long page text through the clipboard instead of reading it from pixels.
