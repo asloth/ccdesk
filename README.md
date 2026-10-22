@@ -96,6 +96,21 @@ Needs `Xvfb` (Arch: `xorg-server-xvfb`, Debian/Ubuntu: `xvfb`), plus `dbus-daemo
 headless screen to `~/.cache/ccdesk/peek-N.png`; for a live view, run
 `x11vnc -display :N -localhost` and any VNC viewer (`doctor()` shows the display).
 
+### Both screens: let Claude pick per task
+
+Headless can't see your logged-in browser, and copying a browser profile to get its cookies
+is a bad idea. Register a second server on your real screen, and Claude chooses one per task:
+
+```sh
+claude mcp add --scope user ccdesk -- ccdesk mcp --allow-launch --headless
+claude mcp add --scope user ccdesk-screen -- ccdesk mcp
+```
+
+Use `ccdesk` for work that doesn't need your accounts, and `ccdesk-screen` for anything that
+does, like a web console or a chat you're signed in to. Keep your hands off the mouse while
+Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
+servers only at startup.
+
 ## Tools
 
 | Tool | What it does |
