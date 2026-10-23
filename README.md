@@ -126,6 +126,7 @@ servers only at startup.
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
 | `wait(seconds)` | Sleeps, up to 60 s. |
+| `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1)` | Clicks the centre of an element from the latest `ui_tree()`; refuses if it changed or left the screen. |
@@ -231,6 +232,14 @@ Measured end to end (`bench/`, same form task, Claude Code's own usage numbers, 
 no ccdesk 89k input tokens, ccdesk with screenshots 118k, ccdesk with `ui_tree` and `changes`
 63k (−29%), 57k with `--always-load` (−37%). Without ccdesk Claude already screenshots just
 the window, so the saving is mostly fewer round trips, not smaller pictures.
+
+Without a tree (apps that don't publish one, or the bus switched off), `click`, `type_text`,
+`press_key`, `scroll` and `drag` compare a 1/8-size grayscale copy of the receiving window
+from before and after the action and return `screen_changed` and, if it changed,
+`changed_area`. A blinking text caret doesn't count. "Save did nothing" is then one call
+instead of a wait and two screenshots, and `wait_for_change()` replaces fixed `wait()`s for
+pages and dialogs. Each comparison costs about 0.2 s per capture (ImageMagick does the
+shrinking; without it the fields are left out).
 
 The skill tells Claude to orient at `scale=0.5`, then act and verify with small full-scale
 regions, and to pull long page text through the clipboard instead of reading it from pixels.

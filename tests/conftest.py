@@ -8,10 +8,10 @@ import pytest
 from ccdesk.a11y import A11y
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
-from ccdesk.errors import CommandError
+from ccdesk.errors import CommandError, UnsupportedError
 from ccdesk.parsing import Window
 from ccdesk.safety import AuditLog, Policy
-from tests.pngutil import write_png
+from tests.pngutil import read_png, write_png, write_rows
 
 
 class FakeBackend(Backend):
@@ -36,9 +36,24 @@ class FakeBackend(Backend):
         self.responses: dict[str, str] = {}  # command line -> output for run(); anything else fails
         self.ran: list[list[str]] = []
         self.slept: list[float] = []
+        self.now = 0.0  # a clock that only sleep() advances, for Desktop.clock
+        # What is on screen: (x, y, w, h, rgb) rects on black. `effects` are painted by the next
+        # input action; `later` holds (screenshots to go, rect) for changes that appear on their own.
+        self.rects: list[tuple] = []
+        self.effects: list[tuple] = []
+        self.later: list[list] = []
+        self.magick = True
 
     def sleep(self, seconds):
         self.slept.append(seconds)
+        self.now += seconds
+
+    def clock(self):
+        return self.now
+
+    def _input(self):
+        self.rects += self.effects
+        self.effects = []
 
     def run(self, argv, input=None, timeout=None, detach=False):
         self.ran.append(list(argv))
@@ -55,30 +70,45 @@ class FakeBackend(Backend):
 
     def screenshot(self, path, region):
         self.calls.append(("screenshot", region))
-        w, h = (region.width, region.height) if region else self.size
-        write_png(path, w, h)
+        for item in self.later:
+            item[0] -= 1
+            if item[0] <= 0:
+                self.rects.append(item[1])
+        self.later = [item for item in self.later if item[0] > 0]
+        x, y, w, h = (region.x, region.y, region.width, region.height) if region else (0, 0, *self.size)
+        write_png(path, w, h, rects=[(rx - x, ry - y, rw, rh, c) for rx, ry, rw, rh, c in self.rects])
 
     def scale_png(self, path, width, height):
         self.calls.append(("scale_png", width, height))
-        write_png(path, width, height)
+        if not self.magick:
+            raise UnsupportedError("screenshot(scale=...) needs ImageMagick (magick or convert)")
+        img = read_png(path)  # nearest-neighbour, like a cheap resize
+        rows = [b"".join(bytes(img.pixel(x * img.width // width, y * img.height // height)) for x in range(width))
+                for y in range(height)]
+        write_rows(path, width, height, rows)
 
     def move(self, x, y):
         self.calls.append(("move", x, y))
 
     def click(self, x, y, button, count):
         self.calls.append(("click", x, y, button, count))
+        self._input()
 
     def drag(self, x0, y0, x1, y1, ms):
         self.calls.append(("drag", x0, y0, x1, y1, ms))
+        self._input()
 
     def scroll(self, x, y, dx, dy):
         self.calls.append(("scroll", x, y, dx, dy))
+        self._input()
 
     def type_text(self, text):
         self.calls.append(("type_text", text))
+        self._input()
 
     def press_key(self, combo):
         self.calls.append(("press_key", combo.xdotool()))
+        self._input()
 
     def list_windows(self):
         return list(self.windows)
@@ -158,9 +188,13 @@ def audit_path(tmp_path):
 
 @pytest.fixture
 def make_desk(fake, audit_path, tmp_path, helper):
-    def make(**policy):
-        return Desktop(backend=fake, policy=Policy(**policy), audit=AuditLog(audit_path),
-                       shots_dir=tmp_path / "shots", a11y=A11y(runner=helper, pythons=("/bin/sh",)))
+    def make(screen_diff=False, **policy):
+        # screen_diff is off by default so other tests see only the backend calls they make.
+        desk = Desktop(backend=fake, policy=Policy(**policy), audit=AuditLog(audit_path),
+                       shots_dir=tmp_path / "shots", a11y=A11y(runner=helper, pythons=("/bin/sh",)),
+                       screen_diff=screen_diff)
+        desk.clock = fake.clock
+        return desk
     return make
 
 

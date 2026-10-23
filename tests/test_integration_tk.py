@@ -206,6 +206,29 @@ def test_read_only_blocks_input_but_allows_screenshots(app, tmp_path):
 
 
 @pytest.mark.skipif(not (shutil.which("magick") or shutil.which("convert")), reason="ImageMagick not installed")
+def test_screen_changed_without_a_tree(app, desk):
+    """Tk publishes no accessibility tree: actions compare pixels instead."""
+    _, img = shot(desk)
+    bx, by = center(img.find_color(MAGENTA))
+    w, h = desk.screen_size()
+    nothing = desk.click(w - 5, h - 5)  # the empty root window
+    assert nothing["screen_changed"] is False
+    start = time.monotonic()
+    r = desk.click(bx, by)
+    overhead = time.monotonic() - start
+    assert r["screen_changed"] is True  # the label turned from red to green
+    lx, ly, lw, lh = r["changed_area"].values()
+    _, after = shot(desk, region=f"{lx},{ly},{lw},{lh}")
+    assert after.find_color(GREEN), "changed_area should contain the label"
+    assert overhead < 2.0, f"click with screen comparison took {overhead:.2f}s"
+    entry = img.find_color(YELLOW)
+    desk.click(*center(entry))
+    # A blinking caret alone is not a change, so an idle wait times out.
+    assert desk.wait_for_change(region=f"{entry[0]},{entry[1]},{entry[2] - entry[0]},{entry[3] - entry[1]}",
+                                timeout=1.5)["changed"] is False
+
+
+@pytest.mark.skipif(not (shutil.which("magick") or shutil.which("convert")), reason="ImageMagick not installed")
 def test_scaled_screenshot_click(app, desk):
     w, h = desk.screen_size()
     result, img = shot(desk, scale=0.5)

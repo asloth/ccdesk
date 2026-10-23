@@ -10,15 +10,17 @@ import re
 import shlex
 import shutil
 import subprocess
+import tempfile
 import time
 from datetime import datetime
 from pathlib import Path
 
 from ccdesk.a11y import A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
-from ccdesk.errors import CcdeskError, PolicyError, ValidationError
+from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError, ValidationError
 from ccdesk.parsing import (
     KeyCombo,
+    Region,
     Window,
     check_int,
     check_point,
@@ -31,9 +33,13 @@ from ccdesk.parsing import (
     png_size,
 )
 from ccdesk.safety import AuditLog, Policy, cache_dir
+from ccdesk.screendiff import Grid, changed_box
 
 MAX_TEXT = 10_000
 MAX_WAIT = 60.0
+MAX_WAIT_FOR_CHANGE = 300.0
+DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
+POLL = 0.2  # seconds between captures in wait_for_change
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds an app gets to react before an action reports its changes
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
@@ -45,7 +51,7 @@ RETURN = KeyCombo("Return")
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
-                 a11y: A11y | None = None, headless=None):
+                 a11y: A11y | None = None, headless=None, screen_diff: bool = True):
         self.backend = backend or get_backend()
         self.a11y = a11y or A11y()
         self.a11y.locate = self.backend.window_origin
@@ -57,6 +63,12 @@ class Desktop:
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
         self._screen: tuple[int, int] | None = None
         self._target: Window | None = None  # the window from the latest activate_window()
+        # Pixel comparison when there is no accessibility tree: the receiving window before the
+        # current action, and the screen after the latest one (wait_for_change's starting point).
+        self.screen_diff = screen_diff
+        self._pending: tuple[Region | None, Grid] | None = None
+        self._after: tuple[Region | None, Grid] | None = None
+        self.clock = time.monotonic
 
     # -- plumbing -------------------------------------------------------------
 
@@ -80,8 +92,20 @@ class Desktop:
         return result
 
     def _changes(self, result: dict) -> dict:
-        """After ui_tree() has been used, add what the action changed in that window."""
+        """After ui_tree() has been used, add what the action changed in that window. Without a
+        tree, say whether the receiving window's pixels changed (see _guard and screendiff)."""
         if self.a11y._last is None:
+            before, self._pending = self._pending, None
+            if before is not None:
+                region, grid = before
+                self.backend.sleep(SETTLE)
+                after = self._snapshot(region)
+                if after is not None:
+                    self._after = (region, after)
+                    box = changed_box(grid, after)
+                    result["screen_changed"] = box is not None
+                    if box:
+                        result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
             return result
         time.sleep(SETTLE)
         try:
@@ -133,14 +157,15 @@ class Desktop:
                 return False
         return False
 
-    def _guard(self, force: bool, point: tuple[int, int] | None = None) -> dict | None:
+    def _guard(self, force: bool, point: tuple[int, int] | None = None) -> Window | None:
         """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
-        because the user switched to their terminal. Returns the receiving window for the result."""
+        because the user switched to their terminal. Returns the receiving window for the result,
+        and keeps a small copy of it for _changes() to compare with afterwards."""
         try:
             windows = {w.id: w for w in self.backend.list_windows()}
         except CcdeskError:
-            return None
-        window = self._receiver(windows, point)
+            windows = {}
+        window = self._receiver(windows, point) if windows else None
         target = self._target
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
@@ -151,13 +176,53 @@ class Desktop:
             raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
                               f"activate_window(): the user may have switched windows. Call "
                               f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
-        return {"id": window.id, "title": window.title} if window else None
+        self._after = None  # wait_for_change() compares with the screen after this action, not before
+        self._pending = None
+        if self.a11y._last is None:
+            region = self._window_region(window)
+            grid = self._snapshot(region)
+            self._pending = (region, grid) if grid is not None else None
+        return window
 
     @staticmethod
-    def _with_window(result: dict, window: dict | None) -> dict:
+    def _with_window(result: dict, window: Window | None) -> dict:
         if window:
-            result["window"] = window
+            result["window"] = {"id": window.id, "title": window.title}
         return result
+
+    def _window_region(self, window: Window | None) -> Region | None:
+        """The window's box clipped to the screen; None (the whole screen) if unknown or tiny."""
+        if window is None:
+            return None
+        x0, y0 = max(0, window.x), max(0, window.y)
+        x1, y1 = window.x + window.width, window.y + window.height
+        size = self.screen_size()
+        if size:
+            x1, y1 = min(x1, size[0]), min(y1, size[1])
+        if x1 - x0 < 2 * DIFF_CELL or y1 - y0 < 2 * DIFF_CELL:
+            return None
+        return Region(x0, y0, x1 - x0, y1 - y0)
+
+    def _snapshot(self, region: Region | None) -> Grid | None:
+        """A grayscale copy of the screen at 1/DIFF_CELL size, or None (no ImageMagick, or it failed)."""
+        if not self.screen_diff:
+            return None
+        fd, tmp = tempfile.mkstemp(prefix="ccdesk-diff-", suffix=".png")
+        os.close(fd)
+        try:
+            self.backend.screenshot(tmp, region)
+            width, height = png_size(tmp)
+            cols, rows = max(1, width // DIFF_CELL), max(1, height // DIFF_CELL)
+            self.backend.scale_png(tmp, cols, rows)
+            origin = (region.x, region.y) if region else (0, 0)
+            return Grid.from_png(tmp, origin, scale=(width / cols, height / rows))
+        except (CcdeskError, OSError, ValueError):
+            return None
+        finally:
+            try:
+                os.unlink(tmp)
+            except OSError:
+                pass
 
     # -- tools ------------------------------------------------------------------
 
@@ -241,8 +306,8 @@ class Desktop:
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
             window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
-            return self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1}, "duration_ms": ms},
-                                     window)
+            return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
+                                                    "duration_ms": ms}, window))
 
         args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
                 "force": force}
@@ -258,7 +323,7 @@ class Desktop:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
-            return self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window)
+            return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window))
 
         return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
 
@@ -430,6 +495,51 @@ class Desktop:
             return {"waited": s}
 
         return self._act("wait", {"seconds": seconds}, do)
+
+    def wait_for_change(self, region=None, timeout: float = 10, settle_ms: int = 500) -> dict:
+        """Wait until the screen differs from how it looked right after the latest action (or, with
+        a region or no action yet, from now), then until it has been still for settle_ms."""
+        def do():
+            self._ready()
+            reg = parse_region(region, self.screen_size())
+            try:
+                limit = float(timeout)
+            except (TypeError, ValueError):
+                raise ValidationError("timeout must be a number") from None
+            if not 0 < limit <= MAX_WAIT_FOR_CHANGE:
+                raise ValidationError(f"timeout must be between 0 and {MAX_WAIT_FOR_CHANGE:g} seconds")
+            settle = check_int("settle_ms", settle_ms, 0, 60_000) / 1000
+            start = self.clock()
+            if reg is None and self._after is not None:
+                reg, base = self._after  # a page that loaded while the model was thinking counts
+            else:
+                base = self._snapshot(reg)
+            if base is None:
+                raise UnsupportedError("wait_for_change needs ImageMagick (magick or convert) to compare "
+                                       "screenshots; use wait(seconds) instead")
+            prev, area, last_motion = base, None, None
+            while (elapsed := self.clock() - start) < limit:
+                self.backend.sleep(min(POLL, limit - elapsed))
+                current = self._snapshot(reg)
+                if current is None:
+                    continue
+                if changed_box(prev, current):
+                    last_motion = self.clock()
+                prev = current
+                area = changed_box(base, current) or area
+                if area and last_motion is not None and self.clock() - last_motion >= settle:
+                    break
+            self._after = (reg, prev)  # the next wait_for_change waits for the next change
+            waited = round(min(self.clock() - start, limit) * 1000)
+            if area is None:
+                return {"changed": False, "waited_ms": waited,
+                        "note": f"nothing changed in {limit:g}s; take a screenshot to see why"}
+            settled = self.clock() - last_motion >= settle
+            return {"changed": True, "settled": settled, "waited_ms": waited,
+                    "changed_area": dict(zip(("x", "y", "width", "height"), area))}
+
+        args = {"region": region, "timeout": timeout, "settle_ms": settle_ms}
+        return self._act("wait_for_change", args, do)
 
     def launch(self, command: str) -> dict:
         def do():

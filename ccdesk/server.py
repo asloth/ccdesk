@@ -24,6 +24,8 @@ screen pixels in the screenshot's space (origin top-left). For region screenshot
 returned origin. Save tokens: try ui_tree() first (text, no pixels) and click_element(ref).
 After a ui_tree(), actions return `changes` (the lines that changed in that window): use it to
 verify instead of another ui_tree() or screenshot. Refs stay valid across ui_tree() calls.
+Without a tree, actions return screen_changed (and changed_area): if false, the action did
+nothing yet. wait_for_change() waits for a page or dialog instead of wait() + screenshot.
 Use screenshot(scale=0.5) to orient and small regions to verify.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
@@ -35,7 +37,7 @@ or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR fir
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
-    "ui_tree", "click_element",
+    "ui_tree", "click_element", "wait_for_change",
 )
 
 
@@ -137,6 +139,14 @@ def build_server(desktop: Desktop) -> MCPServer:
     def wait(seconds: float) -> dict:
         """Sleep for up to 60 seconds, e.g. while a page loads. Screenshot afterwards to check."""
         return desktop.wait(seconds)
+
+    @tool
+    def wait_for_change(region: str | None = None, timeout: float = 10, settle_ms: int = 500) -> dict:
+        """Wait (up to timeout seconds, max 300) until the screen changes from how it looked right
+        after your last action, then until it is still for settle_ms. Use instead of wait() + screenshot
+        to learn when a page or dialog is done. region "x,y,width,height" limits what is watched.
+        Returns changed, settled, waited_ms and changed_area; screenshot that area to see it."""
+        return desktop.wait_for_change(region=region, timeout=timeout, settle_ms=settle_ms)
 
     @tool
     def doctor() -> dict:

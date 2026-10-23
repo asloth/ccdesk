@@ -12,10 +12,21 @@ def _chunk(kind: bytes, data: bytes) -> bytes:
     return struct.pack(">I", len(data)) + kind + data + struct.pack(">I", zlib.crc32(kind + data))
 
 
-def write_png(path, width: int, height: int, color=(0, 0, 0)) -> None:
-    row = b"\x00" + bytes(color) * width
+def write_png(path, width: int, height: int, color=(0, 0, 0), rects=()) -> None:
+    """A solid image, with rects (x, y, w, h, rgb) painted on top."""
+    rows = [bytearray(bytes(color) * width) for _ in range(height)]
+    for x, y, w, h, rgb in rects:
+        for yy in range(max(0, y), min(height, y + h)):
+            for xx in range(max(0, x), min(width, x + w)):
+                rows[yy][xx * 3:xx * 3 + 3] = bytes(rgb)
+    write_rows(path, width, height, rows)
+
+
+def write_rows(path, width: int, height: int, rows) -> None:
+    """8-bit RGB rows, filter type 0."""
+    raw = b"".join(b"\x00" + bytes(r) for r in rows)
     ihdr = struct.pack(">IIBBBBB", width, height, 8, 2, 0, 0, 0)
-    data = SIG + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(row * height)) + _chunk(b"IEND", b"")
+    data = SIG + _chunk(b"IHDR", ihdr) + _chunk(b"IDAT", zlib.compress(raw)) + _chunk(b"IEND", b"")
     with open(path, "wb") as fh:
         fh.write(data)
 
