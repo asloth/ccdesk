@@ -23,6 +23,11 @@ def save(*_):
     os.replace(tmp, state_path)
 
 
+def submitted(_):
+    state["submitted"] = entry.get_text()
+    save()
+
+
 def clicked(_):
     state["clicks"] += 1
     label.set_text(f"clicked {state['clicks']}")
@@ -39,6 +44,7 @@ label = Gtk.Label(label="idle")
 entry = Gtk.Entry()
 entry.get_accessible().set_name("Display name")
 entry.connect("changed", save)
+entry.connect("activate", submitted)
 check = Gtk.CheckButton(label="I agree")
 check.connect("toggled", save)
 for w in (button, label, entry, check):

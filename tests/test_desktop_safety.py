@@ -326,6 +326,37 @@ def test_dialogs_of_the_target_are_allowed(make_desk, fake):
     assert d.type_text("/tmp/logo.png")["window"]["title"] == "File Upload"
 
 
+def test_trailing_newline_is_an_explicit_return(make_desk, fake):
+    """`type_text("https://…\\n")` typed the URL but never navigated in Firefox's address bar."""
+    r = make_desk().type_text("https://play.google.com\n")
+    assert fake.calls == [("type_text", "https://play.google.com"), ("press_key", "Return")]
+    assert r["typed_chars"] == 23 and r["submitted"] is True
+    assert fake.slept  # the field gets a moment to take the text before Return
+
+
+def test_type_text_submit_and_replace(make_desk, fake):
+    r = make_desk().type_text("Ana Lopez", replace=True, submit=True)
+    assert fake.calls == [("press_key", "ctrl+a"), ("type_text", "Ana Lopez"), ("press_key", "Return")]
+    assert r["replaced"] is True and r["submitted"] is True
+
+
+def test_type_text_keeps_inner_newlines(make_desk, fake):
+    d = make_desk()
+    assert "submitted" not in d.type_text("line one\nline two")
+    assert fake.calls == [("type_text", "line one\nline two")]
+    fake.calls.clear()
+    d.type_text("\n")
+    assert fake.calls == [("press_key", "Return")]
+
+
+@pytest.mark.parametrize("key,settles", [("ctrl+t", True), ("ctrl+l", True), ("alt+d", True), ("F6", True),
+                                         ("Tab", False), ("Return", False), ("ctrl+shift+t", False)])
+def test_focus_moving_shortcuts_settle(make_desk, fake, key, settles):
+    """ctrl+t then type_text raced Firefox: the first letters went to the page and opened quick find."""
+    make_desk().press_key(key)
+    assert bool(fake.slept) is settles
+
+
 def test_closed_target_is_reported(make_desk, fake):
     d = make_desk()
     d.activate_window(FIREFOX)

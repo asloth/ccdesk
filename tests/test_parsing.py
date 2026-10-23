@@ -6,6 +6,7 @@ from ccdesk.parsing import (
     Region,
     check_point,
     is_destructive,
+    moves_focus,
     parse_button,
     parse_confirm_keys,
     parse_display_geometry,
@@ -81,6 +82,14 @@ def test_destructive(key, mods, destructive):
 def test_destructive_extra(key, destructive):
     extra = parse_confirm_keys("super+x, ctrl+alt+super+p")
     assert is_destructive(parse_key_combo(key), extra) is destructive
+
+
+@pytest.mark.parametrize("key,expected", [
+    ("ctrl+t", True), ("ctrl+L", True), ("ctrl+n", True), ("ctrl+k", True), ("ctrl+f", True),
+    ("alt+d", True), ("F6", True), ("t", False), ("ctrl+shift+l", False), ("ctrl+a", False),
+])
+def test_moves_focus(key, expected):
+    assert moves_focus(parse_key_combo(key)) is expected
 
 
 def test_parse_confirm_keys():

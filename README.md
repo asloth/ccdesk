@@ -120,8 +120,8 @@ servers only at startup.
 | `move(x, y)` | Moves the pointer (hover). |
 | `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
 | `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
-| `type_text(text, force=false)` | Types into the focused widget. |
-| `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. |
+| `type_text(text, submit=false, replace=false, force=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
+| `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry` and `desktop` for each window. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |

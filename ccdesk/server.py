@@ -86,10 +86,12 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
 
     @tool
-    def type_text(text: str, force: bool = False) -> dict:
+    def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
+        replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
+        submit=true presses Return afterwards (a trailing newline does the same).
         After activate_window(), refuses if focus moved to another window; force=true types anyway."""
-        return desktop.type_text(text, force=force)
+        return desktop.type_text(text, submit=submit, replace=replace, force=force)
 
     @tool
     def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False) -> dict:

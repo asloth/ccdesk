@@ -18,10 +18,12 @@ from ccdesk.a11y import A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
 from ccdesk.errors import CcdeskError, PolicyError, ValidationError
 from ccdesk.parsing import (
+    KeyCombo,
     Window,
     check_int,
     check_point,
     check_scale,
+    moves_focus,
     parse_button,
     parse_key_combo,
     parse_region,
@@ -34,6 +36,10 @@ MAX_TEXT = 10_000
 MAX_WAIT = 60.0
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds an app gets to react before an action reports its changes
+KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
+FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
+SELECT_ALL = KeyCombo("a", ("ctrl",))
+RETURN = KeyCombo("Return")
 
 
 class Desktop:
@@ -256,18 +262,33 @@ class Desktop:
 
         return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
 
-    def type_text(self, text: str, force: bool = False) -> dict:
+    def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
                 raise ValidationError("text must be a non-empty string")
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters; paste via clipboard instead")
+            # A typed trailing newline did not submit Firefox's address bar: send a real Return instead.
+            body = text[:-1] if text.endswith("\n") else text
+            enter = bool(submit) or body != text
             window = self._guard(force)
-            self.backend.type_text(text)
-            return self._changes(self._with_window({"typed_chars": len(text)}, window))
+            if replace:
+                self.backend.press_key(SELECT_ALL)
+                self.backend.sleep(KEY_SETTLE)
+            if body:
+                self.backend.type_text(body)
+            if enter:
+                self.backend.sleep(KEY_SETTLE)  # autocomplete and validation catch up first
+                self.backend.press_key(RETURN)
+            result = {"typed_chars": len(body)}
+            if replace:
+                result["replaced"] = True
+            if enter:
+                result["submitted"] = True
+            return self._changes(self._with_window(result, window))
 
-        return self._act("type_text", {"text": text, "force": force}, do)
+        return self._act("type_text", {"text": text, "submit": submit, "replace": replace, "force": force}, do)
 
     def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
                   force: bool = False) -> dict:
@@ -277,6 +298,8 @@ class Desktop:
             self._ready()
             window = self._guard(force)
             self.backend.press_key(combo)
+            if moves_focus(combo):
+                self.backend.sleep(FOCUS_SETTLE)  # so a type_text right after lands in the new place
             return self._changes(self._with_window({"pressed": str(combo)}, window))
 
         args = {"key": key, "modifiers": modifiers or [], "confirm": confirm, "force": force}

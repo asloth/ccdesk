@@ -83,6 +83,13 @@ DESTRUCTIVE_COMBOS = (
     (frozenset({"ctrl", "alt"}), "backspace"),
 )
 
+# Shortcuts that move keyboard focus to a new place (a new tab or window, the address bar, a
+# search box). Apps take a moment to get there; text typed right after lands in the old place.
+FOCUS_COMBOS = frozenset({
+    (("ctrl",), "t"), (("ctrl",), "l"), (("ctrl",), "n"), (("ctrl",), "k"), (("ctrl",), "f"),
+    (("alt",), "d"), ((), "f6"),
+})
+
 BUTTONS = {"left": 1, "middle": 2, "right": 3}
 
 
@@ -147,6 +154,11 @@ def is_destructive(combo: KeyCombo, extra: tuple[KeyCombo, ...] = ()) -> bool:
     key = combo.key.lower()
     rules = [*DESTRUCTIVE_COMBOS, *((frozenset(c.modifiers), c.key.lower()) for c in extra)]
     return any(key == k and need <= mods for need, k in rules)
+
+
+def moves_focus(combo: KeyCombo) -> bool:
+    """Exact match: Ctrl+Shift+L is not the address bar."""
+    return (combo.modifiers, combo.key.lower()) in FOCUS_COMBOS
 
 
 def parse_confirm_keys(spec: str | None) -> tuple[KeyCombo, ...]:

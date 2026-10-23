@@ -32,7 +32,7 @@ def test_registered_tools(make_desk):
     assert props["click"] == {"x", "y", "button", "count", "force"}
     assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
     assert props["scroll"] == {"x", "y", "dx", "dy", "force"}
-    assert props["type_text"] == {"text", "force"}
+    assert props["type_text"] == {"text", "submit", "replace", "force"}
     assert props["press_key"] == {"key", "modifiers", "confirm", "force"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}

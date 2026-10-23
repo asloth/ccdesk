@@ -89,6 +89,13 @@ def test_agent_works_on_its_own_screen(screen, tmp_path):
     desk.click_element(ref_of(tree, r'(push )?button "Apply settings"'))
     assert wait_for(lambda: read_state().get("clicks") == 1 and read_state())["entry"] == "Sara"
 
+    # Replace the field's contents and submit it, with a trailing newline sent as a real Return.
+    desk.click_element(ref_of(tree, r'(text|entry) "Display name"'))
+    out = desk.type_text("Ana\n", replace=True)
+    assert out["replaced"] and out["submitted"]
+    assert wait_for(lambda: read_state().get("submitted"))
+    assert read_state()["entry"] == read_state()["submitted"] == "Ana"
+
     # Your own session bus never sees the agent's app.
     try:
         mine = A11y().apps()

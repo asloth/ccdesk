@@ -35,6 +35,10 @@ class FakeBackend(Backend):
         self.transients: dict[str, str] = {}  # dialog id -> the window it belongs to
         self.responses: dict[str, str] = {}  # command line -> output for run(); anything else fails
         self.ran: list[list[str]] = []
+        self.slept: list[float] = []
+
+    def sleep(self, seconds):
+        self.slept.append(seconds)
 
     def run(self, argv, input=None, timeout=None, detach=False):
         self.ran.append(list(argv))
