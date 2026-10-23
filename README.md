@@ -116,14 +116,14 @@ servers only at startup.
 | Tool | What it does |
 | --- | --- |
 | `screenshot(region?, path?, scale=1)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1)` | Moves the pointer and clicks. `count=2` double-clicks. |
+| `click(x, y, button="left", count=1, force=false)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
-| `type_text(text)` | Types into the focused widget. |
-| `press_key(key, modifiers=[], confirm=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `type_text(text, force=false)` | Types into the focused widget. |
+| `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry` and `desktop` for each window. |
-| `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. |
+| `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
 | `wait(seconds)` | Sleeps, up to 60 s. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
@@ -238,6 +238,14 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   `confirm=true`. Supersets such as `Ctrl+Shift+W` count too. Window managers bind their own
   close, quit and power keys, so add yours with `--confirm-keys`, for example on bspwm:
   `ccdesk install --confirm-keys "super+x,ctrl+alt+super+p,ctrl+alt+super+r,ctrl+alt+super+q"`.
+- **Input goes to the window Claude chose.** After `activate_window()`, `click`,
+  `click_element`, `drag`, `scroll`, `type_text` and `press_key` check where the input would
+  land (the window under the pointer, or the one with keyboard focus) and refuse when it is
+  another window, for example because you switched to your terminal to answer. Dialogs of
+  that window, such as a file chooser, count as the same window. `force=true` sends it
+  anyway. Every input result names the window that received it (`"window": {id, title}`).
+  This needs an EWMH window manager on X11; without one, or on Wayland, focus is unknown
+  and the check is skipped.
 - **Audit log.** Every call, including denied and failed ones, is appended as one JSON line
   to `~/.cache/ccdesk/audit.log` (mode 0600; override with `--audit-log` or
   `CCDESK_AUDIT_LOG`). Each line has a timestamp, the tool, its arguments, the status

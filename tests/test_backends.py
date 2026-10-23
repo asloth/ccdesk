@@ -211,6 +211,26 @@ def test_x11_activate_fallbacks():
     assert r.calls[-1][0] == ["xdotool", "windowraise", "4194306", "windowfocus", "4194306"]
 
 
+def test_x11_focus_queries():
+    responses = {
+        "xdotool getactivewindow": "31457302\n",
+        "xdotool mousemove": "X=78\nY=352\nSCREEN=0\nWINDOW=39845902\n",
+        "xprop -id": "WM_TRANSIENT_FOR(WINDOW): window id # 0x1e00016\n",
+    }
+    b, r = make(X11Backend, X11_ALL | {"xprop"}, responses=responses)
+    assert b.active_window() == "0x01e00016"
+    assert b.window_at(78, 352) == "0x0260000e"
+    assert r.calls[-1][0] == ["xdotool", "mousemove", "78", "352", "getmouselocation", "--shell"]
+    assert b.transient_for("0x02a00003") == "0x01e00016"
+
+    # No EWMH window manager: getactivewindow fails, and nothing is a dialog of anything.
+    b, _ = make(X11Backend, X11_ALL | {"xprop"}, responses={"xprop -id": "WM_TRANSIENT_FOR:  not found.\n"},
+                fail=("xdotool getactivewindow",))
+    assert b.active_window() is None
+    assert b.transient_for("0x02a00003") is None
+    assert Backend(env={}).active_window() is None and Backend(env={}).window_at(1, 1) is None
+
+
 def test_x11_clipboard():
     b, r = make(X11Backend, X11_ALL, responses={"xclip -selection": "pasted"})
     assert b.clipboard_get() == "pasted"

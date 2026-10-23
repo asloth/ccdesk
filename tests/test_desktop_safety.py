@@ -10,7 +10,7 @@ import pytest
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
 from ccdesk.errors import PolicyError, UnsupportedError, ValidationError
-from ccdesk.parsing import parse_confirm_keys
+from ccdesk.parsing import Window, parse_confirm_keys
 from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, default_audit_path
 
 
@@ -44,7 +44,7 @@ def test_every_action_is_audited(make_desk, read_audit, fake):
         "activate_window", "clipboard", "clipboard", "wait", "doctor",
     ]
     assert all(e["status"] == "ok" and "ts" in e for e in log)
-    assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1}
+    assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1, "force": False}
     # Clipboard contents never reach the log, only their length.
     assert "secret-ish" not in json.dumps(log)
     assert log[9]["args"] == {"action": "set", "text_len": 10}
@@ -254,3 +254,82 @@ def test_no_display_is_reported_cleanly(tmp_path):
         d.screenshot()
     report = d.doctor()
     assert report["ready"] is False and report["backend"] == "none"
+
+
+FIREFOX, TERMINAL = "0x01e00003", "0x02000001"
+GUARDED = [
+    lambda d, **kw: d.click(5, 5, **kw),
+    lambda d, **kw: d.scroll(5, 5, dy=1, **kw),
+    lambda d, **kw: d.drag(5, 5, 9, 9, duration_ms=0, **kw),
+    lambda d, **kw: d.type_text("rm -rf ~", **kw),
+    lambda d, **kw: d.press_key("Return", **kw),
+]
+
+
+@pytest.mark.parametrize("call", GUARDED)
+def test_input_refused_after_focus_moved(make_desk, fake, read_audit, call):
+    """The user switched to their terminal after activate_window(Firefox): input must not land there."""
+    d = make_desk()
+    d.activate_window("Mozilla Firefox")
+    fake.active = fake.under = TERMINAL
+    with pytest.raises(PolicyError, match=r"'Terminal'.*'Mozilla Firefox'.*activate_window\('0x01e00003'\).*force=true"):
+        call(d)
+    assert [c for c in fake.calls if c[0] != "activate"] == []
+    assert read_audit()[-1]["status"] == "denied"
+    # force=true sends it anyway, and says where it went.
+    assert call(d, force=True)["window"] == {"id": TERMINAL, "title": "Terminal"}
+
+
+def test_click_element_is_guarded(make_desk, fake):
+    d = make_desk()
+    d.ui_tree()
+    d.activate_window(FIREFOX)
+    fake.under = TERMINAL
+    with pytest.raises(PolicyError, match="Terminal"):
+        d.click_element("e4")
+    assert not [c for c in fake.calls if c[0] == "click"]
+
+
+def test_input_results_name_the_receiving_window(make_desk, fake):
+    d = make_desk()
+    assert "window" not in d.type_text("x")  # the backend cannot tell which window is focused
+    fake.active = TERMINAL
+    assert d.type_text("x")["window"] == {"id": TERMINAL, "title": "Terminal"}  # no target yet: not guarded
+    d.activate_window("Mozilla Firefox")
+    firefox = {"id": FIREFOX, "title": "Mozilla Firefox"}
+    assert d.type_text("x")["window"] == firefox
+    assert d.press_key("ctrl+l")["window"] == firefox
+    fake.under = FIREFOX
+    assert d.click(5, 5)["window"] == firefox
+    assert d.scroll(5, 5, dy=1)["window"] == firefox
+
+
+def test_pointer_over_a_popup_falls_back_to_focus(make_desk, fake):
+    """Menus and dropdowns are override-redirect windows that list_windows never shows."""
+    d = make_desk()
+    d.activate_window(FIREFOX)
+    fake.under = "0x01e0aaaa"
+    assert d.click(5, 5)["window"]["id"] == FIREFOX
+    fake.active = TERMINAL
+    with pytest.raises(PolicyError):
+        d.click(5, 5)
+
+
+def test_dialogs_of_the_target_are_allowed(make_desk, fake):
+    """A file chooser opened by Firefox takes focus; it is still Firefox's input."""
+    d = make_desk()
+    d.activate_window(FIREFOX)
+    fake.windows.append(Window(id="0x02a00003", title="File Upload", wm_class="xdg-desktop-portal-gtk",
+                               x=0, y=0, width=10, height=10))
+    fake.active = "0x02a00003"
+    fake.transients["0x02a00003"] = FIREFOX
+    assert d.type_text("/tmp/logo.png")["window"]["title"] == "File Upload"
+
+
+def test_closed_target_is_reported(make_desk, fake):
+    d = make_desk()
+    d.activate_window(FIREFOX)
+    fake.windows = [w for w in fake.windows if w.id != FIREFOX]
+    fake.active = TERMINAL
+    with pytest.raises(PolicyError, match="is gone"):
+        d.press_key("Return")

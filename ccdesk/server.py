@@ -64,9 +64,11 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.screenshot(region=region, path=path, scale=scale)
 
     @tool
-    def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1) -> dict:
-        """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click."""
-        return desktop.click(x, y, button=button, count=count)
+    def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
+              force: bool = False) -> dict:
+        """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
+        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway."""
+        return desktop.click(x, y, button=button, count=count, force=force)
 
     @tool
     def move(x: int, y: int) -> dict:
@@ -74,25 +76,27 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.move(x, y)
 
     @tool
-    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400) -> dict:
+    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False) -> dict:
         """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release."""
-        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms)
+        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force)
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0) -> dict:
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
         """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks."""
-        return desktop.scroll(x, y, dx=dx, dy=dy)
+        return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
 
     @tool
-    def type_text(text: str) -> dict:
-        """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets."""
-        return desktop.type_text(text)
+    def type_text(text: str, force: bool = False) -> dict:
+        """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
+        After activate_window(), refuses if focus moved to another window; force=true types anyway."""
+        return desktop.type_text(text, force=force)
 
     @tool
-    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False) -> dict:
+    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
-        Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true."""
-        return desktop.press_key(key, modifiers=modifiers, confirm=confirm)
+        Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
+        refuses if focus moved to another window; force=true presses anyway."""
+        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force)
 
     @tool
     def list_windows() -> dict:
@@ -101,7 +105,8 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def activate_window(title_or_id: str) -> dict:
-        """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title."""
+        """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title.
+        Later clicks, keys and typing are refused if they would reach another window (force=true overrides)."""
         return desktop.activate_window(title_or_id)
 
     @tool
@@ -115,10 +120,11 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes)
 
     @tool
-    def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1) -> dict:
+    def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
+                      force: bool = False) -> dict:
         """Click the centre of an element from the latest ui_tree() result, e.g. ref="e12".
         Fails if the element changed or left the screen; call ui_tree() again then."""
-        return desktop.click_element(ref, button=button, count=count)
+        return desktop.click_element(ref, button=button, count=count, force=force)
 
     @tool
     def clipboard(action: Literal["get", "set"] = "get", text: str | None = None) -> dict:

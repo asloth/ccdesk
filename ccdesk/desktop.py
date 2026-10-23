@@ -50,6 +50,7 @@ class Desktop:
         self.audit = audit or AuditLog()
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
         self._screen: tuple[int, int] | None = None
+        self._target: Window | None = None  # the window from the latest activate_window()
 
     # -- plumbing -------------------------------------------------------------
 
@@ -100,6 +101,57 @@ class Desktop:
 
     def _ready(self) -> None:
         self.backend.ensure_available()
+
+    def _receiver(self, windows: dict[str, Window], point: tuple[int, int] | None) -> Window | None:
+        """The window input is about to reach: the one under the pointer for pointer actions,
+        else the focused one. None when the backend cannot tell."""
+        try:
+            wid = self.backend.window_at(*point) if point else None
+            if wid not in windows:  # menus and dropdowns are not in list_windows: they belong to the focus
+                wid = self.backend.active_window()
+        except CcdeskError:
+            return None
+        return windows.get(wid)
+
+    def _belongs_to_target(self, window: Window) -> bool:
+        """The target itself, or one of its dialogs (a file chooser, a print dialog)."""
+        wid = window.id
+        for _ in range(4):
+            if wid == self._target.id:
+                return True
+            try:
+                wid = self.backend.transient_for(wid)
+            except CcdeskError:
+                return False
+            if not wid:
+                return False
+        return False
+
+    def _guard(self, force: bool, point: tuple[int, int] | None = None) -> dict | None:
+        """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
+        because the user switched to their terminal. Returns the receiving window for the result."""
+        try:
+            windows = {w.id: w for w in self.backend.list_windows()}
+        except CcdeskError:
+            return None
+        window = self._receiver(windows, point)
+        target = self._target
+        if target and not force and window is not None and not self._belongs_to_target(window):
+            what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
+            if target.id not in windows:
+                raise PolicyError(f"{what} {window.title!r} ({window.id}), and the window from "
+                                  f"activate_window() ({target.title!r}, {target.id}) is gone; call "
+                                  f"list_windows() and activate_window() again, or pass force=true")
+            raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
+                              f"activate_window(): the user may have switched windows. Call "
+                              f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
+        return {"id": window.id, "title": window.title} if window else None
+
+    @staticmethod
+    def _with_window(result: dict, window: dict | None) -> dict:
+        if window:
+            result["window"] = window
+        return result
 
     # -- tools ------------------------------------------------------------------
 
@@ -152,16 +204,18 @@ class Desktop:
             except OSError:
                 pass
 
-    def click(self, x: int, y: int, button: str = "left", count: int = 1) -> dict:
+    def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
+            window = self._guard(force, (px, py))
             self.backend.click(px, py, btn, n)
-            return self._changes({"clicked": {"x": px, "y": py}, "button": button, "count": n})
+            return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
+                                                   window))
 
-        return self._act("click", {"x": x, "y": y, "button": button, "count": count}, do)
+        return self._act("click", {"x": x, "y": y, "button": button, "count": count, "force": force}, do)
 
     def move(self, x: int, y: int) -> dict:
         def do():
@@ -172,19 +226,23 @@ class Desktop:
 
         return self._act("move", {"x": x, "y": y}, do)
 
-    def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400) -> dict:
+    def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
+             force: bool = False) -> dict:
         def do():
             self._ready()
             x0, y0 = self._point(from_x, from_y)
             x1, y1 = self._point(to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
+            window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
-            return {"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1}, "duration_ms": ms}
+            return self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1}, "duration_ms": ms},
+                                     window)
 
-        args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms}
+        args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
+                "force": force}
         return self._act("drag", args, do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -192,32 +250,37 @@ class Desktop:
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
+            window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
-            return {"at": {"x": px, "y": py}, "dx": sx, "dy": sy}
+            return self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window)
 
-        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy}, do)
+        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
 
-    def type_text(self, text: str) -> dict:
+    def type_text(self, text: str, force: bool = False) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
                 raise ValidationError("text must be a non-empty string")
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters; paste via clipboard instead")
+            window = self._guard(force)
             self.backend.type_text(text)
-            return self._changes({"typed_chars": len(text)})
+            return self._changes(self._with_window({"typed_chars": len(text)}, window))
 
-        return self._act("type_text", {"text": text}, do)
+        return self._act("type_text", {"text": text, "force": force}, do)
 
-    def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False) -> dict:
+    def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
+                  force: bool = False) -> dict:
         def do():
             combo = parse_key_combo(key, modifiers or [])
             self.policy.check_key(combo, bool(confirm))
             self._ready()
+            window = self._guard(force)
             self.backend.press_key(combo)
-            return self._changes({"pressed": str(combo)})
+            return self._changes(self._with_window({"pressed": str(combo)}, window))
 
-        return self._act("press_key", {"key": key, "modifiers": modifiers or [], "confirm": confirm}, do)
+        args = {"key": key, "modifiers": modifiers or [], "confirm": confirm, "force": force}
+        return self._act("press_key", args, do)
 
     def list_windows(self) -> dict:
         def do():
@@ -248,6 +311,7 @@ class Desktop:
             self._ready()
             window = self.find_window(title_or_id)
             self.backend.activate_window(window)
+            self._target = window  # input tools now refuse to go anywhere else (see _guard)
             return {"activated": window.to_dict()}
 
         return self._act("activate_window", {"title_or_id": title_or_id}, do)
@@ -270,7 +334,7 @@ class Desktop:
         return self._act("ui_tree", args, do,
                          loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
 
-    def click_element(self, ref: str, button: str = "left", count: int = 1) -> dict:
+    def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False) -> dict:
         def do():
             self._ready()
             btn = parse_button(button)
@@ -281,11 +345,12 @@ class Desktop:
                 raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
+            window = self._guard(force, (px, py))
             self.backend.click(px, py, btn, n)
-            return self._changes({"clicked": {"x": px, "y": py}, "element": label, "button": button,
-                                  "count": n})
+            return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
+                                                    "button": button, "count": n}, window))
 
-        return self._act("click_element", {"ref": ref, "button": button, "count": count}, do)
+        return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force}, do)
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()

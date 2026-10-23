@@ -185,6 +185,25 @@ class X11Backend(Backend):
         # Without an EWMH window manager there is no "active window": raise and focus instead.
         self._xdotool("windowraise", wid, "windowfocus", wid)
 
+    def active_window(self) -> str | None:
+        # _NET_ACTIVE_WINDOW: without an EWMH window manager this fails and focus is unknown.
+        out = (self.try_run(["xdotool", "getactivewindow"]) or "").strip() if self.which("xdotool") else ""
+        return f"0x{int(out):08x}" if out.isdigit() else None
+
+    def window_at(self, x: int, y: int) -> str | None:
+        # xdotool resolves the window under the pointer to its client (the one with WM_STATE),
+        # so a window manager's frame or a toolkit's child window maps back to the app window.
+        out = self._xdotool("mousemove", str(x), str(y), "getmouselocation", "--shell")
+        wid = parse_shell_vars(out).get("WINDOW", "")
+        return f"0x{int(wid):08x}" if wid.isdigit() else None
+
+    def transient_for(self, window_id: str) -> str | None:
+        if not self.which("xprop"):
+            return None
+        out = self.try_run(["xprop", "-id", window_id, "WM_TRANSIENT_FOR"]) or ""
+        m = re.search(r"window id # (0x[0-9a-fA-F]+)", out)
+        return f"0x{int(m.group(1), 16):08x}" if m else None
+
     # -- clipboard ----------------------------------------------------------
 
     def clipboard_get(self) -> str:

@@ -29,14 +29,15 @@ def test_registered_tools(make_desk):
     assert set(by_name) == SPEC_TOOLS == set(TOOL_NAMES)
     props = {name: set(t["inputSchema"]["properties"]) for name, t in by_name.items()}
     assert props["screenshot"] == {"region", "path", "scale"}
-    assert props["click"] == {"x", "y", "button", "count"}
-    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms"}
-    assert props["scroll"] == {"x", "y", "dx", "dy"}
-    assert props["press_key"] == {"key", "modifiers", "confirm"}
+    assert props["click"] == {"x", "y", "button", "count", "force"}
+    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
+    assert props["scroll"] == {"x", "y", "dx", "dy", "force"}
+    assert props["type_text"] == {"text", "force"}
+    assert props["press_key"] == {"key", "modifiers", "confirm", "force"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
-    assert props["click_element"] == {"ref", "button", "count"}
+    assert props["click_element"] == {"ref", "button", "count", "force"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
 
 

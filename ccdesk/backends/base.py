@@ -157,6 +157,18 @@ class Backend:
     def activate_window(self, window: Window) -> None:
         self._unsupported("activate_window")
 
+    def active_window(self) -> str | None:
+        """Id of the window with keyboard focus (as list_windows spells it), or None if unknown."""
+        return None
+
+    def window_at(self, x: int, y: int) -> str | None:
+        """Id of the top-level window under (x, y), or None if unknown. May move the pointer there."""
+        return None
+
+    def transient_for(self, window_id: str) -> str | None:
+        """Id of the window a dialog belongs to, or None."""
+        return None
+
     def clipboard_get(self) -> str:
         self._unsupported("clipboard")
 

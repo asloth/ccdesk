@@ -29,6 +29,9 @@ class FakeBackend(Backend):
                    width=800, height=600, desktop=0),
             Window(id="0x02000001", title="Terminal", wm_class="xterm.XTerm", x=10, y=10, width=300, height=200),
         ]
+        self.active: str | None = None  # id of the focused window; None: the backend cannot tell
+        self.under: str | None = None  # id of the window under the pointer, for window_at
+        self.transients: dict[str, str] = {}  # dialog id -> the window it belongs to
 
     def available(self):
         return None
@@ -68,6 +71,16 @@ class FakeBackend(Backend):
 
     def activate_window(self, window):
         self.calls.append(("activate", window.id))
+        self.active = window.id
+
+    def active_window(self):
+        return self.active
+
+    def window_at(self, x, y):
+        return self.under
+
+    def transient_for(self, wid):
+        return self.transients.get(wid)
 
     def clipboard_get(self):
         return self.clip
