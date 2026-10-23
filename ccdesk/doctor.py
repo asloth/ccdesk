@@ -76,7 +76,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
-    report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus))
+    report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
+                                  run=backend.try_run)
     if report["mcp"] is None:
         warnings.append("python package 'mcp' is not installed: `ccdesk mcp` will not start")
     if report["cua_driver"]:
@@ -86,27 +87,24 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     return report
 
 
-A11Y_HINT = (
-    "apps missing from the accessibility tree need it switched on before they start: GTK apps and "
-    "Firefox read `gsettings set org.gnome.desktop.interface toolkit-accessibility true` "
-    "(or GNOME_ACCESSIBILITY=1); Chromium and Electron apps need --force-renderer-accessibility"
-)
+def _a11y_report(a11y, warnings: list[str], private: bool = False, run=None) -> dict:
+    from ccdesk.a11y import BUS_OFF_HINT, TOOLKIT_HINT, A11y, bus_enabled
 
-
-def _a11y_report(a11y, warnings: list[str], private: bool = False) -> dict:
     if a11y is None:
-        from ccdesk.a11y import A11y
-
         a11y = A11y()
+    # A private headless bus starts its apps with accessibility forced on, whatever this says.
+    enabled = bus_enabled(run) if run else None
+    if enabled is False and not private:
+        warnings.append(BUS_OFF_HINT)
     try:
         apps = a11y.apps()
     except CcdeskError as exc:
         warnings.append(f"ui_tree unavailable: {exc}")
-        return {"ready": False, "apps": [], "error": str(exc)}
+        return {"ready": False, "apps": [], "bus_enabled": enabled, "error": str(exc)}
     names = [a["name"] for a in apps if a.get("windows")]
     if not any(n.lower() in ("firefox", "chromium", "google-chrome") for n in names) and not private:
-        warnings.append(A11Y_HINT)
-    return {"ready": True, "apps": names}
+        warnings.append(TOOLKIT_HINT)
+    return {"ready": True, "apps": names, "bus_enabled": enabled}
 
 
 def format_report(report: dict) -> str:
@@ -139,6 +137,8 @@ def format_report(report: dict) -> str:
     lines += [
         "",
         f"ui_tree:      {', '.join(report['a11y']['apps']) or 'no apps' if report['a11y']['ready'] else 'unavailable'}",
+        "a11y bus:     " + {True: "on", False: "off (org.a11y.Status IsEnabled=false)",
+                            None: "unknown"}[report["a11y"].get("bus_enabled")],
         f"cua-driver:   {report['cua_driver'] or 'not found'}",
         f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}",
         f"audit log:    {report['audit_log']}",

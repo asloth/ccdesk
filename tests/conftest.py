@@ -8,6 +8,7 @@ import pytest
 from ccdesk.a11y import A11y
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
+from ccdesk.errors import CommandError
 from ccdesk.parsing import Window
 from ccdesk.safety import AuditLog, Policy
 from tests.pngutil import write_png
@@ -32,6 +33,15 @@ class FakeBackend(Backend):
         self.active: str | None = None  # id of the focused window; None: the backend cannot tell
         self.under: str | None = None  # id of the window under the pointer, for window_at
         self.transients: dict[str, str] = {}  # dialog id -> the window it belongs to
+        self.responses: dict[str, str] = {}  # command line -> output for run(); anything else fails
+        self.ran: list[list[str]] = []
+
+    def run(self, argv, input=None, timeout=None, detach=False):
+        self.ran.append(list(argv))
+        line = " ".join(argv)
+        if line not in self.responses:
+            raise CommandError(f"{argv[0]} is not installed")
+        return self.responses[line]
 
     def available(self):
         return None
@@ -112,12 +122,16 @@ class FakeA11yHelper:
     def __init__(self):
         self.nodes = {n["path"]: dict(n) for n in FORM_NODES}
         self.requests = []
+        self.apps = [{"name": "Firefox", "pid": 1, "windows": ["Form — Mozilla Firefox"]}]
+        self.tree_error: str | None = None
 
     def __call__(self, argv, timeout):
         req = json.loads(argv[-1])
         self.requests.append(req)
         if req["op"] == "apps":
-            return json.dumps({"apps": [{"name": "Firefox", "pid": 1, "windows": ["Form — Mozilla Firefox"]}]})
+            return json.dumps({"apps": self.apps})
+        if req["op"] == "tree" and self.tree_error:
+            return json.dumps({"error": self.tree_error, "no_window": True})
         if req["op"] == "tree":
             nodes = list(self.nodes.values())
             if req.get("query"):

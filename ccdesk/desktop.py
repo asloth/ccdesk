@@ -14,7 +14,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ccdesk.a11y import A11y
+from ccdesk.a11y import A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
 from ccdesk.errors import CcdeskError, PolicyError, ValidationError
 from ccdesk.parsing import (
@@ -320,7 +320,11 @@ class Desktop:
                 max_nodes: int = 300) -> dict:
         def do():
             limit = check_int("max_nodes", max_nodes, 1, 2000)
-            result = self.a11y.tree(window or None, (query or "").strip() or None, bool(page), limit)
+            try:
+                result = self.a11y.tree(window or None, (query or "").strip() or None, bool(page), limit)
+            except WindowNotFound as exc:
+                why = self._a11y_diagnosis(window or None)
+                raise CcdeskError(f"{exc}. {why}" if why else str(exc)) from None
             text = result["tree"]
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
@@ -333,6 +337,26 @@ class Desktop:
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes}
         return self._act("ui_tree", args, do,
                          loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
+
+    def _a11y_diagnosis(self, title: str | None) -> str | None:
+        """Why ui_tree() found no window: which window is missing from the bus, and how to fix it."""
+        try:
+            windows = self.backend.list_windows()
+            if title:
+                win = next((w for w in windows if title.lower() in w.title.lower()), None)
+            else:
+                wid = self.backend.active_window()
+                win = next((w for w in windows if w.id == wid), None)
+            apps = self.a11y.apps() if win else []
+        except CcdeskError:
+            return None
+        if win is None or any(win.title in (a.get("windows") or []) for a in apps):
+            return None
+        on_bus = ", ".join(a["name"] for a in apps if a.get("windows")) or "nothing"
+        # A headless screen has its own bus, and the apps on it are started with accessibility on.
+        enabled = bus_enabled(self.backend.try_run) if self.headless is None else None
+        return (f"{win.title!r} ({win.wm_class}) is not on the accessibility bus (on the bus: {on_bus}): "
+                f"{missing_hint(win.wm_class, enabled)}. Until then, work from screenshots")
 
     def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False) -> dict:
         def do():

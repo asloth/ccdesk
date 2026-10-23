@@ -135,6 +135,72 @@ def test_many_changes_ask_for_a_new_tree(make_desk, helper, no_settle):
     assert "call ui_tree()" in d.click(5, 5)["changes"]
 
 
+IS_ENABLED = "busctl --user get-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled"
+ENABLE = "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true"
+OFF_BUS = [{"name": "lxpolkit", "pid": 7, "windows": []}, {"name": "Telegram", "pid": 8, "windows": ["Telegram"]}]
+
+
+def test_ui_tree_names_the_missing_window_and_the_fix(make_desk, helper, fake):
+    """Real session: Firefox on bspwm, gsettings on but the bus's IsEnabled false."""
+    helper.apps, helper.tree_error = OFF_BUS, "no active accessible window; pass window=... (windows: 'Telegram')"
+    fake.active = "0x01e00003"
+    fake.responses[IS_ENABLED] = "b false\n"
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(page=True)
+    msg = str(err.value)
+    assert "'Mozilla Firefox' (Navigator.firefox) is not on the accessibility bus" in msg
+    assert "on the bus: Telegram" in msg
+    assert "IsEnabled is false" in msg and ENABLE in msg and "restart" in msg
+    assert "screenshot" in msg
+
+
+def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
+    helper.apps, helper.tree_error = OFF_BUS, "no accessible window title contains 'termi'; windows: 'Telegram'"
+    fake.responses[IS_ENABLED] = "b true\n"
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(window="termi")
+    msg = str(err.value)
+    assert "'Terminal' (xterm.XTerm) is not on the accessibility bus" in msg and ENABLE not in msg
+    assert "GNOME_ACCESSIBILITY=1" in msg
+
+    fake.windows[0].wm_class = "chromium.Chromium"
+    fake.active = "0x01e00003"
+    helper.tree_error = "no active accessible window; pass window=..."
+    with pytest.raises(CcdeskError, match="--force-renderer-accessibility"):
+        make_desk().ui_tree()
+
+
+def test_ui_tree_diagnosis_without_a_known_window(make_desk, helper, fake):
+    helper.apps, helper.tree_error = [], "no app has a window on the accessibility bus"
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree()
+    assert str(err.value).startswith("no app has a window on the accessibility bus")
+    assert "is not on the accessibility bus" not in str(err.value)
+
+
+def test_doctor_checks_the_bus_switch(make_desk, helper, fake):
+    helper.apps = OFF_BUS
+    fake.responses[IS_ENABLED] = "b false\n"
+    report = make_desk().doctor()
+    assert report["a11y"]["bus_enabled"] is False
+    warning = next(w for w in report["warnings"] if "IsEnabled" in w)
+    assert ENABLE in warning and "restart" in warning
+    fake.responses[IS_ENABLED] = "b true\n"
+    report = make_desk().doctor()
+    assert report["a11y"]["bus_enabled"] is True and not any("IsEnabled" in w for w in report["warnings"])
+    del fake.responses[IS_ENABLED]
+    assert make_desk().doctor()["a11y"]["bus_enabled"] is None
+
+
+def test_doctor_text_shows_the_bus_switch(make_desk, helper, fake):
+    from ccdesk.doctor import format_report
+
+    fake.responses[IS_ENABLED] = "b false\n"
+    text = format_report(make_desk().doctor())
+    assert "a11y bus:     off (org.a11y.Status IsEnabled=false)" in text
+    assert ENABLE in text
+
+
 def test_window_relative_boxes_are_shifted(make_desk, helper, fake):
     """Wayland toolkits put their own frame at 0,0; the compositor says where it really is."""
     real = helper.__call__

@@ -205,6 +205,18 @@ gsettings set org.gnome.desktop.interface toolkit-accessibility true   # GTK app
 # or start them with GNOME_ACCESSIBILITY=1; Chromium/Electron: --force-renderer-accessibility
 ```
 
+Outside GNOME (bspwm, i3, sway...) that is often not enough: the session's accessibility bus
+has its own switch, `org.a11y.Status IsEnabled`, that nothing turns on, and Firefox reads it
+at startup. `ccdesk doctor` shows it as `a11y bus: off` and prints the fix:
+
+```sh
+busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true
+# then restart Firefox; the setting lasts until logout, so add the line to .xinitrc or bspwmrc
+```
+
+When `ui_tree()` finds no window, its error names the window that is missing from the bus,
+what is on the bus, and this fix, so Claude can ask you to apply it.
+
 The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python with PyGObject
 (`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
 no compiled dependencies. `CCDESK_A11Y_PYTHON` picks another interpreter. `ccdesk doctor`

@@ -19,6 +19,43 @@ from ccdesk.errors import CcdeskError, UnsupportedError
 HELPER = Path(__file__).with_name("a11y_helper.py")
 PYTHONS = ("/usr/bin/python3", "python3")
 MAX_CHANGES = 25
+BUS_STATUS = ["busctl", "--user", "get-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled"]
+ENABLE_BUS = "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true"
+TOOLKIT_HINT = (
+    "apps missing from the accessibility tree need it switched on before they start: GTK apps and "
+    "Firefox read `gsettings set org.gnome.desktop.interface toolkit-accessibility true` "
+    "(or GNOME_ACCESSIBILITY=1); Chromium and Electron apps need --force-renderer-accessibility"
+)
+BUS_OFF_HINT = (
+    "the accessibility bus is switched off (org.a11y.Status IsEnabled is false); outside GNOME nothing "
+    f"turns it on, and Firefox, Chromium and GTK apps then publish no tree even with the gsettings key "
+    f"on. Enable it with `{ENABLE_BUS}`, then restart the app (it checks only at startup). It lasts "
+    "until logout; to keep it, run the command from your session startup (.xinitrc, bspwmrc)"
+)
+
+
+class WindowNotFound(CcdeskError):
+    """The helper ran, but no window on the accessibility bus matched."""
+
+
+def bus_enabled(run) -> bool | None:
+    """org.a11y.Status.IsEnabled on the session bus, through run(argv) -> output or None.
+    None when it cannot be read (no busctl, no bus)."""
+    out = (run(BUS_STATUS) or "").split()
+    if len(out) == 2 and out[0] == "b":
+        return out[1] == "true"
+    return None
+
+
+def missing_hint(wm_class: str, enabled: bool | None) -> str:
+    """How to get a window that is not on the accessibility bus onto it."""
+    if enabled is False:
+        return BUS_OFF_HINT
+    if any(k in wm_class.lower() for k in ("chrom", "electron")):
+        return "Chromium and Electron apps publish a tree only when started with --force-renderer-accessibility"
+    return ("GTK apps and Firefox publish one only if accessibility was on when they started: "
+            "`gsettings set org.gnome.desktop.interface toolkit-accessibility true` or GNOME_ACCESSIBILITY=1, "
+            "then restart the app")
 
 
 @dataclass(frozen=True)
@@ -72,7 +109,7 @@ class A11y:
                 continue
             self._python = py
             if "error" in result:
-                raise CcdeskError(result["error"])
+                raise (WindowNotFound if result.get("no_window") else CcdeskError)(result["error"])
             return result
         hint = "; ".join(errors) or "no python3 found"
         raise UnsupportedError(

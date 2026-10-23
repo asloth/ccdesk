@@ -131,7 +131,7 @@ def frames():
 def pick_window(title):
     found = list(frames())
     if not found:
-        return None, "no application is publishing an accessibility tree (see ccdesk doctor)"
+        return None, "no app has a window on the accessibility bus"
     if title:
         needle = title.lower()
         matches = [f for f in found if needle in (f[2].get_name() or "").lower()]
@@ -172,7 +172,7 @@ def interesting(node):
 def tree(req):
     picked, err = pick_window(req.get("window"))
     if err:
-        return {"error": err}
+        return {"error": err, "no_window": True}
     path, app, frame = picked
     query = (req.get("query") or "").lower() or None
     max_nodes = int(req.get("max_nodes") or 300)
