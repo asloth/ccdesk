@@ -357,6 +357,49 @@ def test_focus_moving_shortcuts_settle(make_desk, fake, key, settles):
     assert bool(fake.slept) is settles
 
 
+def test_input_waits_while_the_user_is_active(make_desk, fake, read_audit):
+    """--yield-ms: the user typed half a second ago, so ccdesk waits until they pause."""
+    d = make_desk(yield_ms=3000)
+    fake.last_event = fake.now - 0.5
+    r = d.click(5, 5)
+    assert fake.calls[-1][0] == "click"
+    assert 2400 <= r["yielded_ms"] <= 2700
+    assert read_audit()[-1]["status"] == "ok"
+
+
+@pytest.mark.parametrize("call", [*GUARDED, lambda d: d.move(1, 1), lambda d: d.activate_window("Terminal")])
+def test_input_refused_while_the_user_keeps_going(make_desk, fake, read_audit, call):
+    d = make_desk(yield_ms=3000)
+    fake.user_typing = True
+    with pytest.raises(PolicyError, match="the user is using the mouse or keyboard"):
+        call(d)
+    assert fake.calls == []
+    assert read_audit()[-1]["status"] == "denied"
+
+
+def test_own_input_is_not_the_user(make_desk, fake):
+    """xdotool's events reset the idle counter too; only input after ccdesk's own is the user's."""
+    d = make_desk(yield_ms=3000)
+    d.click(5, 5)
+    fake.now += 0.1
+    r = d.type_text("hello")
+    assert "yielded_ms" not in r and fake.calls[-1] == ("type_text", "hello")
+
+
+def test_yield_off_or_idle_unknown(make_desk, fake):
+    fake.user_typing = True
+    assert "yielded_ms" not in make_desk().click(5, 5)  # yield_ms=0, the default
+    fake.last_event = None
+    assert "yielded_ms" not in make_desk(yield_ms=3000).click(5, 5)
+
+
+def test_doctor_reports_user_idle(make_desk, fake):
+    fake.last_event = fake.now - 4.2
+    report = make_desk(yield_ms=3000).doctor()
+    assert report["user_idle_ms"] == 4200
+    assert report["policy"]["yield_ms"] == 3000
+
+
 def test_closed_target_is_reported(make_desk, fake):
     d = make_desk()
     d.activate_window(FIREFOX)

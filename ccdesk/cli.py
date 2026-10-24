@@ -16,6 +16,9 @@ def _policy_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--read-only", action="store_true", help="disable every input tool (screenshots only)")
     p.add_argument("--confirm-keys", metavar="COMBOS", type=_confirm_keys,
                    help='extra key combos that need confirm=true, e.g. "super+x,ctrl+alt+super+p"')
+    p.add_argument("--yield-ms", metavar="MS", type=_yield_ms, default=0,
+                   help="on your own screen: hold input until you have left mouse and keyboard alone this "
+                        "long (e.g. 3000; needs xprintidle). Default 0, never wait")
 
 
 def _headless_flags(p: argparse.ArgumentParser) -> None:
@@ -35,6 +38,16 @@ def _confirm_keys(spec: str) -> str:
     except ValidationError as exc:
         raise argparse.ArgumentTypeError(str(exc)) from None
     return spec
+
+
+def _yield_ms(spec: str) -> int:
+    try:
+        ms = int(spec)
+    except ValueError:
+        ms = -1
+    if not 0 <= ms <= 60_000:
+        raise argparse.ArgumentTypeError(f"--yield-ms must be 0 to 60000 milliseconds, got {spec!r}")
+    return ms
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -89,6 +102,8 @@ def main(argv: list[str] | None = None) -> int:
         flags = [f for f, on in (("--allow-launch", args.allow_launch), ("--read-only", args.read_only)) if on]
         if args.confirm_keys:
             flags += ["--confirm-keys", args.confirm_keys]
+        if args.yield_ms:
+            flags += ["--yield-ms", str(args.yield_ms)]
         if args.headless:
             flags.append("--headless")
             if args.size != "1920x1080":
@@ -137,12 +152,13 @@ def _mcp(args) -> int:
         desktop = Desktop(
             backend=backend,
             policy=Policy(read_only=args.read_only, allow_launch=args.allow_launch,
-                          confirm_keys=parse_confirm_keys(args.confirm_keys)),
+                          confirm_keys=parse_confirm_keys(args.confirm_keys), yield_ms=args.yield_ms),
             audit=AuditLog(args.audit_log),
             headless=headless,
         )
         desktop.audit.record("server_start", {"read_only": args.read_only, "allow_launch": args.allow_launch,
-                                              "confirm_keys": args.confirm_keys, "backend": desktop.backend.name,
+                                              "confirm_keys": args.confirm_keys, "yield_ms": args.yield_ms,
+                                              "backend": desktop.backend.name,
                                               "headless": headless.info() if headless else None}, "ok")
         serve(desktop)
     finally:

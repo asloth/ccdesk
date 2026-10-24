@@ -231,6 +231,13 @@ def test_x11_focus_queries():
     assert Backend(env={}).active_window() is None and Backend(env={}).window_at(1, 1) is None
 
 
+def test_x11_idle_ms():
+    b, r = make(X11Backend, X11_ALL | {"xprintidle"}, responses={"xprintidle": "4215\n"})
+    assert b.idle_ms() == 4215 and r.calls[-1][0] == ["xprintidle"]
+    assert make(X11Backend, X11_ALL)[0].idle_ms() is None  # not installed
+    assert make(X11Backend, X11_ALL | {"xprintidle"}, fail=("xprintidle",))[0].idle_ms() is None
+
+
 def test_x11_clipboard():
     b, r = make(X11Backend, X11_ALL, responses={"xclip -selection": "pasted"})
     assert b.clipboard_get() == "pasted"

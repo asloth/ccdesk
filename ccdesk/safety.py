@@ -35,6 +35,7 @@ class Policy:
     read_only: bool = False
     allow_launch: bool = False
     confirm_keys: tuple[KeyCombo, ...] = field(default_factory=tuple)
+    yield_ms: int = 0  # hold input until the user has been idle this long (0: never wait)
 
     def check(self, tool: str) -> None:
         if self.read_only and tool in INPUT_TOOLS:

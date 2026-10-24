@@ -88,6 +88,18 @@ def test_install_forwards_confirm_keys(home, tmp_path, monkeypatch, capsys):
     assert log.read_text().splitlines()[1].endswith("mcp --read-only --confirm-keys super+x,ctrl+alt+super+p")
 
 
+def test_install_forwards_yield_ms(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--yield-ms", "3000"]) == 0
+    assert log.read_text().splitlines()[1].endswith("mcp --yield-ms 3000")
+
+
+def test_bad_yield_ms_rejected(capsys):
+    with pytest.raises(SystemExit):
+        main(["mcp", "--yield-ms", "-5"])
+    assert "yield-ms" in capsys.readouterr().err
+
+
 def test_bad_confirm_keys_rejected(capsys):
     with pytest.raises(SystemExit):
         main(["mcp", "--confirm-keys", "super+x,bad key"])

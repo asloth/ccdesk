@@ -267,6 +267,13 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   anyway. Every input result names the window that received it (`"window": {id, title}`).
   This needs an EWMH window manager on X11; without one, or on Wayland, focus is unknown
   and the check is skipped.
+- **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
+  `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
+  until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then
+  refusing with "the user is using the mouse or keyboard". ccdesk's own events reset X's idle
+  counter too, so only input that came after its own counts as yours. Results say
+  `yielded_ms` when it waited, and `doctor` shows `user idle`. Needs `xprintidle` (X11); off
+  by default, and pointless for `--headless`.
 - **Audit log.** Every call, including denied and failed ones, is appended as one JSON line
   to `~/.cache/ccdesk/audit.log` (mode 0600; override with `--audit-log` or
   `CCDESK_AUDIT_LOG`). Each line has a timestamp, the tool, its arguments, the status

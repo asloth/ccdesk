@@ -197,6 +197,11 @@ class X11Backend(Backend):
         wid = parse_shell_vars(out).get("WINDOW", "")
         return f"0x{int(wid):08x}" if wid.isdigit() else None
 
+    def idle_ms(self) -> int | None:
+        # The MIT-SCREEN-SAVER extension's idle counter; xdotool's synthetic events reset it too.
+        out = (self.try_run(["xprintidle"], timeout=5) or "").strip() if self.which("xprintidle") else ""
+        return int(out) if out.isdigit() else None
+
     def transient_for(self, window_id: str) -> str | None:
         if not self.which("xprop"):
             return None

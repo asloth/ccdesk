@@ -169,6 +169,11 @@ class Backend:
         """Id of the window a dialog belongs to, or None."""
         return None
 
+    def idle_ms(self) -> int | None:
+        """Milliseconds since the last mouse or keyboard input on this screen (ccdesk's own
+        included), or None if unknown."""
+        return None
+
     def clipboard_get(self) -> str:
         self._unsupported("clipboard")
 

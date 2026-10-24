@@ -32,7 +32,7 @@ from ccdesk.parsing import (
     parse_window_ref,
     png_size,
 )
-from ccdesk.safety import AuditLog, Policy, cache_dir
+from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 
 MAX_TEXT = 10_000
@@ -40,6 +40,8 @@ MAX_WAIT = 60.0
 MAX_WAIT_FOR_CHANGE = 300.0
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
 POLL = 0.2  # seconds between captures in wait_for_change
+MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) before it is refused
+OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds an app gets to react before an action reports its changes
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
@@ -69,6 +71,8 @@ class Desktop:
         self._pending: tuple[Region | None, Grid] | None = None
         self._after: tuple[Region | None, Grid] | None = None
         self.clock = time.monotonic
+        self._own_input: float | None = None  # clock() when ccdesk's latest input action finished
+        self._yielded = 0  # ms the current action waited for the user (--yield-ms)
 
     # -- plumbing -------------------------------------------------------------
 
@@ -77,19 +81,52 @@ class Desktop:
         try:
             self.policy.check(policy_tool or tool)
             result = fn()
-        except PolicyError as exc:
+        except PolicyError as exc:  # refused before any input was sent
             self.audit.record(tool, args, "denied", error=str(exc))
             raise
         except CcdeskError as exc:
+            self._input_done(tool)
             self.audit.record(tool, args, "error", error=str(exc), duration_ms=(time.monotonic() - start) * 1000)
             raise
         except Exception as exc:
+            self._input_done(tool)
             self.audit.record(tool, args, "error", error=f"{type(exc).__name__}: {exc}",
                               duration_ms=(time.monotonic() - start) * 1000)
             raise
+        self._input_done(tool)
         self.audit.record(tool, args, "ok", result=loggable(result) if loggable else result,
                           duration_ms=(time.monotonic() - start) * 1000)
         return result
+
+    def _input_done(self, tool: str) -> None:
+        if tool in INPUT_TOOLS:
+            self._own_input = self.clock()
+
+    def _yield_to_user(self) -> int:
+        """With --yield-ms, hold input while the user is using the mouse or keyboard: wait until
+        they have been idle that long, up to MAX_YIELD. Returns how long it waited, in ms."""
+        need = self.policy.yield_ms
+        if not need:
+            return 0
+        waited = 0.0
+        while True:
+            try:
+                idle = self.backend.idle_ms()
+            except CcdeskError:
+                idle = None
+            if idle is None:
+                return round(waited * 1000)  # cannot tell: don't block
+            # Our own xdotool events reset the counter too: only input after ours is the user's.
+            since_ours = (self.clock() - self._own_input) * 1000 if self._own_input is not None else float("inf")
+            if idle >= need or idle >= since_ours - OWN_INPUT_SLACK_MS:
+                return round(waited * 1000)
+            if waited >= MAX_YIELD:
+                raise PolicyError(f"the user is using the mouse or keyboard (last input {idle} ms ago; "
+                                  f"waited {waited:.0f}s for a {need} ms pause). Don't race them: wait() "
+                                  f"and retry, or ask them to step away")
+            pause = min(max((need - idle) / 1000, 0.1), MAX_YIELD - waited)
+            self.backend.sleep(pause)
+            waited += pause
 
     def _changes(self, result: dict) -> dict:
         """After ui_tree() has been used, add what the action changed in that window. Without a
@@ -161,6 +198,7 @@ class Desktop:
         """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
         because the user switched to their terminal. Returns the receiving window for the result,
         and keeps a small copy of it for _changes() to compare with afterwards."""
+        self._yielded = self._yield_to_user()  # first: focus may move while the user finishes
         try:
             windows = {w.id: w for w in self.backend.list_windows()}
         except CcdeskError:
@@ -184,10 +222,11 @@ class Desktop:
             self._pending = (region, grid) if grid is not None else None
         return window
 
-    @staticmethod
-    def _with_window(result: dict, window: Window | None) -> dict:
+    def _with_window(self, result: dict, window: Window | None) -> dict:
         if window:
             result["window"] = {"id": window.id, "title": window.title}
+        if self._yielded:
+            result["yielded_ms"] = self._yielded
         return result
 
     def _window_region(self, window: Window | None) -> Region | None:
@@ -292,8 +331,9 @@ class Desktop:
         def do():
             self._ready()
             px, py = self._point(x, y)
+            self._yielded = self._yield_to_user()
             self.backend.move(px, py)
-            return {"moved": {"x": px, "y": py}}
+            return self._with_window({"moved": {"x": px, "y": py}}, None)
 
         return self._act("move", {"x": x, "y": y}, do)
 
@@ -398,9 +438,10 @@ class Desktop:
         def do():
             self._ready()
             window = self.find_window(title_or_id)
+            self._yielded = self._yield_to_user()
             self.backend.activate_window(window)
             self._target = window  # input tools now refuse to go anywhere else (see _guard)
-            return {"activated": window.to_dict()}
+            return self._with_window({"activated": window.to_dict()}, None)
 
         return self._act("activate_window", {"title_or_id": title_or_id}, do)
 

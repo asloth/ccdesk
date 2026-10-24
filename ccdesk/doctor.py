@@ -43,7 +43,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "cua_driver": backend.which("cua-driver"),
         "mcp": _mcp_version(),
         "policy": {"read_only": policy.read_only, "allow_launch": policy.allow_launch,
-                   "confirm_keys": [str(c) for c in policy.confirm_keys]},
+                   "confirm_keys": [str(c) for c in policy.confirm_keys], "yield_ms": policy.yield_ms},
+        "user_idle_ms": None,
         "audit_log": str(audit_path),
         "headless": headless.info() if headless else None,
         "warnings": [],
@@ -61,6 +62,12 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append(f"cannot read screen size: {exc}")
         report["scale"] = backend.scale_info()
         report["monitors"] = backend.monitors()
+        try:
+            report["user_idle_ms"] = backend.idle_ms()
+        except CcdeskError:
+            pass
+        if policy.yield_ms and report["user_idle_ms"] is None and not headless:
+            warnings.append("--yield-ms is set but user activity can't be read: install xprintidle (X11 only)")
     for cap in report["missing"]:
         names = " or ".join(backend.TOOLS[cap])
         warnings.append(f"no tool for {cap}: install {names}")
@@ -140,7 +147,9 @@ def format_report(report: dict) -> str:
         "a11y bus:     " + {True: "on", False: "off (org.a11y.Status IsEnabled=false)",
                             None: "unknown"}[report["a11y"].get("bus_enabled")],
         f"cua-driver:   {report['cua_driver'] or 'not found'}",
-        f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}",
+        f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}"
+        f" yield_ms={report['policy']['yield_ms']}",
+        f"user idle:    {'unknown (no xprintidle)' if report['user_idle_ms'] is None else str(report['user_idle_ms']) + ' ms'}",
         f"audit log:    {report['audit_log']}",
     ]
     if report["policy"]["confirm_keys"]:

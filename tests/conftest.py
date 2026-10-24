@@ -43,6 +43,9 @@ class FakeBackend(Backend):
         self.effects: list[tuple] = []
         self.later: list[list] = []
         self.magick = True
+        # Like X's idle counter: any input resets it, ours included. None: the backend cannot tell.
+        self.last_event: float | None = -1e9
+        self.user_typing = False  # the user never stops
 
     def sleep(self, seconds):
         self.slept.append(seconds)
@@ -51,9 +54,16 @@ class FakeBackend(Backend):
     def clock(self):
         return self.now
 
+    def idle_ms(self):
+        if self.last_event is None:
+            return None
+        return 0 if self.user_typing else round((self.now - self.last_event) * 1000)
+
     def _input(self):
         self.rects += self.effects
         self.effects = []
+        if self.last_event is not None:
+            self.last_event = self.now
 
     def run(self, argv, input=None, timeout=None, detach=False):
         self.ran.append(list(argv))
@@ -89,6 +99,7 @@ class FakeBackend(Backend):
 
     def move(self, x, y):
         self.calls.append(("move", x, y))
+        self._input()
 
     def click(self, x, y, button, count):
         self.calls.append(("click", x, y, button, count))

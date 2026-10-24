@@ -205,6 +205,22 @@ def test_read_only_blocks_input_but_allows_screenshots(app, tmp_path):
     assert app.state()["label"] == "waiting"
 
 
+@pytest.mark.skipif(not shutil.which("xprintidle"), reason="xprintidle not installed")
+def test_yield_to_the_user(app, tmp_path):
+    """ccdesk's own events reset X's idle counter; input from anyone else makes it wait."""
+    env = dict(os.environ)
+    env.pop("WAYLAND_DISPLAY", None)
+    desk = Desktop(backend=X11Backend(env=env), policy=Policy(yield_ms=800), audit=AuditLog(tmp_path / "y.log"),
+                   shots_dir=tmp_path / "y", screen_diff=False)
+    time.sleep(0.9)
+    assert "yielded_ms" not in desk.move(10, 10)
+    assert "yielded_ms" not in desk.move(20, 20)  # right after our own input: not the user
+    time.sleep(0.4)  # input within OWN_INPUT_SLACK_MS of ours would count as ours
+    subprocess.run(["xdotool", "mousemove", "30", "30"], check=True, env=env)  # "the user"
+    r = desk.move(40, 40)
+    assert 300 <= r.get("yielded_ms", 0) <= 1500, r
+
+
 @pytest.mark.skipif(not (shutil.which("magick") or shutil.which("convert")), reason="ImageMagick not installed")
 def test_screen_changed_without_a_tree(app, desk):
     """Tk publishes no accessibility tree: actions compare pixels instead."""
