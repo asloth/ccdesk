@@ -104,7 +104,8 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def list_windows() -> dict:
-        """List top-level windows: id, title, class and geometry."""
+        """List top-level windows: id, title, class, geometry, desktop and whether it is the active
+        one, plus current_desktop (the workspace on show)."""
         return desktop.list_windows()
 
     @tool
@@ -137,7 +138,8 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def wait(seconds: float) -> dict:
-        """Sleep for up to 60 seconds, e.g. while a page loads. Screenshot afterwards to check."""
+        """Sleep for up to 300 seconds. To wait for a page or dialog, wait_for_change() returns as soon
+        as it is done; use wait() for fixed delays (a verification that takes minutes)."""
         return desktop.wait(seconds)
 
     @tool

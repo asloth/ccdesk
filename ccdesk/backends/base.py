@@ -169,6 +169,10 @@ class Backend:
         """Id of the window a dialog belongs to, or None."""
         return None
 
+    def current_desktop(self) -> int | None:
+        """The workspace on show (as Window.desktop numbers them), or None if unknown."""
+        return None
+
     def idle_ms(self) -> int | None:
         """Milliseconds since the last mouse or keyboard input on this screen (ccdesk's own
         included), or None if unknown."""

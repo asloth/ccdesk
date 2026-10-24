@@ -231,6 +231,13 @@ def test_x11_focus_queries():
     assert Backend(env={}).active_window() is None and Backend(env={}).window_at(1, 1) is None
 
 
+def test_x11_current_desktop():
+    b, _ = make(X11Backend, X11_ALL | {"xprop"}, responses={"xprop -root": "_NET_CURRENT_DESKTOP(CARDINAL) = 1\n"})
+    assert b.current_desktop() == 1
+    b, _ = make(X11Backend, X11_ALL | {"xprop"}, responses={"xprop -root": "_NET_CURRENT_DESKTOP:  not found.\n"})
+    assert b.current_desktop() is None
+
+
 def test_x11_idle_ms():
     b, r = make(X11Backend, X11_ALL | {"xprintidle"}, responses={"xprintidle": "4215\n"})
     assert b.idle_ms() == 4215 and r.calls[-1][0] == ["xprintidle"]

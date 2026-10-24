@@ -122,10 +122,10 @@ servers only at startup.
 | `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
 | `type_text(text, submit=false, replace=false, force=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
 | `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
-| `list_windows()` | Returns `id`, `title`, `class`, `geometry` and `desktop` for each window. |
+| `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
-| `wait(seconds)` | Sleeps, up to 60 s. |
+| `wait(seconds)` | Sleeps, up to 300 s. |
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |

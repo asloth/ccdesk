@@ -197,6 +197,13 @@ class X11Backend(Backend):
         wid = parse_shell_vars(out).get("WINDOW", "")
         return f"0x{int(wid):08x}" if wid.isdigit() else None
 
+    def current_desktop(self) -> int | None:
+        if not self.which("xprop"):
+            return None
+        m = re.search(r"_NET_CURRENT_DESKTOP\(CARDINAL\) = (\d+)",
+                      self.try_run(["xprop", "-root", "_NET_CURRENT_DESKTOP"]) or "")
+        return int(m.group(1)) if m else None
+
     def idle_ms(self) -> int | None:
         # The MIT-SCREEN-SAVER extension's idle counter; xdotool's synthetic events reset it too.
         out = (self.try_run(["xprintidle"], timeout=5) or "").strip() if self.which("xprintidle") else ""

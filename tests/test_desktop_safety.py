@@ -179,7 +179,7 @@ def test_destructive_via_modifiers_list(make_desk, fake):
     (lambda d: d.type_text(""), "non-empty"),
     (lambda d: d.type_text("x" * 10_001), "clipboard"),
     (lambda d: d.press_key("bogus key!"), "invalid key"),
-    (lambda d: d.wait(61), "between"),
+    (lambda d: d.wait(301), "between"),
     (lambda d: d.wait("soon"), "number"),
     (lambda d: d.clipboard("cut"), "get"),
     (lambda d: d.clipboard("set"), "needs text"),
@@ -398,6 +398,23 @@ def test_doctor_reports_user_idle(make_desk, fake):
     report = make_desk(yield_ms=3000).doctor()
     assert report["user_idle_ms"] == 4200
     assert report["policy"]["yield_ms"] == 3000
+
+
+def test_list_windows_marks_the_active_window_and_desktop(make_desk, fake):
+    """Firefox and kitty had the same geometry on desktops 0 and 1: the list alone hid which was in front."""
+    fake.active, fake.desktop = TERMINAL, 1
+    r = make_desk().list_windows()
+    assert [w["active"] for w in r["windows"]] == [False, True]
+    assert r["current_desktop"] == 1
+    fake.active, fake.desktop = None, None
+    r = make_desk().list_windows()
+    assert not any(w["active"] for w in r["windows"]) and r["current_desktop"] is None
+
+
+def test_wait_allows_five_minutes(make_desk, fake):
+    assert make_desk().wait(0)["waited"] == 0
+    with pytest.raises(ValidationError, match="between 0 and 300"):
+        make_desk().wait(301)
 
 
 def test_closed_target_is_reported(make_desk, fake):

@@ -7,8 +7,8 @@ description: Drive the Linux desktop through the ccdesk MCP server - take screen
 
 You control the real desktop through the `ccdesk` MCP tools: `screenshot`, `click`, `move`,
 `drag`, `scroll`, `type_text`, `press_key`, `list_windows`, `activate_window`, `clipboard`,
-`wait`, `doctor`, `ui_tree`, `click_element`, and `launch` (only if the server was started
-with `--allow-launch`).
+`wait`, `wait_for_change`, `doctor`, `ui_tree`, `click_element`, and `launch` (only if the
+server was started with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
 
@@ -25,6 +25,10 @@ there; ask before working around that. Your clipboard is separate from theirs.
    needs a GUI. Reading a web page is usually cheaper with a fetch tool than with screenshots.
 2. Call `doctor()` once per session. Check `ready`, the backend (`x11` or `wayland`), the
    screen size, and `warnings`. If it isn't ready, stop and tell the user what is missing.
+3. On the user's own screen (not headless), call `ui_tree()` once on the app you will use.
+   If it fails, the error names the missing window and the fix (often a `busctl` command and
+   an app restart). Offer that fix to the user before you go pixel-only: without a tree every
+   check costs a screenshot. Don't run it yourself; it changes their session.
 
 ## Look with text first: ui_tree
 
@@ -69,8 +73,14 @@ ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  .
 - **One action, then verify.** After each click, keypress or typed string, take a new
   screenshot and confirm the expected change happened before you continue. If it didn't,
   work out why. Don't repeat the action blindly.
-- **Wait for slow things.** After launching an app or loading a page, call `wait(1)` to
-  `wait(3)`, then screenshot. Don't stack long waits; check in between.
+- **Without a tree, read `screen_changed`.** Actions then report whether the receiving
+  window's pixels changed, and `changed_area` if they did. `false` after a click means it
+  did nothing yet: don't screenshot to find that out, and don't repeat the click blindly.
+  Screenshot just `changed_area` to see what happened.
+- **Wait for slow things with `wait_for_change()`**, not fixed `wait()`s. It returns as soon
+  as the screen has changed since your last action and gone still (`timeout` up to 300 s),
+  including when the page finished while you were thinking. Then screenshot or `ui_tree()`.
+  Use `wait(seconds)` only for a known delay.
 - **One monitor at a time.** With several monitors the full screenshot is very wide and
   gets shown to you heavily downscaled, so small text becomes hard to read.
   `doctor().monitors` lists each monitor's `x, y, width, height`; pass that as the
@@ -92,6 +102,10 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
   small text across the page. Prefer scrolling and cropping to repeated full captures.
 - **Text beats pixels.** To read a long page, `press_key("ctrl+a")`, `press_key("ctrl+c")`,
   `clipboard()` gets the text for far fewer tokens, then click to clear the selection.
+- **Exact strings through the clipboard.** Emails, tokens, IDs and URLs you will retype must
+  be copied (a copy button, or select + `ctrl+c` in a read-only view, then `clipboard()`),
+  not read from pixels: `0` and `O` are one misread apart. Don't open an edit dialog just to
+  read data from it.
 
 ## Coordinate rules
 
@@ -117,6 +131,9 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
   `Page_Up/Page_Down`, `Home`, `End`, `F1`-`F12`.
 - `type_text` types into whatever has keyboard focus. Click the field first and verify the
   cursor is there.
+- To submit, pass `submit=true` (it presses Return after a short pause) instead of a
+  `\n` in the text or a separate `press_key("Return")`. To overwrite a field, click it
+  and pass `replace=true` (select-all first); don't triple-click.
 - For long text (more than a few hundred characters), use `clipboard(action="set", text=...)`
   then `press_key("ctrl+v")`.
 - `Alt+F4`, `Ctrl+Q`, `Ctrl+W`, `Super+Q`, `Ctrl+Alt+Delete`, `Ctrl+Alt+BackSpace` and any
@@ -133,7 +150,7 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 2. `screenshot()` and confirm Firefox is in front.
 3. New tab: `press_key("ctrl+t")`. Address bar: `press_key("ctrl+l")`. This is more
    reliable than clicking the URL bar.
-4. `type_text("https://example.org")`, then `press_key("Return")`, then `wait(2)`, then
+4. `type_text("https://example.org", submit=true)`, then `wait_for_change()`, then
    `screenshot()`.
 5. Read the page from the screenshot. Scroll with `scroll(x, y, dy=5)` over the page
    body, then screenshot again.
@@ -142,6 +159,23 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 7. Copy the URL: `press_key("ctrl+l")`, `press_key("ctrl+c")`, `clipboard()`.
 8. Firefox popups (cookie banners, "restore session", permission prompts) **are content
    you must read**. Screenshot, read the options, then choose deliberately.
+
+## Recipe: file chooser (GTK)
+
+To upload a file: `press_key("ctrl+l")`, `type_text("/full/path/file.png")`, then click the
+**Open** or **Select** button. `Return` may only autocomplete the path and leave the dialog
+open.
+
+## Sharing the screen with the user
+
+On their own screen the user may switch windows or desktops between your actions (to answer
+you in the terminal, say). After `activate_window()`, input that would land in another window
+is refused with an error naming both windows. Then `list_windows()` (it marks the `active`
+window and the `current_desktop`), `activate_window()` the target again, and take a
+screenshot before you retry: they may also have switched tabs. Pass `force=true` only when
+you mean to type into that other window. Every input result names the `window` it reached.
+If the server runs with `--yield-ms`, input waits while the user is typing or moving the
+mouse, and is refused if they keep going; then wait and retry, or ask them.
 
 ## What not to do
 

@@ -46,6 +46,7 @@ class FakeBackend(Backend):
         # Like X's idle counter: any input resets it, ours included. None: the backend cannot tell.
         self.last_event: float | None = -1e9
         self.user_typing = False  # the user never stops
+        self.desktop: int | None = None  # the workspace on show
 
     def sleep(self, seconds):
         self.slept.append(seconds)
@@ -130,6 +131,9 @@ class FakeBackend(Backend):
 
     def active_window(self):
         return self.active
+
+    def current_desktop(self):
+        return self.desktop
 
     def window_at(self, x, y):
         return self.under

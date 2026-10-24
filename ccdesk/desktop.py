@@ -36,7 +36,7 @@ from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 
 MAX_TEXT = 10_000
-MAX_WAIT = 60.0
+MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
 POLL = 0.2  # seconds between captures in wait_for_change
@@ -413,7 +413,10 @@ class Desktop:
     def list_windows(self) -> dict:
         def do():
             self._ready()
-            return {"windows": [w.to_dict() for w in self.backend.list_windows()]}
+            active = self.backend.active_window()
+            # Same geometry on two desktops looks the same in the list: say which one is in front.
+            windows = [{**w.to_dict(), "active": w.id == active} for w in self.backend.list_windows()]
+            return {"windows": windows, "current_desktop": self.backend.current_desktop()}
 
         return self._act("list_windows", {}, do)
 
