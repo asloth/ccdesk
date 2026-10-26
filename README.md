@@ -1,32 +1,59 @@
 # ccdesk
 
-Desktop control for Claude Code on Linux. ccdesk is a small MCP server that lets Claude Code
-take screenshots, move and click the mouse, type, press keys, list and focus windows, and
-use the clipboard. It ships with a skill that teaches Claude the safe workflow: screenshot,
-one action, verify.
+**Claude Code can't see your desktop on Linux. ccdesk gives it eyes and hands.**
 
-There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
-probably already have (`xdotool`, `scrot`, `wmctrl`, `xclip`). The core is standard-library
-Python; the only dependency is the official `mcp` package.
+A small MCP server that lets Claude Code take screenshots, move and click the mouse, type,
+press keys, list and focus windows, use the clipboard and read the accessibility tree, plus a
+skill that teaches the safe loop: look, one action, verify.
 
-## Install
+![ccdesk filling and submitting a GTK form on its own invisible screen](docs/demo.gif)
+
+*Recorded by `bench/record_demo.py`: a real ccdesk session on a private Xvfb screen, not a mockup.*
+
+## Results
+
+Same GTK signup form filled end to end. Claude Code 2.1.304, Opus 5.5, `claude -p`, no user
+settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, median:
+
+| | no ccdesk | screenshots only | ui_tree + changes | + `--always-load` |
+|---|---|---|---|---|
+| Input tokens | 89,456 | 117,743 | 63,361 | **56,681** |
+| Wall time | 30 s | 22 s | 15 s | **15 s** |
+| Images read | 0 to 3 | 3 | **0** | 0 |
+
+- **37% fewer input tokens** than doing it without ccdesk, and 2x faster.
+- The saving is fewer round trips, not cheaper looks: one `ui_tree()` replaces several
+  screenshots, and after the first tree every action returns only the lines that changed.
+- Screenshots alone are the expensive path (118k), because a full-screen first look plus one
+  tool call per click costs more than the shell commands Claude writes when it has no help.
+- Raw numbers, method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). Reproduce with
+  `python bench/run.py`.
+
+## Quickstart
 
 ```sh
-# system tools (Debian/Ubuntu; X11)
-sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils
-# optional: imagemagick (fallback screenshots), xvfb + python3-tk (to run the test suite)
-
-pipx install .            # from a checkout of this repo
-ccdesk doctor             # check what was detected
-ccdesk install --dry-run  # show what install would write and run
-ccdesk install            # register the MCP server + install the skill
+sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils   # Debian/Ubuntu, X11
+pipx install .
+ccdesk doctor        # session type, helper tools, screen size, accessibility bus
+ccdesk install       # register the MCP server with Claude Code and install the skill
 ```
+
+Restart Claude Code and run `/mcp`: `ccdesk` should be listed with 15 tools. To try it on a
+private screen instead of yours, see [Headless](#headless-let-it-work-while-you-use-your-pc).
+
+### Other distributions
 
 On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
 `sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
 `xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
 monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
 one monitor only.
+
+## Why it exists
+
+There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
+probably already have (`xdotool`, `scrot`, `wmctrl`, `xclip`). The core is standard-library
+Python; the only dependency is the official `mcp` package.
 
 ## Wiring it into Claude Code
 
