@@ -41,9 +41,11 @@ works:
    lose. Needs credentials the user gives you; don't go looking for them.
 2. **A browser tool that reads and clicks inside the page**: `firefox-devtools` tools
    (`take_snapshot`, then act on its uids) for Firefox, `claude-in-chrome` for Chrome. Text,
-   not pixels, and the user keeps the mouse. firefox-devtools only connects to a Firefox the
-   user started with `ccdesk firefox`; restarting their browser is their call, so ask, and
-   remind them of `ccdesk firefox --off` when you're done (sites can see the automation).
+   not pixels, and the user keeps the mouse. Usually firefox-devtools opens Claude's own
+   Firefox: if a site needs a login there, ask the user to sign in in that window, never type
+   it yourself. If it was installed with `--firefox mine`, it attaches to the user's Firefox
+   started with `ccdesk firefox`; restarting their browser is their call, so ask, and remind
+   them of `ccdesk firefox --off` when you're done.
 3. **The page's own API, from the devtools console of the tab where the user is signed
    in.** The session stays inside the browser. **Never take cookies or tokens out of the
    browser** (no reading the profile's `cookies.sqlite`, no copying a token into the chat or

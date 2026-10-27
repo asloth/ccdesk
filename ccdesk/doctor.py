@@ -158,7 +158,8 @@ def format_report(report: dict) -> str:
                             None: "unknown"}[report["a11y"].get("bus_enabled")],
         f"cua-driver:   {report['cua_driver'] or 'not found'}",
         "firefox:      " + (("running, automation " + ("on" if report["firefox"]["automation"] else "off"))
-                            if report["firefox"]["running"] else "not running"),
+                            if report["firefox"]["running"] else "not running")
+        + ("; Claude's own Firefox is running" if report["firefox"].get("agent_running") else ""),
         f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}"
         f" yield_ms={report['policy']['yield_ms']}",
         f"user idle:    {'unknown (no xprintidle)' if report['user_idle_ms'] is None else str(report['user_idle_ms']) + ' ms'}",

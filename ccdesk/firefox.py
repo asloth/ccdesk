@@ -1,9 +1,12 @@
-"""Your own Firefox, driven by Mozilla's firefox-devtools MCP server over WebDriver BiDi.
+"""Firefox for Claude, driven by Mozilla's firefox-devtools MCP server over WebDriver BiDi.
 
-ccdesk does not speak BiDi itself. `ccdesk install --firefox` registers Mozilla's server in
-connect-existing mode, and `ccdesk firefox` starts Firefox with the two flags it attaches to.
-While those flags are on, sites can see `navigator.webdriver` and some block the browser as a
-bot, so `ccdesk firefox --off` and doctor() exist to make turning them off again easy.
+ccdesk does not speak BiDi itself; `ccdesk install --firefox` registers Mozilla's server.
+
+- "agent" (the default): the server starts Claude's own Firefox on first use, with a profile
+  kept in profile_dir(). The user signs in there once. Their own Firefox is never touched.
+- "mine": the server attaches to the user's Firefox, which `ccdesk firefox` starts with the
+  two flags it needs. While they are on, sites can see `navigator.webdriver` and some block the
+  browser as a bot, so `ccdesk firefox --off` and doctor() make turning them off again easy.
 """
 
 from __future__ import annotations
@@ -24,9 +27,18 @@ AUTOMATION_WARNING = (
 )
 
 
-def server_command() -> list[str]:
-    return ["npx", "-y", PACKAGE, "--connect-existing", "--marionette-port", str(MARIONETTE_PORT),
-            "--tool-preset", "slim"]
+def profile_dir() -> Path:
+    """Where Claude's own Firefox keeps its profile, logins included: data, not cache."""
+    base = os.environ.get("XDG_DATA_HOME") or os.path.join(os.path.expanduser("~"), ".local", "share")
+    return Path(base) / "ccdesk" / "firefox"
+
+
+def server_command(mode: str = "agent") -> list[str]:
+    if mode == "mine":
+        target = ["--connect-existing", "--marionette-port", str(MARIONETTE_PORT)]
+    else:
+        target = ["--profile-path", str(profile_dir())]
+    return ["npx", "-y", PACKAGE, *target, "--tool-preset", "slim"]
 
 
 def _is_firefox(argv: list[str]) -> bool:
@@ -36,7 +48,9 @@ def _is_firefox(argv: list[str]) -> bool:
 
 
 def processes(proc: Path = Path("/proc"), uid: int | None = None) -> list[dict]:
-    """The user's running Firefox browsers: pid, and whether each has the automation flags."""
+    """The user's running Firefox browsers: pid, whether each has the automation flags, and
+    whether it is Claude's own (its profile is under profile_dir())."""
+    own = str(profile_dir())
     uid = os.getuid() if uid is None else uid
     found = []
     for entry in proc.iterdir() if proc.is_dir() else []:
@@ -50,14 +64,17 @@ def processes(proc: Path = Path("/proc"), uid: int | None = None) -> list[dict]:
             continue
         if _is_firefox(argv):
             on = all(any(a == f or a.startswith(f + "=") for a in argv) for f in AUTOMATION_FLAGS)
-            found.append({"pid": int(entry.name), "automation": on})
+            agent = any(a == own or a.startswith(own + os.sep) for a in argv)
+            found.append({"pid": int(entry.name), "automation": on, "agent": agent})
     return sorted(found, key=lambda p: p["pid"])
 
 
 def status(proc: Path = Path("/proc")) -> dict:
-    running = processes(proc)
+    """The user's own Firefox (running, automation flags on), and whether Claude's is running."""
+    found = processes(proc)
+    running = [p for p in found if not p["agent"]]
     return {"running": bool(running), "automation": any(p["automation"] for p in running),
-            "pids": [p["pid"] for p in running]}
+            "pids": [p["pid"] for p in running], "agent_running": any(p["agent"] for p in found)}
 
 
 def start(extra: list[str], automation: bool = True, proc: Path = Path("/proc"), popen=subprocess.Popen,

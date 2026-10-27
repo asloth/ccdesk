@@ -26,8 +26,16 @@ CONTENT = ["/usr/lib/firefox/firefox", "-contentproc", "-isForBrowser", "tab"]
 
 def test_finds_the_browser_not_its_tab_processes(tmp_path):
     proc = fake_proc(tmp_path, BROWSER, CONTENT, ["/usr/bin/zsh"])
-    assert firefox.processes(proc) == [{"pid": 100, "automation": False}]
-    assert firefox.status(proc) == {"running": True, "automation": False, "pids": [100]}
+    assert firefox.processes(proc) == [{"pid": 100, "automation": False, "agent": False}]
+    assert firefox.status(proc) == {"running": True, "automation": False, "pids": [100], "agent_running": False}
+
+
+def test_claudes_own_firefox_is_not_the_users(tmp_path, monkeypatch):
+    """Its automation flags are expected: doctor must not tell the user to turn them off."""
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    own = str(tmp_path / "data" / "ccdesk" / "firefox" / "firefox_devtools_mcp_profile")
+    proc = fake_proc(tmp_path, [*AUTOMATED, "-profile", own])
+    assert firefox.status(proc) == {"running": False, "automation": False, "pids": [], "agent_running": True}
 
 
 def test_automation_needs_both_flags(tmp_path):
@@ -86,14 +94,26 @@ def test_cli_firefox_passes_extra_args(monkeypatch):
     assert seen == {"extra": [], "on": False}
 
 
-def test_install_firefox_registers_mozillas_server(home, tmp_path, monkeypatch, capsys):
+def test_install_firefox_gives_claude_its_own(home, tmp_path, monkeypatch, capsys):
+    monkeypatch.delenv("XDG_DATA_HOME", raising=False)
     log = fake_claude(tmp_path, monkeypatch)
     assert main(["install", "--firefox"]) == 0
     calls = log.read_text().splitlines()
+    profile = home / ".local" / "share" / "ccdesk" / "firefox"
     assert calls[2] == "mcp remove --scope user firefox-devtools"
     assert calls[3] == ("mcp add --scope user firefox-devtools -- npx -y @mozilla/firefox-devtools-mcp@0.10.6 "
-                        "--connect-existing --marionette-port 2828 --tool-preset slim")
+                        f"--profile-path {profile} --tool-preset slim")
+    assert profile.is_dir() and (profile.stat().st_mode & 0o777) == 0o700
+    assert "your own Firefox is not touched" in capsys.readouterr().out
+
+
+def test_install_firefox_mine_attaches_to_the_users(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--firefox", "mine"]) == 0
+    assert log.read_text().splitlines()[3].endswith(
+        "@mozilla/firefox-devtools-mcp@0.10.6 --connect-existing --marionette-port 2828 --tool-preset slim")
     assert "navigator.webdriver" in capsys.readouterr().out
+    assert not (home / ".local" / "share" / "ccdesk" / "firefox").exists()
 
 
 def test_install_without_firefox_leaves_it_alone(home, tmp_path, monkeypatch, capsys):
@@ -106,10 +126,11 @@ def test_install_without_firefox_leaves_it_alone(home, tmp_path, monkeypatch, ca
 
 def test_doctor_warns_when_automation_is_left_on(monkeypatch, capsys):
     monkeypatch.setenv("CCDESK_BACKEND", "x11")
-    monkeypatch.setattr(firefox, "status", lambda: {"running": True, "automation": True, "pids": [100]})
+    state = {"running": True, "automation": True, "pids": [100], "agent_running": False}
+    monkeypatch.setattr(firefox, "status", lambda: state)
     main(["doctor", "--json"])
     report = json.loads(capsys.readouterr().out)
-    assert report["firefox"] == {"running": True, "automation": True, "pids": [100]}
+    assert report["firefox"] == state
     assert any("ccdesk firefox --off" in w for w in report["warnings"])
     main(["doctor"])
     assert "firefox:      running, automation on" in capsys.readouterr().out

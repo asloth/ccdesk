@@ -140,25 +140,36 @@ does, like a web console or a chat you're signed in to. Keep your hands off the 
 Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
 servers only at startup.
 
-### Your Firefox, without the mouse (opt-in)
+### Firefox for Claude, without the mouse (opt-in)
 
-For web pages in your own Firefox, signed in, while you keep using your PC, ccdesk hands off
-to Mozilla's [firefox-devtools MCP server](https://github.com/mozilla/firefox-devtools-mcp). It
-drives Firefox over WebDriver BiDi: it reads the page as text and clicks inside it, so your
-mouse and keyboard stay yours.
+For web pages, ccdesk can hand off to Mozilla's
+[firefox-devtools MCP server](https://github.com/mozilla/firefox-devtools-mcp). It drives
+Firefox over WebDriver BiDi: it reads the page as text (a small page's snapshot is a few dozen
+tokens) and clicks inside it, so your mouse and keyboard stay yours. Needs Node.js for `npx`.
 
 ```sh
 ccdesk install --firefox   # also registers firefox-devtools (npx, pinned, --tool-preset slim)
-ccdesk firefox             # start Firefox with --marionette --remote-debugging-port
+```
+
+Claude then has **its own Firefox**: the server opens it the first time Claude needs a page,
+with a profile kept in `~/.local/share/ccdesk/firefox`. Sign in there once to the sites Claude
+should use (only those, not your mail or bank); the logins stay for next time. Your own
+Firefox is never restarted or flagged. That browser tells sites it is automated
+(`navigator.webdriver`), so some (Cloudflare, Akamai) may challenge it.
+
+To let Claude use **your** Firefox and the logins it already has instead:
+
+```sh
+ccdesk install --firefox mine
+ccdesk firefox             # start your Firefox with --marionette --remote-debugging-port
 ccdesk firefox --off       # afterwards: start it normally again
 ```
 
-Firefox can only get the flags when it starts, so `ccdesk firefox` refuses while Firefox is
-running and asks you to quit it first (Ctrl+Q; session restore brings your tabs back). It never
-quits Firefox for you. The cost: while the flags are on, sites can see `navigator.webdriver`
-and some (Cloudflare, Akamai) treat the browser as a bot, and any program on this PC can drive
-the browser through the local port. Turn it on for a task, then off; `ccdesk doctor` warns
-while it is on. Needs Node.js for `npx`.
+Firefox only takes the flags when it starts, so `ccdesk firefox` asks you to quit a running
+Firefox first (Ctrl+Q; session restore brings your tabs back); it never quits it for you.
+While the flags are on, sites can see the automation in your everyday browsing, and any
+program on this PC can drive your browser through the local port. `ccdesk doctor` warns
+while it is on.
 
 ## Tools
 

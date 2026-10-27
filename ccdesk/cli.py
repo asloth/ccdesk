@@ -63,9 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--always-load", action="store_true",
                    help="load the tool schemas in every session (saves a round trip when you use the "
                         "desktop, costs ~2.6k tokens per request when you don't)")
-    p.add_argument("--firefox", action="store_true",
-                   help="also register Mozilla's firefox-devtools MCP server, attached to the Firefox "
-                        "you start with `ccdesk firefox`")
+    p.add_argument("--firefox", nargs="?", const="agent", choices=["agent", "mine"],
+                   help="also register Mozilla's firefox-devtools MCP server: Claude's own Firefox "
+                        "(agent, the default) or yours, started with `ccdesk firefox` (mine)")
     _policy_flags(p)
     _headless_flags(p)
 
@@ -75,7 +75,7 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--audit-log", metavar="PATH", help="audit log path (default ~/.cache/ccdesk/audit.log)")
     _headless_flags(p)
 
-    p = sub.add_parser("firefox", help="start your Firefox with automation on, for the firefox-devtools server")
+    p = sub.add_parser("firefox", help="start your Firefox with automation on (for install --firefox mine)")
     p.add_argument("--off", action="store_true", help="start it normally again (quit the automated one first)")
     p.add_argument("extra", nargs="*", metavar="-- FIREFOX_ARGS", help='passed to firefox, e.g. -- -P work')
 

@@ -14,6 +14,7 @@ from importlib import resources
 from pathlib import Path
 
 from ccdesk.firefox import AUTOMATION_WARNING
+from ccdesk.firefox import profile_dir as firefox_profile
 from ccdesk.firefox import SERVER_NAME as FIREFOX_NAME
 from ccdesk.firefox import server_command as firefox_command
 
@@ -64,12 +65,17 @@ class Plan:
         else:
             lines.append("[2] `claude` is not on PATH; register the server(s) yourself with:")
             lines += [f"    {shlex.join(argv)}" for argv in self.commands if "remove" not in argv]
-        if any(FIREFOX_NAME in argv for argv in self.commands):
+        firefox = next((argv for argv in self.commands if FIREFOX_NAME in argv and "add" in argv), None)
+        if firefox and "--connect-existing" in firefox:
             lines += ["", f"firefox-devtools attaches to a Firefox started with `ccdesk firefox`. {AUTOMATION_WARNING}"]
+        elif firefox:
+            lines += ["", f"firefox-devtools starts Claude's own Firefox on first use, with its profile in "
+                          f"{firefox_profile()}. Sign in there to the sites Claude should use; your own "
+                          f"Firefox is not touched."]
         return "\n".join(lines)
 
 
-def make_plan(flags: list[str], always_load: bool = False, firefox: bool = False) -> Plan:
+def make_plan(flags: list[str], always_load: bool = False, firefox: str | None = None) -> Plan:
     src = skill_source()
     claude = shutil.which("claude")
     cmd = server_command(flags)
@@ -87,14 +93,14 @@ def make_plan(flags: list[str], always_load: bool = False, firefox: bool = False
             ["claude", "mcp", "remove", "--scope", "user", SERVER_NAME],
             add,
             *([["claude", "mcp", "remove", "--scope", "user", FIREFOX_NAME],
-               ["claude", "mcp", "add", "--scope", "user", FIREFOX_NAME, "--", *firefox_command()]]
+               ["claude", "mcp", "add", "--scope", "user", FIREFOX_NAME, "--", *firefox_command(firefox)]]
               if firefox else []),
         ],
     )
 
 
 def install(flags: list[str], dry_run: bool = False, out=print, always_load: bool = False,
-            firefox: bool = False) -> int:
+            firefox: str | None = None) -> int:
     plan = make_plan(flags, always_load, firefox)
     out(plan.describe(dry_run))
     if dry_run:
@@ -102,6 +108,8 @@ def install(flags: list[str], dry_run: bool = False, out=print, always_load: boo
     plan.skill_dst.parent.mkdir(parents=True, exist_ok=True)
     plan.skill_dst.write_bytes(plan.skill_bytes)
     out(f"\nwrote {plan.skill_dst}")
+    if firefox == "agent":
+        firefox_profile().mkdir(mode=0o700, parents=True, exist_ok=True)  # it will hold logins
     if not plan.claude:
         out("skill installed; MCP server NOT registered because the claude CLI was not found")
         return 1
