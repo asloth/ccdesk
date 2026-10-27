@@ -6,7 +6,7 @@ import importlib.metadata
 import platform
 from pathlib import Path
 
-from ccdesk import __version__
+from ccdesk import __version__, firefox
 from ccdesk.backends import Backend, detect_session
 from ccdesk.errors import CcdeskError
 from ccdesk.safety import Policy
@@ -47,6 +47,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "user_idle_ms": None,
         "audit_log": str(audit_path),
         "headless": headless.info() if headless else None,
+        "firefox": firefox.status(),
         "warnings": [],
     }
     warnings = report["warnings"]
@@ -90,6 +91,10 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
     report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
                                   run=backend.try_run)
+    if report["firefox"]["automation"]:
+        warnings.append("Firefox is running with automation on (--marionette): sites can see "
+                        "navigator.webdriver and may block it as a bot. When the task is done, quit it "
+                        "and run `ccdesk firefox --off`")
     if report["mcp"] is None:
         warnings.append("python package 'mcp' is not installed: `ccdesk mcp` will not start")
     if report["cua_driver"]:
@@ -152,6 +157,8 @@ def format_report(report: dict) -> str:
         "a11y bus:     " + {True: "on", False: "off (org.a11y.Status IsEnabled=false)",
                             None: "unknown"}[report["a11y"].get("bus_enabled")],
         f"cua-driver:   {report['cua_driver'] or 'not found'}",
+        "firefox:      " + (("running, automation " + ("on" if report["firefox"]["automation"] else "off"))
+                            if report["firefox"]["running"] else "not running"),
         f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}"
         f" yield_ms={report['policy']['yield_ms']}",
         f"user idle:    {'unknown (no xprintidle)' if report['user_idle_ms'] is None else str(report['user_idle_ms']) + ' ms'}",
