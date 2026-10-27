@@ -33,15 +33,15 @@ def test_registered_tools(make_desk):
     assert props["screenshot"] == {"region", "path", "scale", "window"}
     assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
     assert props["list_monitors"] == set()
-    assert props["click"] == {"x", "y", "button", "count", "force"}
-    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
-    assert props["scroll"] == {"x", "y", "dx", "dy", "force"}
-    assert props["type_text"] == {"text", "submit", "replace", "force"}
-    assert props["press_key"] == {"key", "modifiers", "confirm", "force"}
+    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title"}
+    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "expect_title"}
+    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "expect_title"}
+    assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title"}
+    assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
-    assert props["click_element"] == {"ref", "button", "count", "force"}
+    assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
     assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]

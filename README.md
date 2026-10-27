@@ -145,12 +145,12 @@ servers only at startup.
 | Tool | What it does |
 | --- | --- |
 | `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1, force=false)` | Moves the pointer and clicks. `count=2` double-clicks. |
+| `click(x, y, button="left", count=1, force=false, expect_title?)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
-| `type_text(text, submit=false, replace=false, force=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
-| `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, expect_title?)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false, expect_title?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `type_text(text, submit=false, replace=false, force=false, expect_title?)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
+| `press_key(key, modifiers=[], confirm=false, force=false, expect_title?)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `manage_window(title_or_id, action, x?, y?, width?, height?)` | `move`, `resize`, `minimize`, `maximize` or `restore` a window. Returns `before`, `after`, `on_show` and `changed`, read back from the window system, so a request the window manager ignored shows as `changed: false`, as does a window that was already like that. |
@@ -160,7 +160,7 @@ servers only at startup.
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
-| `click_element(ref, button="left", count=1, force=false)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`). |
+| `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
 | `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. For native apps: Firefox and Chromium web forms refuse or ignore it (it says so), so there use `click_element`, then `type_text`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
@@ -303,6 +303,12 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   compositors, focus is unknown and the check is skipped. On Hyprland the stacking order under
   the pointer is inferred, because Hyprland does not report it, and a dialog is recognised as a
   floating window of the same app on the same workspace.
+- **Input goes to the tab Claude chose.** A browser is one window with many tabs, so the
+  check above passes when you switch from the tab Claude was using to your mail. Pass
+  `expect_title="Kimai"` to any of those six tools and it refuses unless the receiving
+  window's title contains that text (case-insensitive); Firefox and Chromium put the active
+  tab's title in the window title. `force=true` does not skip it, and when the window can't
+  be known the call is refused rather than sent unchecked.
 - **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
   `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
   until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then

@@ -197,10 +197,15 @@ class Desktop:
                 return False
         return False
 
-    def _guard(self, force: bool, point: tuple[int, int] | None = None) -> Window | None:
+    def _guard(self, force: bool, point: tuple[int, int] | None = None,
+               expect_title: str | None = None) -> Window | None:
         """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
-        because the user switched to their terminal. Returns the receiving window for the result,
-        and keeps a small copy of it for _changes() to compare with afterwards."""
+        because the user switched to their terminal, or when the receiving window's title lacks
+        expect_title (a browser tab: the window stays the same when the user switches tabs).
+        Returns the receiving window for the result, and keeps a small copy of it for _changes()
+        to compare with afterwards."""
+        if expect_title is not None and (not isinstance(expect_title, str) or not expect_title.strip()):
+            raise ValidationError("expect_title must be a non-empty string, or left out")
         self._yielded = self._yield_to_user()  # first: focus may move while the user finishes
         try:
             windows = {w.id: w for w in self.backend.list_windows()}
@@ -217,6 +222,14 @@ class Desktop:
             raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
                               f"activate_window(): the user may have switched windows. Call "
                               f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
+        if expect_title is not None:
+            # Not skipped by force: the caller named the title it wants on purpose.
+            if window is None:
+                raise PolicyError(f"cannot tell which window would get this input, so expect_title="
+                                  f"{expect_title!r} cannot be checked; leave expect_title out to send it anyway")
+            if expect_title.strip().lower() not in window.title.lower():
+                raise PolicyError(f"{window.title!r} ({window.id}) does not contain {expect_title.strip()!r}: "
+                                  f"the user may have switched tabs. Take a screenshot, switch back, then retry")
         self._after = None  # wait_for_change() compares with the screen after this action, not before
         self._pending = None
         if self.a11y._last is None:
@@ -338,18 +351,20 @@ class Desktop:
             except OSError:
                 pass
 
-    def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False) -> dict:
+    def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False,
+              expect_title: str | None = None) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
-            window = self._guard(force, (px, py))
+            window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
                                                    window))
 
-        return self._act("click", {"x": x, "y": y, "button": button, "count": count, "force": force}, do)
+        return self._act("click", {"x": x, "y": y, "button": button, "count": count, "force": force,
+                                     "expect_title": expect_title}, do)
 
     def move(self, x: int, y: int) -> dict:
         def do():
@@ -362,22 +377,23 @@ class Desktop:
         return self._act("move", {"x": x, "y": y}, do)
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
-             force: bool = False) -> dict:
+             force: bool = False, expect_title: str | None = None) -> dict:
         def do():
             self._ready()
             x0, y0 = self._point(from_x, from_y)
             x1, y1 = self._point(to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
-            window = self._guard(force, (x0, y0))
+            window = self._guard(force, (x0, y0), expect_title)
             self.backend.drag(x0, y0, x1, y1, ms)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
                                                     "duration_ms": ms}, window))
 
         args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
-                "force": force}
+                "force": force, "expect_title": expect_title}
         return self._act("drag", args, do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False,
+               expect_title: str | None = None) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -385,13 +401,15 @@ class Desktop:
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
-            window = self._guard(force, (px, py))
+            window = self._guard(force, (px, py), expect_title)
             self.backend.scroll(px, py, sx, sy)
             return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window))
 
-        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
+        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force,
+                                      "expect_title": expect_title}, do)
 
-    def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False) -> dict:
+    def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False,
+                  expect_title: str | None = None) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
@@ -404,7 +422,7 @@ class Desktop:
             if self.a11y.on_secret_field():
                 raise PolicyError("the focused field is a password field: ccdesk does not type into those. "
                                   "Ask the user to type it themselves")
-            window = self._guard(force)
+            window = self._guard(force, expect_title=expect_title)
             if replace:
                 self.backend.press_key(SELECT_ALL)
                 self.backend.sleep(KEY_SETTLE)
@@ -420,21 +438,23 @@ class Desktop:
                 result["submitted"] = True
             return self._changes(self._with_window(result, window))
 
-        return self._act("type_text", {"text": text, "submit": submit, "replace": replace, "force": force}, do)
+        return self._act("type_text", {"text": text, "submit": submit, "replace": replace, "force": force,
+                                         "expect_title": expect_title}, do)
 
     def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
-                  force: bool = False) -> dict:
+                  force: bool = False, expect_title: str | None = None) -> dict:
         def do():
             combo = parse_key_combo(key, modifiers or [])
             self.policy.check_key(combo, bool(confirm))
             self._ready()
-            window = self._guard(force)
+            window = self._guard(force, expect_title=expect_title)
             self.backend.press_key(combo)
             if moves_focus(combo):
                 self.backend.sleep(FOCUS_SETTLE)  # so a type_text right after lands in the new place
             return self._changes(self._with_window({"pressed": str(combo)}, window))
 
-        args = {"key": key, "modifiers": modifiers or [], "confirm": confirm, "force": force}
+        args = {"key": key, "modifiers": modifiers or [], "confirm": confirm, "force": force,
+                "expect_title": expect_title}
         return self._act("press_key", args, do)
 
     def list_windows(self) -> dict:
@@ -590,7 +610,8 @@ class Desktop:
         return (f"{win.title!r} ({win.wm_class}) is not on the accessibility bus (on the bus: {on_bus}): "
                 f"{missing_hint(win.wm_class, enabled)}. Until then, work from screenshots")
 
-    def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False) -> dict:
+    def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False,
+                      expect_title: str | None = None) -> dict:
         def do():
             self._ready()
             btn = parse_button(button)
@@ -599,19 +620,22 @@ class Desktop:
             label = f'{node["role"]} {node["name"]!r}'
             if not node.get("showing") or not node.get("box"):
                 raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
-            if btn == 1 and n == 1 and node["role"] in NATIVE_ROLES and self._may_skip_pointer(force):
+            # expect_title takes the pointer path: only _guard checks the window that receives the click.
+            if (btn == 1 and n == 1 and expect_title is None and node["role"] in NATIVE_ROLES
+                    and self._may_skip_pointer(force)):
                 self._before_native()
                 action = self.a11y.activate(str(ref).strip())
                 if action:
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
-            window = self._guard(force, (px, py))
+            window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
                                                     "button": button, "count": n}, window))
 
-        return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force}, do)
+        return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force,
+                                             "expect_title": expect_title}, do)
 
     def _may_skip_pointer(self, force: bool) -> bool:
         """A native action reaches its element wherever the pointer and focus are, so _guard has

@@ -108,10 +108,11 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-              force: bool = False) -> dict:
+              force: bool = False, expect_title: str | None = None) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
-        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway."""
-        return desktop.click(x, y, button=button, count=count, force=force)
+        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
+        expect_title: refuse unless the receiving window's title contains it (a browser tab)."""
+        return desktop.click(x, y, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def move(x: int, y: int) -> dict:
@@ -119,29 +120,36 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.move(x, y)
 
     @tool
-    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False) -> dict:
+    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False,
+             expect_title: str | None = None) -> dict:
         """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release."""
-        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force)
+        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force,
+                            expect_title=expect_title)
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False,
+               expect_title: str | None = None) -> dict:
         """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks."""
-        return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
+        return desktop.scroll(x, y, dx=dx, dy=dy, force=force, expect_title=expect_title)
 
     @tool
-    def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False) -> dict:
+    def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
+                  expect_title: str | None = None) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
         replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
         submit=true presses Return afterwards (a trailing newline does the same).
-        After activate_window(), refuses if focus moved to another window; force=true types anyway."""
-        return desktop.type_text(text, submit=submit, replace=replace, force=force)
+        After activate_window(), refuses if focus moved to another window; force=true types anyway.
+        expect_title: refuse unless the focused window's title contains it (case-insensitive). A
+        browser window's title names its active tab, so this catches a tab switch; force does not skip it."""
+        return desktop.type_text(text, submit=submit, replace=replace, force=force, expect_title=expect_title)
 
     @tool
-    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False) -> dict:
+    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False,
+                  expect_title: str | None = None) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
         Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
-        refuses if focus moved to another window; force=true presses anyway."""
-        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force)
+        refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text."""
+        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force, expect_title=expect_title)
 
     @tool
     def list_windows() -> dict:
@@ -184,12 +192,12 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-                      force: bool = False) -> dict:
+                      force: bool = False, expect_title: str | None = None) -> dict:
         """Click an element from the latest ui_tree() result, e.g. ref="e12". A single left click on
         a button, checkbox, link or menu item runs its accessibility action when it has one, without
         moving the pointer; otherwise it clicks the centre. Fails if the element changed or left the
-        screen; call ui_tree() again then."""
-        return desktop.click_element(ref, button=button, count=count, force=force)
+        screen; call ui_tree() again then. expect_title: as in click, and always a real click."""
+        return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
