@@ -140,6 +140,26 @@ does, like a web console or a chat you're signed in to. Keep your hands off the 
 Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
 servers only at startup.
 
+### Your Firefox, without the mouse (opt-in)
+
+For web pages in your own Firefox, signed in, while you keep using your PC, ccdesk hands off
+to Mozilla's [firefox-devtools MCP server](https://github.com/mozilla/firefox-devtools-mcp). It
+drives Firefox over WebDriver BiDi: it reads the page as text and clicks inside it, so your
+mouse and keyboard stay yours.
+
+```sh
+ccdesk install --firefox   # also registers firefox-devtools (npx, pinned, --tool-preset slim)
+ccdesk firefox             # start Firefox with --marionette --remote-debugging-port
+ccdesk firefox --off       # afterwards: start it normally again
+```
+
+Firefox can only get the flags when it starts, so `ccdesk firefox` refuses while Firefox is
+running and asks you to quit it first (Ctrl+Q; session restore brings your tabs back). It never
+quits Firefox for you. The cost: while the flags are on, sites can see `navigator.webdriver`
+and some (Cloudflare, Akamai) treat the browser as a bot, and any program on this PC can drive
+the browser through the local port. Turn it on for a task, then off; `ccdesk doctor` warns
+while it is on. Needs Node.js for `npx`.
+
 ## Tools
 
 | Tool | What it does |
@@ -457,7 +477,8 @@ Layout:
 
 ```
 ccdesk/
-  cli.py          ccdesk doctor | install | mcp | peek | version
+  cli.py          ccdesk doctor | firefox | install | mcp | peek | version
+  firefox.py      ccdesk firefox, and the firefox-devtools registration
   headless.py     --headless: private Xvfb screen, window manager and D-Bus
   server.py       MCP tool definitions (the only module importing `mcp`)
   desktop.py      validation + policy + audit around a backend

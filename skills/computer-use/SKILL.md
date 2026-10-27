@@ -39,14 +39,19 @@ works:
 
 1. **An official API or CLI with a token, off-screen.** Best: no shared keyboard, no tab to
    lose. Needs credentials the user gives you; don't go looking for them.
-2. **The page's own API, from the devtools console of the tab where the user is signed
+2. **A browser tool that reads and clicks inside the page**: `firefox-devtools` tools
+   (`take_snapshot`, then act on its uids) for Firefox, `claude-in-chrome` for Chrome. Text,
+   not pixels, and the user keeps the mouse. firefox-devtools only connects to a Firefox the
+   user started with `ccdesk firefox`; restarting their browser is their call, so ask, and
+   remind them of `ccdesk firefox --off` when you're done (sites can see the automation).
+3. **The page's own API, from the devtools console of the tab where the user is signed
    in.** The session stays inside the browser. **Never take cookies or tokens out of the
    browser** (no reading the profile's `cookies.sqlite`, no copying a token into the chat or
    a shell): using the session in the page is fine, exporting it is not.
-3. **`ui_tree()` + `click_element()`** when there is no usable API.
-4. **Screenshots** last, with `scale=` and `region=`.
+4. **`ui_tree()` + `click_element()`** when there is no usable API.
+5. **Screenshots** last, with `scale=` and `region=`.
 
-The console route (2):
+The console route (3):
 
 - `activate_window()` the browser, check with a screenshot that the right tab is in front,
   then pass `expect_title="<that tab's title>"` on **every** key and `type_text` call that
