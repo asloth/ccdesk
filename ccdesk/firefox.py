@@ -33,6 +33,33 @@ def profile_dir() -> Path:
     return Path(base) / "ccdesk" / "firefox"
 
 
+# Mozilla's server runs Firefox in this subfolder of --profile-path, and reuses one that exists.
+PROFILE_SUBDIR = "firefox_devtools_mcp_profile"
+MARK = "/* ccdesk: this window is Claude's. Remove this line and ccdesk leaves the file alone. */"
+USER_CHROME = MARK + """
+#navigator-toolbox { border-top: 6px solid #d97757 !important; }
+.tabbrowser-tab[selected] .tab-background { background: #d97757 !important; }
+.tabbrowser-tab[selected] .tab-label { color: #fff !important; }
+"""
+STYLESHEETS_PREF = 'user_pref("toolkit.legacyUserProfileCustomizations.stylesheets", true);'
+
+
+def prepare_profile() -> Path:
+    """Make Claude's Firefox easy to tell apart: an orange strip on top and orange active tab.
+    Leaves a userChrome.css alone once the user has edited it (it no longer starts with MARK)."""
+    profile = profile_dir() / PROFILE_SUBDIR
+    (profile / "chrome").mkdir(mode=0o700, parents=True, exist_ok=True)
+    os.chmod(profile_dir(), 0o700)  # it will hold logins
+    css = profile / "chrome" / "userChrome.css"
+    if not css.exists() or css.read_text(errors="replace").startswith(MARK):
+        css.write_text(USER_CHROME)
+    user_js = profile / "user.js"
+    prefs = user_js.read_text(errors="replace") if user_js.exists() else ""
+    if STYLESHEETS_PREF not in prefs:
+        user_js.write_text(prefs + ("" if not prefs or prefs.endswith("\n") else "\n") + STYLESHEETS_PREF + "\n")
+    return profile
+
+
 def server_command(mode: str = "agent") -> list[str]:
     if mode == "mine":
         target = ["--connect-existing", "--marionette-port", str(MARIONETTE_PORT)]

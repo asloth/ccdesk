@@ -14,6 +14,7 @@ from importlib import resources
 from pathlib import Path
 
 from ccdesk.firefox import AUTOMATION_WARNING
+from ccdesk.firefox import prepare_profile as prepare_firefox_profile
 from ccdesk.firefox import profile_dir as firefox_profile
 from ccdesk.firefox import SERVER_NAME as FIREFOX_NAME
 from ccdesk.firefox import server_command as firefox_command
@@ -109,7 +110,7 @@ def install(flags: list[str], dry_run: bool = False, out=print, always_load: boo
     plan.skill_dst.write_bytes(plan.skill_bytes)
     out(f"\nwrote {plan.skill_dst}")
     if firefox == "agent":
-        firefox_profile().mkdir(mode=0o700, parents=True, exist_ok=True)  # it will hold logins
+        out(f"prepared {prepare_firefox_profile()} (orange, so you can tell Claude's Firefox from yours)")
     if not plan.claude:
         out("skill installed; MCP server NOT registered because the claude CLI was not found")
         return 1

@@ -104,7 +104,9 @@ def test_install_firefox_gives_claude_its_own(home, tmp_path, monkeypatch, capsy
     assert calls[3] == ("mcp add --scope user firefox-devtools -- npx -y @mozilla/firefox-devtools-mcp@0.10.6 "
                         f"--profile-path {profile} --tool-preset slim")
     assert profile.is_dir() and (profile.stat().st_mode & 0o777) == 0o700
-    assert "your own Firefox is not touched" in capsys.readouterr().out
+    assert (profile / "firefox_devtools_mcp_profile" / "chrome" / "userChrome.css").is_file()
+    out = capsys.readouterr().out
+    assert "your own Firefox is not touched" in out and "orange" in out
 
 
 def test_install_firefox_mine_attaches_to_the_users(home, tmp_path, monkeypatch, capsys):
@@ -134,3 +136,23 @@ def test_doctor_warns_when_automation_is_left_on(monkeypatch, capsys):
     assert any("ccdesk firefox --off" in w for w in report["warnings"])
     main(["doctor"])
     assert "firefox:      running, automation on" in capsys.readouterr().out
+
+
+def test_claudes_firefox_is_marked(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    profile = firefox.prepare_profile()
+    assert profile == tmp_path / "data" / "ccdesk" / "firefox" / "firefox_devtools_mcp_profile"
+    assert "#d97757" in (profile / "chrome" / "userChrome.css").read_text()
+    assert (profile / "user.js").read_text() == firefox.STYLESHEETS_PREF + "\n"
+    assert (profile.parent.stat().st_mode & 0o777) == 0o700
+
+
+def test_marking_keeps_the_users_edits(tmp_path, monkeypatch):
+    monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
+    profile = firefox.prepare_profile()
+    (profile / "chrome" / "userChrome.css").write_text("/* mine */")
+    (profile / "user.js").write_text('user_pref("a", 1);')
+    firefox.prepare_profile()
+    firefox.prepare_profile()
+    assert (profile / "chrome" / "userChrome.css").read_text() == "/* mine */"
+    assert (profile / "user.js").read_text() == 'user_pref("a", 1);\n' + firefox.STYLESHEETS_PREF + "\n"

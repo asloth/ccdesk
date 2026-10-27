@@ -153,8 +153,9 @@ ccdesk install --firefox   # also registers firefox-devtools (npx, pinned, --too
 
 Claude then has **its own Firefox**: the server opens it the first time Claude needs a page,
 with a profile kept in `~/.local/share/ccdesk/firefox`. Sign in there once to the sites Claude
-should use (only those, not your mail or bank); the logins stay for next time. Your own
-Firefox is never restarted or flagged. That browser tells sites it is automated
+should use (only those, not your mail or bank); the logins stay for next time. Its window
+has an orange strip on top and an orange active tab, so you can tell it from yours (the
+profile's `chrome/userChrome.css`). Your own Firefox is never restarted or flagged. That browser tells sites it is automated
 (`navigator.webdriver`), so some (Cloudflare, Akamai) may challenge it.
 
 To let Claude use **your** Firefox and the logins it already has instead:
