@@ -157,6 +157,26 @@ class Backend:
     def activate_window(self, window: Window) -> None:
         self._unsupported("activate_window")
 
+    def move_window(self, window: Window, x: int, y: int) -> None:
+        self._unsupported("moving windows")
+
+    def resize_window(self, window: Window, width: int, height: int) -> None:
+        self._unsupported("resizing windows")
+
+    def minimize_window(self, window: Window) -> None:
+        self._unsupported("minimizing windows")
+
+    def maximize_window(self, window: Window) -> None:
+        self._unsupported("maximizing windows")
+
+    def restore_window(self, window: Window) -> None:
+        """Undo minimize and maximize."""
+        self._unsupported("restoring windows")
+
+    def window_on_show(self, window_id: str) -> bool | None:
+        """Whether the window is on screen now (not minimized or on another desktop), or None if unknown."""
+        return None
+
     def active_window(self) -> str | None:
         """Id of the window with keyboard focus (as list_windows spells it), or None if unknown."""
         return None

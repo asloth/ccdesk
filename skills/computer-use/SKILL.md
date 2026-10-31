@@ -7,7 +7,8 @@ description: Drive the Linux desktop through the ccdesk MCP server - take screen
 
 You control the real desktop through the `ccdesk` MCP tools: `screenshot`, `click`, `move`,
 `drag`, `scroll`, `type_text`, `press_key`, `list_windows`, `activate_window`, `clipboard`,
-`wait`, `wait_for_change`, `doctor`, `ui_tree`, `click_element`, and `launch` (only if the
+`wait`, `wait_for_change`, `doctor`, `ui_tree`, `click_element`, `manage_window`,
+`list_monitors`, and `launch` (only if the
 server was started with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
@@ -83,8 +84,14 @@ ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  .
   Use `wait(seconds)` only for a known delay.
 - **One monitor at a time.** With several monitors the full screenshot is very wide and
   gets shown to you heavily downscaled, so small text becomes hard to read.
-  `doctor().monitors` lists each monitor's `x, y, width, height`; pass that as the
+  `list_monitors()` gives each monitor's `x, y, width, height`; pass that as the
   `region` to see one monitor at full resolution.
+- **One window at a time.** `screenshot(window="Title")` captures just that window, cheaper
+  than the full screen. It is a crop, so `activate_window()` first if something may cover it.
+- **Arranging windows.** `manage_window` moves, resizes, minimizes, maximizes and restores.
+  Check `changed` in the result: `false` means its box and visibility stayed the same (already
+  like that, or ignored), so screenshot to be sure. These are the user's windows,
+  so only rearrange them when the task needs it.
 
 ## Token budget
 

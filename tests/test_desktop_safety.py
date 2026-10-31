@@ -9,7 +9,7 @@ import pytest
 
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
-from ccdesk.errors import PolicyError, UnsupportedError, ValidationError
+from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError, ValidationError
 from ccdesk.parsing import Window, parse_confirm_keys
 from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, default_audit_path
 
@@ -79,6 +79,7 @@ def test_audit_failure_does_not_break_actions(fake, tmp_path):
     lambda d: d.type_text("x"),
     lambda d: d.press_key("a"),
     lambda d: d.activate_window("Terminal"),
+    lambda d: d.manage_window("Terminal", "minimize"),
     lambda d: d.clipboard("set", "x"),
     lambda d: d.launch("true"),
 ])
@@ -97,6 +98,8 @@ def test_read_only_allows_observation(make_desk):
     assert d.clipboard("get") == {"text": ""}
     assert d.wait(0) == {"waited": 0.0}
     assert d.doctor()["policy"]["read_only"] is True
+    assert d.list_monitors()["screen"] == {"width": 800, "height": 600}
+    assert d.screenshot(window="Terminal")["width"] == 300
 
 
 def test_input_tools_set():
@@ -424,3 +427,118 @@ def test_closed_target_is_reported(make_desk, fake):
     fake.active = TERMINAL
     with pytest.raises(PolicyError, match="is gone"):
         d.press_key("Return")
+
+
+def test_manage_window_reports_before_and_after(make_desk, fake):
+    d = make_desk()
+    out = d.manage_window("Terminal", "move", x=50, y=60)
+    assert fake.calls[-1] == ("move_window", "0x02000001", 50, 60)
+    assert out["changed"] is True and out["window"]["title"] == "Terminal"
+    assert (out["before"]["geometry"]["x"], out["after"]["geometry"]["x"]) == (10, 50)
+    assert d.manage_window("Terminal", "resize", width=640, height=480)["after"]["geometry"]["width"] == 640
+    assert d.manage_window("Terminal", "maximize")["after"]["geometry"]["height"] == 600
+
+
+def test_manage_window_minimize_and_restore_change_on_show(make_desk):
+    d = make_desk()
+    out = d.manage_window("Terminal", "minimize")
+    assert (out["changed"], out["on_show"]) == (True, False)
+    out = d.manage_window("Terminal", "restore")
+    assert (out["changed"], out["on_show"]) == (True, True)
+
+
+def test_manage_window_says_when_nothing_happened(make_desk, fake):
+    fake.move_window = lambda window, x, y: None  # a window manager that ignores the request
+    out = make_desk().manage_window("Terminal", "move", x=50, y=60)
+    assert out["changed"] is False and "ignored" in out["note"]
+
+
+@pytest.mark.parametrize("kw,message", [
+    ({"action": "spin"}, "action must be"),
+    ({"action": "move", "x": 1}, "needs x and y"),
+    ({"action": "resize", "width": 5}, "needs width and height"),
+    ({"action": "resize", "width": 0, "height": 5}, ">= 1"),
+    ({"action": "minimize", "x": 1}, "does not take x"),
+    ({"action": "move", "x": 1, "y": 2, "width": 3}, "does not take width"),
+])
+def test_manage_window_validates(make_desk, fake, kw, message):
+    with pytest.raises(ValidationError, match=message):
+        make_desk().manage_window("Terminal", **kw)
+    assert not [c for c in fake.calls if c[0].endswith("_window")]
+
+
+def test_manage_window_audited(make_desk, read_audit):
+    make_desk().manage_window("Terminal", "move", x=1, y=2)
+    entry = read_audit()[-1]
+    assert (entry["tool"], entry["status"], entry["args"]["x"]) == ("manage_window", "ok", 1)
+
+
+def test_list_monitors(make_desk, fake):
+    d = make_desk()
+    assert d.list_monitors()["monitors"] == [] and "unknown" in d.list_monitors()["note"]
+    fake.monitor_list = [{"name": "HDMI-1", "x": 0, "y": 0, "width": 800, "height": 600}]
+    out = d.list_monitors()
+    assert out["monitors"] == fake.monitor_list and "note" not in out
+
+
+def test_screenshot_of_a_window_crops_to_it(make_desk):
+    out = make_desk().screenshot(window="Terminal")
+    assert (out["width"], out["height"]) == (300, 200)
+    assert out["origin"] == {"x": 10, "y": 10}
+    assert out["window"]["title"] == "Terminal"
+
+
+def test_screenshot_of_a_window_refuses_what_is_not_on_show(make_desk, fake):
+    fake.hidden.add("0x02000001")
+    with pytest.raises(CcdeskError, match="minimized or on another desktop"):
+        make_desk().screenshot(window="Terminal")
+    assert not [c for c in fake.calls if c[0] == "screenshot"]
+
+
+def test_screenshot_window_and_region_conflict(make_desk):
+    with pytest.raises(ValidationError, match="not both"):
+        make_desk().screenshot(window="Terminal", region="0,0,10,10")
+
+
+def test_manage_window_ignores_a_title_change(make_desk, fake):
+    def retitle(window, x, y):
+        fake._replace_window(window, title="Terminal: building")  # the app did it; the move was ignored
+    fake.move_window = retitle
+    out = make_desk().manage_window("Terminal", "move", x=50, y=60)
+    assert out["changed"] is False and "ignored" in out["note"]
+
+
+def test_manage_window_waits_for_a_slow_window_manager(make_desk, fake):
+    real_sleep = fake.sleep
+    slept = []
+
+    def sleep(seconds):
+        slept.append(seconds)
+        real_sleep(seconds)
+        if len(slept) == 4:  # landed a while after the request
+            fake._replace_window(fake.windows[1], x=50, y=60)
+
+    fake.sleep = sleep
+    fake.move_window = lambda window, x, y: None
+    out = make_desk().manage_window("Terminal", "move", x=50, y=60)
+    assert out["changed"] is True and out["after"]["geometry"]["x"] == 50 and "note" not in out
+
+
+def test_manage_window_minimize_counts_when_only_on_show_changes(make_desk):
+    out = make_desk().manage_window("Terminal", "minimize")  # same box, as on sway's scratchpad
+    assert out["changed"] is True and out["before"]["geometry"] == out["after"]["geometry"]
+
+
+def test_screenshot_of_a_window_warns_when_it_cannot_check(make_desk, fake):
+    fake.window_on_show = lambda window_id: None
+    assert "could not check" in make_desk().screenshot(window="Terminal")["warning"]
+    fake.window_on_show = lambda window_id: True
+    assert "warning" not in make_desk().screenshot(window="Terminal")
+
+
+def test_manage_window_says_when_the_window_closed(make_desk, fake):
+    def close(window, x, y):
+        fake.windows = [w for w in fake.windows if w.id != window.id]
+    fake.move_window = close
+    out = make_desk().manage_window("Terminal", "move", x=50, y=60)
+    assert out["after"] is None and "gone" in out["note"]

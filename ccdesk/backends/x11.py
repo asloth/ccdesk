@@ -185,6 +185,54 @@ class X11Backend(Backend):
         # Without an EWMH window manager there is no "active window": raise and focus instead.
         self._xdotool("windowraise", wid, "windowfocus", wid)
 
+    def _bspwm(self, window: Window) -> bool:
+        # Whether bspwm manages this window: bspc may answer for another screen (BSPWM_SOCKET).
+        return bool(self.which("bspc") and self.try_run(["bspc", "query", "-N", "-n", window.id]) is not None)
+
+    def _bspc_node(self, window: Window, *args: str) -> None:
+        # It exits 1 when the node is already in that state; manage_window reports what really changed.
+        self.try_run(["bspc", "node", window.id, *args])
+
+    def _set_box(self, window: Window, *command: str) -> None:
+        # bspwm ignores geometry requests from tiled windows: they have to float first.
+        if self._bspwm(window):
+            self._bspc_node(window, "-t", "floating")
+        self._xdotool(command[0], str(int(window.id, 16)), *command[1:])
+
+    def move_window(self, window: Window, x: int, y: int) -> None:
+        self._set_box(window, "windowmove", str(x), str(y))
+
+    def resize_window(self, window: Window, width: int, height: int) -> None:
+        self._set_box(window, "windowsize", str(width), str(height))
+
+    def minimize_window(self, window: Window) -> None:
+        if self._bspwm(window):
+            self._bspc_node(window, "-g", "hidden=on")
+        else:
+            self._xdotool("windowminimize", str(int(window.id, 16)))
+
+    def maximize_window(self, window: Window) -> None:
+        if self._bspwm(window):  # it has no maximized state; fullscreen is the closest
+            self._bspc_node(window, "-t", "fullscreen")
+            return
+        wid = str(int(window.id, 16))
+        self._xdotool("windowstate", "--add", "MAXIMIZED_VERT", wid, "windowstate", "--add", "MAXIMIZED_HORZ", wid)
+
+    def restore_window(self, window: Window) -> None:
+        if self._bspwm(window):
+            self._bspc_node(window, "-g", "hidden=off")
+            self._bspc_node(window, "-t", "tiled")
+        else:
+            wid = str(int(window.id, 16))
+            self._xdotool("windowmap", wid, "windowstate", "--remove", "MAXIMIZED_VERT", wid,
+                          "windowstate", "--remove", "MAXIMIZED_HORZ", wid)
+        self.activate_window(window)
+
+    def window_on_show(self, window_id: str) -> bool | None:
+        out = self.try_run(["xwininfo", "-id", window_id]) if self.which("xwininfo") else None
+        m = re.search(r"Map State:\s*(\w+)", out or "")
+        return m.group(1) == "IsViewable" if m else None
+
     def active_window(self) -> str | None:
         # _NET_ACTIVE_WINDOW: without an EWMH window manager this fails and focus is unknown.
         out = (self.try_run(["xdotool", "getactivewindow"]) or "").strip() if self.which("xdotool") else ""

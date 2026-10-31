@@ -37,7 +37,7 @@ or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR fir
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
-    "ui_tree", "click_element", "wait_for_change",
+    "ui_tree", "click_element", "wait_for_change", "manage_window", "list_monitors",
 )
 
 
@@ -59,11 +59,14 @@ def build_server(desktop: Desktop) -> MCPServer:
         return server.tool()(reporting)
 
     @tool
-    def screenshot(region: str | None = None, path: str | None = None, scale: float = 1.0) -> dict:
+    def screenshot(region: str | None = None, path: str | None = None, scale: float = 1.0,
+                   window: str | None = None) -> dict:
         """Capture the screen (or region "x,y,width,height") to a PNG. Returns path, width, height
         and approx_tokens (what reading it costs). scale=0.5 halves each side for ~4x fewer tokens;
-        then divide image pixels by scale to get screen pixels. Read the returned path to see it."""
-        return desktop.screenshot(region=region, path=path, scale=scale)
+        then divide image pixels by scale to get screen pixels. Read the returned path to see it.
+        window: capture only that window, by id or title. It is a crop of the screen, so anything
+        covering the window shows too: activate_window() it first."""
+        return desktop.screenshot(region=region, path=path, scale=scale, window=window)
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
@@ -113,6 +116,23 @@ def build_server(desktop: Desktop) -> MCPServer:
         """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title.
         Later clicks, keys and typing are refused if they would reach another window (force=true overrides)."""
         return desktop.activate_window(title_or_id)
+
+    @tool
+    def manage_window(title_or_id: str, action: Literal["move", "resize", "minimize", "maximize", "restore"],
+                      x: int | None = None, y: int | None = None, width: int | None = None,
+                      height: int | None = None) -> dict:
+        """Move (x, y), resize (width, height), minimize, maximize or restore a window, by id or title.
+        Returns before, after, on_show and changed; changed=false means its box and visibility stayed
+        the same, so it may already have been like that or the request was ignored: check with a
+        screenshot. On a tiling window manager, move and resize make the window float, and maximize
+        may mean fullscreen."""
+        return desktop.manage_window(title_or_id, action, x=x, y=y, width=width, height=height)
+
+    @tool
+    def list_monitors() -> dict:
+        """List monitors (name, x, y, width, height) and the whole screen's size. Pass a monitor's
+        box as screenshot(region="x,y,width,height") to see it at full resolution."""
+        return desktop.list_monitors()
 
     @tool
     def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,

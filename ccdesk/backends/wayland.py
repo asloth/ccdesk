@@ -69,6 +69,41 @@ def sway_content_origin(tree: dict, pid: int | None, title: str | None) -> tuple
     return rect.get("x", 0) + inner.get("x", 0), rect.get("y", 0) + inner.get("y", 0)
 
 
+def sway_window_place(tree: dict, window_id: str) -> tuple[bool, bool] | None:
+    """(visible, in the scratchpad) for a window in the tree, or None if it is not there."""
+    def walk(node: dict, workspace: str | None):
+        if node.get("type") == "workspace":
+            workspace = node.get("name")
+        if str(node.get("id")) == window_id:
+            return bool(node.get("visible")), workspace == "__i3_scratch"
+        for child in node.get("nodes", []) + node.get("floating_nodes", []):
+            found = walk(child, workspace)
+            if found:
+                return found
+        return None
+
+    return walk(tree, None)
+
+
+def parse_sway_outputs(outputs: list) -> list[dict]:
+    return [{"name": o.get("name", ""), **{k: o["rect"][k] for k in ("x", "y", "width", "height")},
+             "scale": o.get("scale", 1), "focused": bool(o.get("focused"))}
+            for o in outputs if o.get("active") and o.get("rect")]
+
+
+def parse_hyprctl_monitors(monitors: list) -> list[dict]:
+    """hyprctl gives the mode in physical pixels; windows and the pointer use logical ones."""
+    out = []
+    for m in monitors:
+        scale = m.get("scale") or 1
+        width, height = round(m.get("width", 0) / scale), round(m.get("height", 0) / scale)
+        if m.get("transform", 0) % 2:  # rotated 90 or 270 degrees
+            width, height = height, width
+        out.append({"name": m.get("name", ""), "x": m.get("x", 0), "y": m.get("y", 0), "width": width,
+                    "height": height, "scale": scale, "focused": bool(m.get("focused"))})
+    return out
+
+
 def parse_hyprctl_clients(clients: list) -> list[Window]:
     out = []
     for c in clients:
@@ -234,6 +269,56 @@ class WaylandBackend(Backend):
             x.activate_window(window)
         else:
             raise UnsupportedError("this Wayland compositor does not allow activating windows from outside")
+
+    def monitors(self) -> list[dict]:
+        if self._sway():
+            return parse_sway_outputs(json.loads(self.try_run(["swaymsg", "-t", "get_outputs", "-r"]) or "[]"))
+        if self._hyprland():
+            return parse_hyprctl_monitors(json.loads(self.try_run(["hyprctl", "-j", "monitors"]) or "[]"))
+        return []
+
+    def _sway_window(self, what: str, window: Window, command: str) -> None:
+        if not self._sway():
+            raise UnsupportedError(f"{what} windows on Wayland is only implemented on sway; this compositor "
+                                   f"has no portable way to do it from outside")
+        self.run(["swaymsg", f"[con_id={window.id}]", command])
+
+    def move_window(self, window: Window, x: int, y: int) -> None:
+        self._sway_window("moving", window, f"floating enable, move absolute position {x} {y}")
+
+    def resize_window(self, window: Window, width: int, height: int) -> None:
+        self._sway_window("resizing", window, f"floating enable, resize set {width} {height}")
+
+    def minimize_window(self, window: Window) -> None:
+        self._sway_window("minimizing", window, "move scratchpad")
+
+    def maximize_window(self, window: Window) -> None:
+        self._sway_window("maximizing", window, "fullscreen enable")
+
+    def restore_window(self, window: Window) -> None:
+        # Only a window in the scratchpad needs bringing back: others stay on their own workspace.
+        tree = self.try_run(["swaymsg", "-t", "get_tree", "-r"]) if self._sway() else None
+        place = sway_window_place(json.loads(tree or "{}"), window.id)
+        back = "scratchpad show, floating disable, " if place and place[1] else ""
+        self._sway_window("restoring", window, f"{back}fullscreen disable, focus")
+
+    def _hyprland(self) -> bool:
+        return bool(self.which("hyprctl") and self.env.get("HYPRLAND_INSTANCE_SIGNATURE"))
+
+    def window_on_show(self, window_id: str) -> bool | None:
+        if self._sway():
+            place = sway_window_place(json.loads(self.try_run(["swaymsg", "-t", "get_tree", "-r"]) or "{}"), window_id)
+            return place[0] if place else None
+        if self._hyprland():
+            clients = json.loads(self.try_run(["hyprctl", "clients", "-j"]) or "[]")
+            monitors = json.loads(self.try_run(["hyprctl", "-j", "monitors"]) or "[]")
+            client = next((c for c in clients if c.get("address") == window_id), None)
+            if client is None or not monitors:
+                return None
+            # A monitor shows its workspace and, on top when toggled on, a special one.
+            on_show = {(m.get(k) or {}).get("id") for m in monitors for k in ("activeWorkspace", "specialWorkspace")}
+            return (client.get("workspace") or {}).get("id") in on_show
+        return None
 
     def clipboard_get(self) -> str:
         self.need("clipboard", "wl-paste")

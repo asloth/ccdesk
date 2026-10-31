@@ -142,7 +142,7 @@ servers only at startup.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?, scale=1)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `scale=0.5` halves each side (needs ImageMagick). |
+| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
 | `click(x, y, button="left", count=1, force=false)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
 | `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
@@ -151,6 +151,8 @@ servers only at startup.
 | `press_key(key, modifiers=[], confirm=false, force=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
+| `manage_window(title_or_id, action, x?, y?, width?, height?)` | `move`, `resize`, `minimize`, `maximize` or `restore` a window. Returns `before`, `after`, `on_show` and `changed`, read back from the window system, so a request the window manager ignored shows as `changed: false`, as does a window that was already like that. |
+| `list_monitors()` | Each monitor's name and box, plus the size of the whole screen. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
 | `wait(seconds)` | Sleeps, up to 300 s. |
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
@@ -276,7 +278,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
 - **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `move`,
-  `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `clipboard(set)` and
+  `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with
   `--allow-launch`. Even then it runs the command without a shell (`shlex.split`, no pipes,
@@ -341,6 +343,9 @@ compositor allows:
   note to verify with a screenshot.
 - **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland).
   Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
+- **Window control** (`manage_window`) is implemented on sway only; other compositors refuse
+  with a clear error. **Monitors** come from `swaymsg` or `hyprctl`. **Per-window screenshots**
+  crop the window's box, which needs a compositor that lists windows.
 - **Clipboard** uses `wl-copy` / `wl-paste`.
 - If you only need to drive XWayland apps, `CCDESK_BACKEND=x11` (or `--backend x11`)
   forces the X11 backend.
@@ -359,6 +364,15 @@ compositor allows:
 | Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | Headless (`--headless`, any session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ private clipboard |
 | No display (SSH, CI) | ❌ (doctor explains) | ❌ | ❌ | ❌ | ❌ | ❌ |
+
+`manage_window` on X11 uses `xdotool` (EWMH window managers). On bspwm it goes through `bspc`:
+move and resize make a tiled window float, maximize means fullscreen (bspwm has no maximized
+state), minimize hides the node, and restore unhides it and tiles it again, including a window
+you had floating. On X11, "on show" means the window is mapped; a window manager that keeps
+windows mapped on other desktops can't be told apart, and with several monitors the current
+desktop can't decide it, because each monitor shows its own.
+`tests/test_integration_windows.py` runs that against a real bspwm on a private screen. Other
+X11 window managers and sway are covered by unit tests of the commands ccdesk builds.
 
 The X11 rows are exercised by the integration suite under Xvfb, and the sway row by
 `tests/test_integration_wayland.py` on a headless sway it starts itself (screenshots, window
