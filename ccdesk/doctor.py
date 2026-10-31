@@ -62,6 +62,10 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append(f"cannot read screen size: {exc}")
         report["scale"] = backend.scale_info()
         report["monitors"] = backend.monitors()
+        if any(m["x"] < 0 or m["y"] < 0 for m in report["monitors"]):
+            warnings.append("a monitor sits at a negative position, and ccdesk's coordinates start at 0,0: part "
+                            "of the screen can't be clicked and screenshots won't line up. Place the leftmost "
+                            "and topmost monitors at 0")
         try:
             report["user_idle_ms"] = backend.idle_ms()
         except CcdeskError:
@@ -73,7 +77,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         warnings.append(f"no tool for {cap}: install {names}")
     if backend.name == "wayland":
         warnings.append(
-            "Wayland: input needs ydotoold running with /dev/uinput access; "
+            "Wayland: outside sway and Hyprland, the keyboard and any compositor without a virtual "
+            "pointer need ydotoold running with /dev/uinput access; "
             "window listing only works on sway/Hyprland or for XWayland apps"
         )
         if env.get("DISPLAY"):

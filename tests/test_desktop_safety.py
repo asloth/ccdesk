@@ -542,3 +542,8 @@ def test_manage_window_says_when_the_window_closed(make_desk, fake):
     fake.move_window = close
     out = make_desk().manage_window("Terminal", "move", x=50, y=60)
     assert out["after"] is None and "gone" in out["note"]
+
+
+def test_doctor_warns_about_a_monitor_at_a_negative_position(make_desk, fake):
+    fake.monitor_list = [{"name": "HDMI-1", "x": -1920, "y": 0, "width": 1920, "height": 1080}]
+    assert any("negative position" in w for w in make_desk().doctor()["warnings"])

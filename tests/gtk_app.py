@@ -11,12 +11,13 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 state_path = sys.argv[1]
-state = {"ready": False, "clicks": 0, "agree": False, "entry": ""}
+state = {"ready": False, "clicks": 0, "agree": False, "entry": "", "level": 50}
 
 
 def save(*_):
     state["entry"] = entry.get_text()
     state["agree"] = check.get_active()
+    state["level"] = round(scale.get_value())
     tmp = state_path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(state, fh)
@@ -47,7 +48,11 @@ entry.connect("changed", save)
 entry.connect("activate", submitted)
 check = Gtk.CheckButton(label="I agree")
 check.connect("toggled", save)
-for w in (button, label, entry, check):
+scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)  # takes the wheel and a drag
+scale.set_value(50)
+scale.get_accessible().set_name("Level")
+scale.connect("value-changed", save)
+for w in (button, label, entry, check, scale):
     box.pack_start(w, False, False, 0)
 win.add(box)
 win.show_all()
