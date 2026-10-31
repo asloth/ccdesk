@@ -294,8 +294,10 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   another window, for example because you switched to your terminal to answer. Dialogs of
   that window, such as a file chooser, count as the same window. `force=true` sends it
   anyway. Every input result names the window that received it (`"window": {id, title}`).
-  This needs an EWMH window manager on X11; without one, or on Wayland, focus is unknown
-  and the check is skipped.
+  This needs an EWMH window manager on X11 or Hyprland; without one, or on other Wayland
+  compositors, focus is unknown and the check is skipped. On Hyprland the stacking order under
+  the pointer is inferred, because Hyprland does not report it, and a dialog is recognised as a
+  floating window of the same app on the same workspace.
 - **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
   `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
   until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then
@@ -327,25 +329,39 @@ Wayland isolates clients from each other by design, so ccdesk can only do what t
 compositor allows:
 
 - **Screenshots** need `grim`, which requires wlr-screencopy (sway, Hyprland, river, Wayfire).
-  GNOME falls back to `gnome-screenshot -f`, and only for full-screen captures. KDE has
-  neither.
+  It runs as `grim -s 1`: logical pixels, so coordinates match, but on a scaled monitor the
+  image is not at full physical resolution. GNOME falls back to `gnome-screenshot -f`, and only
+  for full-screen captures. KDE has neither.
 - **Pointer input** on sway goes through sway itself (`swaymsg seat - cursor set/press/release`):
-  exact positions, no root, nothing extra to install. Elsewhere it needs `ydotool` 1.x with
-  the `ydotoold` daemon and access to `/dev/uinput`; absolute positioning then depends on
-  ydotool's pointer acceleration, so verify clicks with screenshots.
+  exact positions, no root, nothing extra to install. Elsewhere ccdesk speaks the
+  wlr-virtual-pointer protocol directly (`ccdesk/backends/vpointer.py`, standard library only):
+  exact positions, real motion events, no root, no daemon, nothing to install. Verified on
+  Hyprland; river and Wayfire should work where the protocol is offered, not tested. GNOME and
+  KDE don't offer it. As the last resort, compositors without it need `ydotool` 1.x with the
+  `ydotoold` daemon and access to `/dev/uinput`; absolute positioning then depends on ydotool's
+  pointer acceleration, so verify clicks with screenshots. (On Hyprland it was measured landing
+  at double the requested position.)
 - **Keyboard** uses `wtype` (virtual-keyboard protocol, not available on GNOME) and falls
-  back to `ydotool type` for plain text. `press_key` requires `wtype`. Known issue: on a
-  headless sway with only virtual devices, a named key sent alone (Left, BackSpace) does not
-  reach GTK 3 apps, while typed text does; not yet checked on a real sway session.
+  back to `ydotool type` for plain text. `press_key` requires `wtype`, except on Hyprland, where
+  it uses Hyprland's own `hl.dsp.send_shortcut`. Known issue: a named key sent alone with
+  `wtype -k` (Left, BackSpace) does not reach GTK 3 apps, while typed text does. Seen on a real
+  Hyprland and on a headless sway with only virtual devices; not yet checked on a real sway
+  session.
 - **ui_tree** works on Wayland too. GTK and Qt report element boxes relative to their own
-  window there; on sway ccdesk adds the window's position from `swaymsg -t get_tree`, so
-  `click_element` lands on screen coordinates. On other compositors the result carries a
-  note to verify with a screenshot.
-- **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland).
-  Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
-- **Window control** (`manage_window`) is implemented on sway only; other compositors refuse
-  with a clear error. **Monitors** come from `swaymsg` or `hyprctl`. **Per-window screenshots**
-  crop the window's box, which needs a compositor that lists windows.
+  window there; on sway ccdesk adds the window's position from `swaymsg -t get_tree` and on
+  Hyprland from `hyprctl clients`, so `click_element` lands on screen coordinates. On other
+  compositors the result carries a note to verify with a screenshot.
+- **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland, with Lua
+  `hl.dsp.focus`, falling back to the old `focuswindow` for versions before Lua; the fallback is
+  untested, and `press_key` and `manage_window` need a version with Lua). Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
+- **Window control** (`manage_window`) is implemented on sway and Hyprland; other compositors
+  refuse with a clear error. On Hyprland, move and resize make a tiled window float, maximize
+  uses Hyprland's maximized state, minimize moves the window to a hidden special workspace, and
+  restore undoes those, brings a minimized window to the workspace on show, and re-tiles only
+  windows this ccdesk server floated (a restart forgets them). **Monitors** come from `swaymsg` or
+  `hyprctl`; on Hyprland they and the screen size are logical pixels. ccdesk's coordinates start at
+  0,0, so `doctor` warns about a monitor at a negative position.
+  **Per-window screenshots** crop the window's box, which needs a compositor that lists windows.
 - **Clipboard** uses `wl-copy` / `wl-paste`.
 - If you only need to drive XWayland apps, `CCDESK_BACKEND=x11` (or `--backend x11`)
   forces the X11 backend.
@@ -359,7 +375,7 @@ compositor allows:
 | X11 (any WM/DE) | ✅ scrot / import | ✅ xdotool | ✅ xdotool | ✅ xdotool | ✅ wmctrl | ✅ xclip / xsel |
 | X11 without a WM (Xvfb) | ✅ | ✅ | ✅ | ✅ | ✅ xdotool + xprop fallback | ✅ |
 | Wayland: sway | ✅ grim | ✅ swaymsg seat | ✅ wtype / ydotool | ⚠️ wtype (see above) | ✅ swaymsg | ✅ wl-clipboard |
-| Wayland: Hyprland | ✅ grim | ⚠️ ydotool + ydotoold | ✅ wtype / ydotool | ✅ wtype | ✅ hyprctl | ✅ wl-clipboard |
+| Wayland: Hyprland | ✅ grim | ✅ virtual pointer | ✅ wtype / ydotool | ✅ hl.dsp.send_shortcut | ✅ hyprctl | ✅ wl-clipboard |
 | Wayland: GNOME | ⚠️ full screen only | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
 | Headless (`--headless`, any session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ private clipboard |
@@ -372,11 +388,16 @@ you had floating. On X11, "on show" means the window is mapped; a window manager
 windows mapped on other desktops can't be told apart, and with several monitors the current
 desktop can't decide it, because each monitor shows its own.
 `tests/test_integration_windows.py` runs that against a real bspwm on a private screen. Other
-X11 window managers and sway are covered by unit tests of the commands ccdesk builds.
+X11 window managers and sway are covered by unit tests of the commands ccdesk builds. Hyprland
+is covered against the real thing; see below.
 
 The X11 rows are exercised by the integration suite under Xvfb, and the sway row by
 `tests/test_integration_wayland.py` on a headless sway it starts itself (screenshots, window
-list, clipboard, `ui_tree` coordinates, clicks and typing in a real GTK app). The headless
+list, clipboard, `ui_tree` coordinates, clicks and typing in a real GTK app), which also
+checks the virtual pointer separately (exact clicks, wheel, drag). The Hyprland row by
+`tests/test_integration_hyprland.py`, verified on Hyprland 0.56.2 with two monitors at scale 1.5
+and 1. It opens windows and clicks for real, so it only runs with `CCDESK_TEST_HYPRLAND=1` from
+inside Hyprland, or with its session variables set. The headless
 row by `tests/test_integration_headless.py`, which launches a GTK app on the private screen
 and checks that your session bus never sees it. The other
 Wayland rows are covered by unit tests of the exact commands ccdesk builds.
@@ -398,9 +419,11 @@ xvfb-run -a ccdesk doctor
 The display tests skip themselves when `DISPLAY` looks like your real screen (`:0`, `:1`):
 they click and type for real. Set `CCDESK_TEST_REAL_DISPLAY=1` to override.
 
-The Wayland test needs `sway`, `grim`, `wtype`, `wl-clipboard`, a C compiler and
+The Wayland test needs `sway`, `grim`, `wtype`, `wl-clipboard`, a C compiler, `pkg-config` and
 `wayland-scanner`. It starts a headless sway on its own socket, plus a small virtual-pointer
 helper (`tests/wayland/vpointer.c`, compiled on the fly) because a headless seat has no mouse.
+The Hyprland test needs `hyprctl`, `grim`, `wtype`, `wl-clipboard` and a system Python with
+PyGObject and GTK 3.
 
 The integration test (`tests/test_integration_tk.py`) starts a Tk window with a button, a
 label, an entry, a canvas and a list. It takes a screenshot, finds the button by its colour
@@ -420,7 +443,7 @@ ccdesk/
   parsing.py      pure parsers: keys, regions, wmctrl/xdotool output, PNG header
   doctor.py       environment report
   install.py      Claude Code registration and skill copy
-  backends/       x11.py, wayland.py, base.py
+  backends/       x11.py, wayland.py, vpointer.py, base.py
 skills/computer-use/SKILL.md
 tests/
 ```

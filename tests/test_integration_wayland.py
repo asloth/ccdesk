@@ -170,6 +170,30 @@ def test_coordinate_click(gtk, desk):
     gtk(lambda s: s["clicks"] == 1)
 
 
+def test_virtual_pointer_clicks_scrolls_and_drags(gtk, sway, desk, tmp_path):
+    """Without SWAYSOCK the backend can't use sway's seat, so it speaks the protocol itself."""
+    tree = desk.ui_tree(window="ccdesk-gtk")["tree"]
+    env = {k: v for k, v in sway.items() if k != "SWAYSOCK"}
+    other = Desktop(backend=WaylandBackend(env=env), policy=Policy(), audit=AuditLog(tmp_path / "a.log"),
+                    shots_dir=tmp_path / "s2")
+
+    def centre(pattern):
+        x, y, w, h = map(int, re.search(rf'{pattern}.*?@(\d+),(\d+) (\d+)x(\d+)', tree).groups())
+        return x, y, w, h
+
+    x, y, w, h = centre(r'button "Apply settings"')
+    other.click(x + w // 2, y + h // 2)
+    gtk(lambda s: s["clicks"] == 1)
+    other.click(x + w // 2, y + h // 2, count=2)
+    gtk(lambda s: s["clicks"] == 3)
+
+    x, y, w, h = centre(r'"Level"')
+    other.scroll(x + w // 2, y + h // 2, dy=-3)
+    level = gtk(lambda s: s["level"] != 50)["level"]
+    other.drag(x + w // 2, y + h // 2, x + w - 2, y + h // 2, duration_ms=200)
+    gtk(lambda s: s["level"] > level)
+
+
 @pytest.mark.xfail(reason="on a headless sway with only virtual devices, a named key sent by wtype on "
                           "its own (Left, BackSpace) never reaches GTK 3; text does. Unverified on a real "
                           "sway session", strict=False)
