@@ -17,7 +17,7 @@ from ccdesk.server import TOOL_NAMES, build_server  # noqa: E402
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
               "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element",
-              "wait_for_change"}
+              "wait_for_change", "manage_window", "list_monitors"}
 
 
 def test_registered_tools(make_desk):
@@ -29,7 +29,9 @@ def test_registered_tools(make_desk):
     by_name = {t.name: t.model_dump(by_alias=True, mode="json") for t in tools}
     assert set(by_name) == SPEC_TOOLS == set(TOOL_NAMES)
     props = {name: set(t["inputSchema"]["properties"]) for name, t in by_name.items()}
-    assert props["screenshot"] == {"region", "path", "scale"}
+    assert props["screenshot"] == {"region", "path", "scale", "window"}
+    assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
+    assert props["list_monitors"] == set()
     assert props["click"] == {"x", "y", "button", "count", "force"}
     assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
     assert props["scroll"] == {"x", "y", "dx", "dy", "force"}

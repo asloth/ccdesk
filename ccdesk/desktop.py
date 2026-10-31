@@ -48,6 +48,9 @@ KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
 RETURN = KeyCombo("Return")
+WINDOW_ACTIONS = ("move", "resize", "minimize", "maximize", "restore")
+MAX_WINDOW_COORD = 65_535
+WINDOW_POLLS = 8  # reads, POLL apart, for a window manager to finish before calling a request ignored
 
 
 class Desktop:
@@ -265,10 +268,26 @@ class Desktop:
 
     # -- tools ------------------------------------------------------------------
 
-    def screenshot(self, region=None, path: str | None = None, scale: float = 1.0) -> dict:
+    def _shown_window_region(self, title_or_id) -> tuple[Window, Region, bool]:
+        """A window to capture and its box on screen. A capture is a crop of the screen, so a
+        window that is not on show would come out as whatever is there instead."""
+        window = self.find_window(title_or_id)
+        shown = self.backend.window_on_show(window.id)
+        if shown is False:
+            raise CcdeskError(f"{window.title!r} ({window.id}) is minimized or on another desktop; "
+                              f"call activate_window() first")
+        reg = self._window_region(window)
+        if reg is None:
+            raise CcdeskError(f"{window.title!r} ({window.id}) has no visible area on this screen")
+        return window, reg, shown is None
+
+    def screenshot(self, region=None, path: str | None = None, scale: float = 1.0, window: str | None = None) -> dict:
         def do():
             self._ready()
-            reg = parse_region(region, self.screen_size())
+            if region and window:
+                raise ValidationError("pass region or window, not both")
+            shot_of, reg, unchecked = self._shown_window_region(window) if window else (None, None, False)
+            reg = reg or parse_region(region, self.screen_size())
             factor = check_scale(scale)
             out = self._shot_path(path)
             self.backend.screenshot(str(out), reg)
@@ -282,6 +301,8 @@ class Desktop:
             result = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750)}
             if factor < 1:
                 result["scale"] = factor
+            if shot_of:
+                result["window"] = {"id": shot_of.id, "title": shot_of.title}
             if reg:
                 result["origin"] = {"x": reg.x, "y": reg.y}
             if reg and factor < 1:
@@ -290,9 +311,12 @@ class Desktop:
                 result["note"] = "pixel (px,py) in this image is screen (origin.x+px, origin.y+py)"
             elif factor < 1:
                 result["note"] = "pixel (px,py) in this image is screen (px/scale, py/scale)"
+            if unchecked:
+                result["warning"] = ("could not check that this window is on show (on X11, install xwininfo); "
+                                     "if the image shows something else, activate_window() it first")
             return result
 
-        return self._act("screenshot", {"region": region, "path": path, "scale": scale}, do)
+        return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
 
     def _shot_path(self, path: str | None) -> Path:
         if path:
@@ -447,6 +471,79 @@ class Desktop:
             return self._with_window({"activated": window.to_dict()}, None)
 
         return self._act("activate_window", {"title_or_id": title_or_id}, do)
+
+    def _window_state(self, window_id: str) -> tuple[Window | None, bool | None]:
+        window = next((w for w in self.backend.list_windows() if w.id == window_id), None)
+        return window, self.backend.window_on_show(window_id)
+
+    @staticmethod
+    def _placement(state: tuple[Window | None, bool | None]) -> tuple:
+        """What manage_window can change. Not the title: apps change that on their own."""
+        w, shown = state
+        return (w.x, w.y, w.width, w.height, w.desktop, shown) if w else (None, shown)
+
+    def manage_window(self, title_or_id: str, action: str, x: int | None = None, y: int | None = None,
+                      width: int | None = None, height: int | None = None) -> dict:
+        def do():
+            self._ready()
+            if action not in WINDOW_ACTIONS:
+                raise ValidationError(f"action must be one of: {', '.join(WINDOW_ACTIONS)}")
+            given = {"x": x, "y": y, "width": width, "height": height}
+            wanted = {"move": ("x", "y"), "resize": ("width", "height")}.get(action, ())
+            for name, value in given.items():
+                if name in wanted and value is None:
+                    raise ValidationError(f"{action} needs {' and '.join(wanted)}")
+                if name not in wanted and value is not None:
+                    raise ValidationError(f"{action} does not take {name}")
+            if action == "move":
+                args = (check_int("x", x, -MAX_WINDOW_COORD, MAX_WINDOW_COORD),
+                        check_int("y", y, -MAX_WINDOW_COORD, MAX_WINDOW_COORD))
+            elif action == "resize":
+                args = (check_int("width", width, 1, MAX_WINDOW_COORD),
+                        check_int("height", height, 1, MAX_WINDOW_COORD))
+            else:
+                args = ()
+            window = self.find_window(title_or_id)
+            self._yielded = self._yield_to_user()
+            first = self._window_state(window.id)
+            before = first[0]
+            getattr(self.backend, f"{action}_window")(window, *args)
+            state = first
+            for _ in range(WINDOW_POLLS):  # until it has changed and stopped changing (animations)
+                self.backend.sleep(POLL)
+                previous, state = state, self._window_state(window.id)
+                now = self._placement(state)
+                if now != self._placement(first) and now == self._placement(previous):
+                    break
+            after, shown_after = state
+            self._after = None  # the screen moved: wait_for_change() starts over
+            changed = self._placement(state) != self._placement(first)
+            result = {"action": action, "changed": changed, "before": before.to_dict() if before else None,
+                      "after": after.to_dict() if after else None}
+            if shown_after is not None:
+                result["on_show"] = shown_after
+            if after is None:
+                result["note"] = "the window is gone: it closed during this action; call list_windows()"
+            elif not changed:
+                result["note"] = ("its box and visibility did not change: it was already like that, or the "
+                                  "window manager or app ignored the request; take a screenshot to check")
+            return self._with_window(result, window)
+
+        args = {"title_or_id": title_or_id, "action": action, "x": x, "y": y, "width": width, "height": height}
+        return self._act("manage_window", args, do)
+
+    def list_monitors(self) -> dict:
+        def do():
+            self._ready()
+            size = self.screen_size()
+            result = {"monitors": self.backend.monitors(),
+                      "screen": {"width": size[0], "height": size[1]} if size else None}
+            if not result["monitors"]:
+                result["note"] = ("monitors unknown: X11 needs xrandr; on Wayland only sway and Hyprland "
+                                  "report them. The screen size is still usable")
+            return result
+
+        return self._act("list_monitors", {}, do)
 
     def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
                 max_nodes: int = 300) -> dict:

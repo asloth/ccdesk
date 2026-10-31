@@ -14,7 +14,7 @@ from ccdesk.parsing import KeyCombo, is_destructive
 
 # Tools that change desktop state. --read-only disables all of them.
 INPUT_TOOLS = frozenset(
-    {"click", "click_element", "move", "drag", "scroll", "type_text", "press_key", "activate_window", "launch", "clipboard_set"}
+    {"click", "click_element", "move", "drag", "scroll", "type_text", "press_key", "activate_window", "manage_window", "launch", "clipboard_set"}
 )
 
 MAX_LOGGED_TEXT = 200

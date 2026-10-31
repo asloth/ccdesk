@@ -6,7 +6,13 @@ import pytest
 
 from ccdesk.backends import Backend, WaylandBackend, X11Backend, detect_session, get_backend
 from ccdesk.backends.base import interpolate
-from ccdesk.backends.wayland import parse_hyprctl_clients, parse_sway_tree
+from ccdesk.backends.wayland import (
+    parse_hyprctl_clients,
+    parse_hyprctl_monitors,
+    parse_sway_outputs,
+    parse_sway_tree,
+    sway_window_place,
+)
 from ccdesk.errors import CommandError, UnsupportedError
 from ccdesk.parsing import Region, Window, parse_key_combo
 
@@ -410,3 +416,147 @@ def test_sway_screen_size_and_window_origin():
 def test_tools_run_with_the_backend_env():
     out = X11Backend(env={"PATH": os.environ["PATH"], "DISPLAY": ":42"}).run(["sh", "-c", "echo $DISPLAY"])
     assert out.strip() == ":42"
+
+
+WIN = Window(id="0x02000001", title="T", wm_class="c", x=0, y=0, width=10, height=10)
+WIN_DEC = "33554433"
+
+
+def test_x11_window_control_without_bspwm():
+    b, r = make(X11Backend, X11_ALL)
+    b.move_window(WIN, 5, 6)
+    assert r.calls[-1][0] == ["xdotool", "windowmove", WIN_DEC, "5", "6"]
+    b.resize_window(WIN, 7, 8)
+    assert r.calls[-1][0] == ["xdotool", "windowsize", WIN_DEC, "7", "8"]
+    b.minimize_window(WIN)
+    assert r.calls[-1][0] == ["xdotool", "windowminimize", WIN_DEC]
+    b.maximize_window(WIN)
+    assert r.calls[-1][0] == ["xdotool", "windowstate", "--add", "MAXIMIZED_VERT", WIN_DEC,
+                              "windowstate", "--add", "MAXIMIZED_HORZ", WIN_DEC]
+    b.restore_window(WIN)
+    assert r.calls[-2][0][:5] == ["xdotool", "windowmap", WIN_DEC, "windowstate", "--remove"]
+    assert r.calls[-1][0] == ["wmctrl", "-i", "-a", WIN.id]
+
+
+def test_x11_window_control_on_bspwm():
+    b, r = make(X11Backend, X11_ALL | {"bspc"})
+    b.move_window(WIN, 5, 6)
+    assert [c[0] for c in r.calls] == [
+        ["bspc", "query", "-N", "-n", WIN.id], ["bspc", "node", WIN.id, "-t", "floating"],
+        ["xdotool", "windowmove", WIN_DEC, "5", "6"]]
+    b.minimize_window(WIN)
+    assert r.calls[-1][0] == ["bspc", "node", WIN.id, "-g", "hidden=on"]
+    b.maximize_window(WIN)
+    assert r.calls[-1][0] == ["bspc", "node", WIN.id, "-t", "fullscreen"]
+    b.restore_window(WIN)
+    assert [c[0] for c in r.calls if c[0][:2] == ["bspc", "node"]][-2:] == [
+        ["bspc", "node", WIN.id, "-g", "hidden=off"], ["bspc", "node", WIN.id, "-t", "tiled"]]
+
+
+def test_x11_bspc_answers_but_does_not_manage_this_window():
+    b, r = make(X11Backend, X11_ALL | {"bspc"}, fail=("bspc query",))
+    b.minimize_window(WIN)
+    assert r.calls[-1][0] == ["xdotool", "windowminimize", WIN_DEC]
+    assert not [c for c in r.calls if c[0][:2] == ["bspc", "node"]]
+
+
+@pytest.mark.parametrize("state,expected", [("IsViewable", True), ("IsUnMapped", False), ("IsUnviewable", False)])
+def test_x11_window_on_show(state, expected):
+    b, _ = make(X11Backend, X11_ALL | {"xwininfo"}, responses={"xwininfo -id": f"  Map State: {state}\n"})
+    assert b.window_on_show(WIN.id) is expected
+
+
+def test_x11_window_on_show_unknown():
+    b, _ = make(X11Backend, X11_ALL)
+    assert b.window_on_show(WIN.id) is None
+
+
+def test_sway_window_control():
+    win = Window(id="7", title="T", wm_class="c", x=0, y=0, width=10, height=10)
+    b, r = make(WaylandBackend, WL_ALL | {"swaymsg"}, env={"WAYLAND_DISPLAY": "w", "SWAYSOCK": "/s"})
+    b.move_window(win, 5, 6)
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "floating enable, move absolute position 5 6"]
+    b.resize_window(win, 7, 8)
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "floating enable, resize set 7 8"]
+    b.minimize_window(win)
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "move scratchpad"]
+    b.maximize_window(win)
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "fullscreen enable"]
+    b.restore_window(win)
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "fullscreen disable, focus"]  # stays on its workspace
+
+
+@pytest.mark.parametrize("call", [
+    lambda b: b.move_window(WIN, 1, 2), lambda b: b.resize_window(WIN, 1, 2), lambda b: b.minimize_window(WIN),
+    lambda b: b.maximize_window(WIN), lambda b: b.restore_window(WIN),
+])
+def test_other_wayland_compositors_refuse_window_control(call):
+    b, r = make(WaylandBackend, WL_ALL | {"hyprctl"}, env={"WAYLAND_DISPLAY": "w", "HYPRLAND_INSTANCE_SIGNATURE": "s"})
+    with pytest.raises(UnsupportedError, match="only implemented on sway"):
+        call(b)
+    assert r.calls == []
+
+
+def test_sway_monitors():
+    outputs = [{"name": "DP-1", "active": True, "focused": True, "scale": 2.0,
+                "rect": {"x": 0, "y": 0, "width": 1920, "height": 1080}},
+               {"name": "HDMI-1", "active": False, "rect": {"x": 0, "y": 0, "width": 0, "height": 0}}]
+    assert parse_sway_outputs(outputs) == [
+        {"name": "DP-1", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 2.0, "focused": True}]
+
+
+def test_hyprland_monitors_are_logical_pixels():
+    monitors = [{"name": "eDP-1", "x": 0, "y": 0, "width": 2880, "height": 1800, "scale": 2.0, "transform": 0,
+                 "focused": True},
+                {"name": "DP-2", "x": 1440, "y": 0, "width": 1920, "height": 1080, "scale": 1.0, "transform": 1}]
+    assert [(m["width"], m["height"]) for m in parse_hyprctl_monitors(monitors)] == [(1440, 900), (1080, 1920)]
+    import json
+    b, r = make(WaylandBackend, WL_ALL | {"hyprctl"}, env={"WAYLAND_DISPLAY": "w", "HYPRLAND_INSTANCE_SIGNATURE": "s"},
+                responses={"hyprctl -j": json.dumps(monitors)})
+    assert b.monitors()[0]["name"] == "eDP-1"
+    assert r.calls[-1][0] == ["hyprctl", "-j", "monitors"]
+
+
+SWAY_TREE = {"id": 1, "type": "root", "nodes": [{"id": 2, "type": "output", "nodes": [
+    {"id": 3, "type": "workspace", "name": "__i3_scratch", "nodes": [],
+     "floating_nodes": [{"id": 7, "type": "floating_con", "visible": False}]},
+    {"id": 4, "type": "workspace", "name": "1", "nodes": [{"id": 8, "type": "con", "visible": True}]},
+    {"id": 5, "type": "workspace", "name": "2", "nodes": [{"id": 9, "type": "con", "visible": False}]},
+]}]}
+SWAY_ENV = {"WAYLAND_DISPLAY": "w", "SWAYSOCK": "/s"}
+HYPR_ENV = {"WAYLAND_DISPLAY": "w", "HYPRLAND_INSTANCE_SIGNATURE": "s"}
+
+
+def test_sway_window_place():
+    assert sway_window_place(SWAY_TREE, "7") == (False, True)
+    assert sway_window_place(SWAY_TREE, "8") == (True, False)
+    assert sway_window_place(SWAY_TREE, "9") == (False, False)
+    assert sway_window_place(SWAY_TREE, "99") is None
+
+
+@pytest.mark.parametrize("wid,expected", [("7", False), ("8", True), ("9", False), ("99", None)])
+def test_sway_window_on_show(wid, expected):
+    import json
+    b, _ = make(WaylandBackend, WL_ALL | {"swaymsg"}, env=SWAY_ENV, responses={"swaymsg -t": json.dumps(SWAY_TREE)})
+    assert b.window_on_show(wid) is expected
+
+
+def test_sway_restore_brings_a_window_back_from_the_scratchpad():
+    import json
+    b, r = make(WaylandBackend, WL_ALL | {"swaymsg"}, env=SWAY_ENV, responses={"swaymsg -t": json.dumps(SWAY_TREE)})
+    b.restore_window(Window(id="7", title="T", wm_class="c", x=0, y=0, width=1, height=1))
+    assert r.calls[-1][0] == ["swaymsg", "[con_id=7]", "scratchpad show, floating disable, fullscreen disable, focus"]
+
+
+@pytest.mark.parametrize("address,expected", [("0xa", True), ("0xb", True), ("0xc", False), ("0xd", False), ("0xe", None),
+                                             ("0xf", True)])
+def test_hyprland_window_on_show(address, expected):
+    import json
+    clients = [{"address": "0xa", "workspace": {"id": 1}}, {"address": "0xb", "workspace": {"id": 2}},
+               {"address": "0xc", "workspace": {"id": 3}}, {"address": "0xd", "workspace": {"id": -98}},
+               {"address": "0xf", "workspace": {"id": -99}}]
+    monitors = [{"activeWorkspace": {"id": 1}, "specialWorkspace": {"id": 0}},  # one on show per monitor
+                {"activeWorkspace": {"id": 2}, "specialWorkspace": {"id": -99}}]
+    b, _ = make(WaylandBackend, WL_ALL | {"hyprctl"}, env=HYPR_ENV,
+                responses={"hyprctl clients": json.dumps(clients), "hyprctl -j": json.dumps(monitors)})
+    assert b.window_on_show(address) is expected

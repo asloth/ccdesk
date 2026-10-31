@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+from dataclasses import replace
 
 import pytest
 
@@ -47,6 +48,8 @@ class FakeBackend(Backend):
         self.last_event: float | None = -1e9
         self.user_typing = False  # the user never stops
         self.desktop: int | None = None  # the workspace on show
+        self.hidden: set[str] = set()  # ids of minimized windows
+        self.monitor_list: list[dict] = []
 
     def sleep(self, seconds):
         self.slept.append(seconds)
@@ -128,6 +131,35 @@ class FakeBackend(Backend):
     def activate_window(self, window):
         self.calls.append(("activate", window.id))
         self.active = window.id
+
+    def _replace_window(self, window, **fields):
+        self.windows = [replace(w, **fields) if w.id == window.id else w for w in self.windows]
+
+    def move_window(self, window, x, y):
+        self.calls.append(("move_window", window.id, x, y))
+        self._replace_window(window, x=x, y=y)
+
+    def resize_window(self, window, width, height):
+        self.calls.append(("resize_window", window.id, width, height))
+        self._replace_window(window, width=width, height=height)
+
+    def minimize_window(self, window):
+        self.calls.append(("minimize_window", window.id))
+        self.hidden.add(window.id)
+
+    def maximize_window(self, window):
+        self.calls.append(("maximize_window", window.id))
+        self._replace_window(window, x=0, y=0, width=self.size[0], height=self.size[1])
+
+    def restore_window(self, window):
+        self.calls.append(("restore_window", window.id))
+        self.hidden.discard(window.id)
+
+    def window_on_show(self, window_id):
+        return window_id not in self.hidden
+
+    def monitors(self):
+        return list(self.monitor_list)
 
     def active_window(self):
         return self.active
