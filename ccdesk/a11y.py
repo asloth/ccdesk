@@ -19,6 +19,12 @@ from ccdesk.errors import CcdeskError, UnsupportedError
 HELPER = Path(__file__).with_name("a11y_helper.py")
 PYTHONS = ("/usr/bin/python3", "python3")
 MAX_CHANGES = 25
+ACTION_TIMEOUT = 5.0  # a dialog an action opens can hold the helper's reply back
+# Roles whose native action does what a left click does. Not fields: a click there is for focus.
+NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
+                          "menu item", "check menu item", "radio menu item", "page tab", "switch"})
+# Toolkits' names for it: GTK click, Qt Press and Toggle, Firefox press, jump, check and uncheck.
+NATIVE_ACTIONS = ("click", "press", "toggle", "jump", "check", "uncheck")
 BUS_STATUS = ["busctl", "--user", "get-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled"]
 ENABLE_BUS = "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true"
 TOOLKIT_HINT = (
@@ -67,8 +73,8 @@ class Ref:
     dy: int = 0
 
 
-def _run_helper(argv: list[str], timeout: float, env: dict | None = None) -> str:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env=env)
+def _run_helper(argv: list[str], timeout: float, env: dict | None = None, stdin: str | None = None) -> str:
+    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env=env, input=stdin)
     if proc.returncode != 0:
         raise CcdeskError(f"accessibility helper failed: {(proc.stderr or proc.stdout).strip()[-300:]}")
     return proc.stdout
@@ -78,7 +84,7 @@ class A11y:
     def __init__(self, runner=None, pythons: tuple[str, ...] | None = None):
         # The helper talks to the accessibility bus of this env (a headless screen has its own).
         self.env: dict | None = None
-        self._runner = runner or (lambda argv, timeout: _run_helper(argv, timeout, self.env))
+        self._runner = runner or (lambda argv, timeout, stdin=None: _run_helper(argv, timeout, self.env, stdin))
         override = os.environ.get("CCDESK_A11Y_PYTHON")
         self._pythons = pythons or ((override,) if override else PYTHONS)
         self._python: str | None = None
@@ -90,16 +96,22 @@ class A11y:
         # backend's window_origin, for toolkits that report boxes relative to their window.
         self.locate = None
 
-    def call(self, request: dict, timeout: float = 20) -> dict:
+    def call(self, request: dict, timeout: float = 20, private: bool = False,
+             on_timeout: str = "accessibility helper timed out; the app may be busy") -> dict:
+        """private: the request goes through stdin, because it holds what the user's field will."""
         errors = []
+        payload = json.dumps(request)
         for py in ([self._python] if self._python else self._pythons):
             exe = py if os.path.isabs(py) else shutil.which(py)
             if not exe or not os.path.exists(exe):
                 continue
             try:
-                out = self._runner([exe, "-I", str(HELPER), json.dumps(request)], timeout)
+                if private:
+                    out = self._runner([exe, "-I", str(HELPER), "-"], timeout, payload)
+                else:
+                    out = self._runner([exe, "-I", str(HELPER), payload], timeout)
             except subprocess.TimeoutExpired:
-                raise CcdeskError("accessibility helper timed out; the app may be busy") from None
+                raise CcdeskError(on_timeout) from None
             try:
                 result = json.loads(out)
             except ValueError:
@@ -153,7 +165,8 @@ class A11y:
         request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
         with self._lock:
             result, nodes = self._read(request)
-            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes}}
+            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes},
+                          "window": result["window"], "secret": secret_focused(nodes)}
         lines = []
         base = min((n["depth"] for _, n in nodes), default=0)
         for ref, n in nodes:
@@ -178,6 +191,7 @@ class A11y:
             before = self._last["lines"]
             after = {ref: format_node(ref, n, 0) for ref, n in nodes}
             self._last["lines"] = after
+            self._last["secret"] = secret_focused(nodes)
         changed = [line for ref, line in after.items() if before.get(ref) != line]
         gone = [ref for ref in before if ref not in after]
         if not changed and not gone:
@@ -187,6 +201,11 @@ class A11y:
         if gone:
             changed.append("gone: " + " ".join(gone))
         return "\n".join(changed)
+
+    def on_secret_field(self) -> bool:
+        """Whether the latest read of the tree had a password field focused. Costs no extra read,
+        so it knows nothing without a tree, or if focus moved by other means since."""
+        return bool(self._last and self._last["secret"])
 
     def resolve(self, ref: str) -> dict:
         known = self.refs.get(str(ref).strip())
@@ -198,6 +217,26 @@ class A11y:
         if node is None or node["role"] != known.role or node["name"] != known.name:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")
         return node
+
+    def activate(self, ref: str) -> str | None:
+        """Run the element's native click-like action. Returns its name, or None if none ran."""
+        unsure = ("the app did not answer within the time limit: the action may have run (a dialog it "
+                  "opened can hold the answer back). Check with ui_tree() or a screenshot; don't repeat it blindly")
+        request = {"op": "action", "path": self.refs[ref].path, "names": list(NATIVE_ACTIONS)}
+        return self.call(request, timeout=ACTION_TIMEOUT, on_timeout=unsure)["action"]
+
+    def set_value(self, ref: str, text: str) -> dict:
+        unsure = ("the app did not answer within the time limit: the value may have been set. "
+                  "Check with ui_tree() before trying again")
+        request = {"op": "set", "path": self.refs[ref].path, "text": text}
+        return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
+
+    def tree_window(self) -> str | None:
+        return self._last["window"] if self._last else None
+
+
+def secret_focused(nodes: list[tuple[str, dict]]) -> bool:
+    return any(n["role"] == "password text" and "focused" in n.get("states", ()) for _, n in nodes)
 
 
 def shift(node: dict, offset: tuple[int, int]) -> None:

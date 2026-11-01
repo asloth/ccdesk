@@ -15,6 +15,7 @@ from ccdesk.parsing import (
     parse_shell_vars,
     parse_window_ref,
     parse_wmctrl_lgx,
+    parse_xwininfo_tree,
     parse_xprop_wm_class,
     parse_xrdb_dpi,
     png_size,
@@ -200,3 +201,32 @@ def test_png_size(tmp_path):
     bad.write_bytes(b"not a png at all, sorry...")
     with pytest.raises(ValidationError):
         png_size(bad)
+
+
+def test_parse_wmctrl_class_with_a_space():
+    out = "0x0080002f  0 0    0    640  800  tk #2.Tk              N/A ccdesk-test\n"
+    win = parse_wmctrl_lgx(out)[0]
+    assert (win.wm_class, win.title) == ("tk #2.Tk", "ccdesk-test")
+    assert parse_wmctrl_lgx("0x0060002f  0 1 2 3 4  tk.Tk  host  a  b")[0].title == "a  b"
+    assert parse_wmctrl_lgx("0x0060002f  0 1 2 3 4  tk.Tk  host")[0].title == ""
+    assert parse_wmctrl_lgx("0x0060002f  0 1 2 3 4  N/A")  == []
+
+
+def test_parse_xwininfo_tree():
+    out = """
+xwininfo: Window id: 0x51d (the root window) (has no name)
+
+  Root window id: 0x51d (the root window) (has no name)
+  Parent window id: 0x0 (none)
+     3 children:
+     0x60002f "ccdesk "test": 2": ("tk #2" "Tk")  640x800+640+0  +640+0
+        1 child:
+        0x600030 (has no name): ()  1x1+-1+-1  +639+-1
+     0x400001 (has no name): ()  1x1+-1+-1  +-1+-1
+     0x800009 "Off to the left": ("a.b" "C")  100x50+-20+5  +-20+5
+"""
+    tree = parse_xwininfo_tree(out)
+    assert tree["0x0060002f"] == {"title": 'ccdesk "test": 2', "wm_class": "tk #2.Tk",
+                                  "x": 640, "y": 0, "width": 640, "height": 800}
+    assert tree["0x00400001"]["title"] is None and tree["0x00400001"]["wm_class"] is None
+    assert (tree["0x00800009"]["x"], tree["0x00800009"]["y"]) == (-20, 5)

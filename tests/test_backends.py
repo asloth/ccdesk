@@ -82,15 +82,24 @@ def test_x11_input_commands():
         ["xdotool", "mousemove", "5", "6"],
         ["xdotool", "mousemove", "1", "2", "click", "--repeat", "3", "--delay", "30", "5",
          "click", "--repeat", "2", "--delay", "30", "6"],
-        ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", "hi there"],
+        ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--file", "-"],
         ["xdotool", "key", "--clearmodifiers", "ctrl+shift+t"],
     ]
 
 
-def test_x11_type_text_starting_with_dash_is_not_an_option():
+@pytest.mark.parametrize("backend,tools", [(X11Backend, "x11"), (WaylandBackend, "wtype"), (WaylandBackend, "ydotool")])
+def test_typed_text_stays_out_of_the_process_list(backend, tools):
+    b, r = make(backend, {"x11": X11_ALL, "wtype": WL_ALL, "ydotool": {"grim", "ydotool"}}[tools])
+    b.type_text("--help secret")
+    argv, text, _ = r.calls[-1]
+    assert "--help secret" not in " ".join(argv)  # readable in /proc/PID/cmdline
+    assert text == "--help secret"
+
+
+def test_x11_line_breaks_are_real_returns():
     b, r = make(X11Backend, X11_ALL)
-    b.type_text("--help")
-    assert r.calls[0][0][-2:] == ["--", "--help"]
+    b.type_text("one\r\n\nthree")
+    assert [(c[0][1], c[1]) for c in r.calls] == [("type", "one"), ("key", None), ("key", None), ("type", "three")]
 
 
 def test_x11_drag_releases_button_on_failure():
@@ -127,6 +136,16 @@ def test_x11_missing_xdotool():
     b, _ = make(X11Backend, {"scrot"})
     with pytest.raises(CommandError, match="xdotool"):
         b.click(1, 1, 1, 1)
+
+
+def test_x11_list_windows_trusts_the_x_server_for_boxes_and_titles():
+    wmctrl = "0x0060002f  0 1280 0    640  800  tk #2.Tk   N/A wrong\n0x00800001  1 5 6 7 8  a.B  N/A other\n"
+    tree = '     0x60002f "right": ("tk #2" "Tk")  640x800+640+0  +640+0\n'
+    b, r = make(X11Backend, X11_ALL | {"xwininfo"}, responses={"wmctrl -lGx": wmctrl, "xwininfo -root": tree})
+    first, second = b.list_windows()
+    assert (first.x, first.y, first.width, first.title, first.wm_class, first.desktop) == \
+        (640, 0, 640, "right", "tk #2.Tk", 0)
+    assert (second.x, second.title, second.desktop) == (5, "other", 1)  # not in the tree: as wmctrl said
 
 
 def test_x11_list_windows_wmctrl():
@@ -289,7 +308,7 @@ def test_wayland_input_commands():
         ["ydotool", "click", "--repeat", "2", "--next-delay", "80", "0xc1"],
         ["ydotool", "mousemove", "--absolute", "-x", "1", "-y", "2"],
         ["ydotool", "mousemove", "--wheel", "-x", "0", "-y", "-3"],
-        ["wtype", "-s", "60", "-d", "12", "--", "hi"],
+        ["wtype", "-s", "60", "-d", "12", "-"],
         ["wtype", "-s", "60", "-M", "logo", "-k", "q", "-m", "logo"],
     ]
 
@@ -307,7 +326,7 @@ def test_wayland_screenshot_and_text_fallback():
     b.screenshot("/tmp/s.png", Region(1, 2, 3, 4))
     b.type_text("x")
     assert r.calls[0][0] == ["grim", "-s", "1", "-g", "1,2 3x4", "/tmp/s.png"]
-    assert r.calls[1][0] == ["ydotool", "type", "--key-delay", "12", "--", "x"]
+    assert r.calls[1][0] == ["ydotool", "type", "--key-delay", "12", "--file", "-"]
     with pytest.raises(UnsupportedError, match="wtype"):
         b.press_key(parse_key_combo("Return"))
 

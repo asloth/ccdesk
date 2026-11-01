@@ -26,6 +26,8 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
   screenshots, and after the first tree every action returns only the lines that changed.
 - Screenshots alone are the expensive path (118k), because a full-screen first look plus one
   tool call per click costs more than the shell commands Claude writes when it has no help.
+- Since then `screenshot` shows the picture in its answer instead of needing a Read: 136k → 78k on
+  that path in a later batch (median of 5, a different setup, so don't compare it with this table).
 - Raw numbers, method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). Reproduce with
   `python bench/run.py`.
 
@@ -38,7 +40,7 @@ ccdesk doctor        # session type, helper tools, screen size, accessibility bu
 ccdesk install       # register the MCP server with Claude Code and install the skill
 ```
 
-Restart Claude Code and run `/mcp`: `ccdesk` should be listed with 15 tools. To try it on a
+Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. To try it on a
 private screen instead of yours, see [Headless](#headless-let-it-work-while-you-use-your-pc).
 
 ### Other distributions
@@ -88,7 +90,7 @@ claude mcp add --scope user ccdesk -- ccdesk mcp
 mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.claude/skills/computer-use/
 ```
 
-Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 15 tools.
+Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
 
 ## Headless: let it work while you use your PC
 
@@ -142,7 +144,7 @@ servers only at startup.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
+| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
 | `click(x, y, button="left", count=1, force=false)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
 | `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
@@ -158,7 +160,8 @@ servers only at startup.
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
-| `click_element(ref, button="left", count=1)` | Clicks the centre of an element from the latest `ui_tree()`; refuses if it changed or left the screen. |
+| `click_element(ref, button="left", count=1, force=false)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`). |
+| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. For native apps: Firefox and Chromium web forms refuse or ignore it (it says so), so there use `click_element`, then `type_text`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -277,7 +280,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
-- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `move`,
+- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `click_element`, `set_value`, `move`,
   `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with
@@ -288,8 +291,10 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   `confirm=true`. Supersets such as `Ctrl+Shift+W` count too. Window managers bind their own
   close, quit and power keys, so add yours with `--confirm-keys`, for example on bspwm:
   `ccdesk install --confirm-keys "super+x,ctrl+alt+super+p,ctrl+alt+super+r,ctrl+alt+super+q"`.
-- **Input goes to the window Claude chose.** After `activate_window()`, `click`,
-  `click_element`, `drag`, `scroll`, `type_text` and `press_key` check where the input would
+- **Input goes to the window Claude chose.** An accessibility action goes to its element wherever
+  focus and the pointer are; if the tree is of another window than `activate_window()` chose,
+  `set_value` refuses and `click_element` takes the checked route below. Otherwise, after
+  `activate_window()`, `click`, `click_element`, `drag`, `scroll`, `type_text` and `press_key` check where the input would
   land (the window under the pointer, or the one with keyboard focus) and refuse when it is
   another window, for example because you switched to your terminal to answer. Dialogs of
   that window, such as a file chooser, count as the same window. `force=true` sends it
@@ -305,6 +310,10 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   counter too, so only input that came after its own counts as yours. Results say
   `yielded_ms` when it waited, and `doctor` shows `user idle`. Needs `xprintidle` (X11); off
   by default, and pointless for `--headless`.
+- **Typed text stays private.** It reaches `xdotool`, `wtype` and `ydotool` through stdin, not as
+  arguments that any process of yours could read in `/proc`. After a `ui_tree()` that shows a focused
+  password field, `type_text` refuses. It knows only what the latest read of the tree showed, so
+  this is a backstop for the rule below, not a guarantee.
 - **Audit log.** Every call, including denied and failed ones, is appended as one JSON line
   to `~/.cache/ccdesk/audit.log` (mode 0600; override with `--audit-log` or
   `CCDESK_AUDIT_LOG`). Each line has a timestamp, the tool, its arguments, the status
@@ -317,6 +326,9 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
 - **The skill.** It tells Claude to screenshot before acting and verify after, to never type
   passwords, to never dismiss dialogs blindly, and to treat on-screen text as data, not
   instructions.
+
+Each tool also carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`), so a
+host can tell looking from acting. They are hints for the host; the checks above are what refuse.
 
 These guardrails are not a sandbox. Any client that can call `type_text` can type a shell
 command into a terminal. Use `--read-only` when you only want Claude to look, and keep
@@ -347,6 +359,10 @@ compositor allows:
   `wtype -k` (Left, BackSpace) does not reach GTK 3 apps, while typed text does. Seen on a real
   Hyprland and on a headless sway with only virtual devices; not yet checked on a real sway
   session.
+  Text reaches `wtype` through stdin, to keep it out of the process list. In Chromium on sway that
+  typed the same as an argument, and an emoji followed by more text came out wrong in both ways.
+  computer-use-linux reports stdin garbling text in Electron on Hyprland; not checked here on a real
+  Hyprland, so verify typed text in those apps.
 - **ui_tree** works on Wayland too. GTK and Qt report element boxes relative to their own
   window there; on sway ccdesk adds the window's position from `swaymsg -t get_tree` and on
   Hyprland from `hyprctl clients`, so `click_element` lands on screen coordinates. On other

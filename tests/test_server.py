@@ -12,11 +12,12 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from ccdesk.safety import INPUT_TOOLS  # noqa: E402
 from ccdesk.server import TOOL_NAMES, build_server  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
-              "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element",
+              "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element", "set_value",
               "wait_for_change", "manage_window", "list_monitors"}
 
 
@@ -41,8 +42,42 @@ def test_registered_tools(make_desk):
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
     assert props["click_element"] == {"ref", "button", "count", "force"}
+    assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
+
+
+def test_every_tool_says_what_it_may_do(make_desk):
+    import anyio
+
+    tools = anyio.run(build_server(make_desk()).list_tools)
+    hints = {t.name: t.model_dump(by_alias=True, mode="json")["annotations"] for t in tools}
+    assert set(hints) == SPEC_TOOLS
+    looks = {name for name, h in hints.items() if h["readOnlyHint"]}
+    assert looks == {"screenshot", "list_windows", "list_monitors", "ui_tree", "wait", "wait_for_change", "doctor"}
+    assert not looks & INPUT_TOOLS  # read-only mode and the hints agree
+    for name in ("click", "click_element", "drag", "type_text", "press_key", "launch"):
+        assert hints[name]["destructiveHint"] is True, name
+
+
+def test_results_are_one_line_of_json(client):
+    text = _text(client.call("wait", {"seconds": 0}))
+    assert text == '{"waited":0.0}'
+
+
+def test_screenshot_answers_with_the_picture(tmp_path, monkeypatch):
+    from ccdesk import server
+    from tests.pngutil import write_png
+
+    png = tmp_path / "s.png"
+    write_png(png, 4, 4)
+    blocks = server.compact(server.with_picture({"path": str(png), "width": 4, "height": 4}))
+    assert [b.type for b in blocks] == ["text", "image"]
+    assert json.loads(blocks[0].text) == {"path": str(png), "width": 4, "height": 4}
+
+    monkeypatch.setattr(server, "MAX_PICTURE_BYTES", 1)  # would be rejected, and break the session
+    blocks = server.compact(server.with_picture({"path": str(png)}))
+    assert [b.type for b in blocks] == ["text"] and "too big" in blocks[0].text
 
 
 def test_headless_adds_instructions(make_desk):
@@ -121,7 +156,7 @@ def test_stdio_session(client, tmp_path):
 
     ok = client.call("wait", {"seconds": 0})
     assert not ok.get("isError")
-    assert "waited" in _text(ok) or ok.get("structuredContent", {}).get("waited") == 0
+    assert json.loads(_text(ok)) == {"waited": 0.0}
 
     denied = client.call("click", {"x": 1, "y": 1})
     assert denied.get("isError") is True
@@ -132,8 +167,7 @@ def test_stdio_session(client, tmp_path):
 
     report = client.call("doctor", {})
     assert not report.get("isError")
-    assert '"read_only": true' in _text(report).replace("True", "true") or \
-        report.get("structuredContent", {}).get("policy", {}).get("read_only") is True
+    assert json.loads(_text(report))["policy"]["read_only"] is True
 
     log = [json.loads(line) for line in (tmp_path / "audit.log").read_text().splitlines()]
     assert [e["tool"] for e in log] == ["server_start", "wait", "click", "launch", "doctor"]

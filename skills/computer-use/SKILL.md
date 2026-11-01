@@ -7,7 +7,7 @@ description: Drive the Linux desktop through the ccdesk MCP server - take screen
 
 You control the real desktop through the `ccdesk` MCP tools: `screenshot`, `click`, `move`,
 `drag`, `scroll`, `type_text`, `press_key`, `list_windows`, `activate_window`, `clipboard`,
-`wait`, `wait_for_change`, `doctor`, `ui_tree`, `click_element`, `manage_window`,
+`wait`, `wait_for_change`, `doctor`, `ui_tree`, `click_element`, `set_value`, `manage_window`,
 `list_monitors`, and `launch` (only if the
 server was started with `--allow-launch`).
 
@@ -47,9 +47,14 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
 - `ui_tree()` reads the active window; `ui_tree(window="Firefox")` picks one by title.
 - In a browser, `page=true` drops the tabs and toolbars and lists only the page.
 - On big pages, `query="email"` returns only the matching elements.
-- `click_element("e5")` clicks the centre of that element. A ref keeps pointing at the same
-  element across `ui_tree()` calls; if it is gone or changed, the call says so.
-- Type with `click_element` on the field, then `type_text`.
+- `click_element("e5")` activates that element: through its accessibility action when it has
+  one (`activated` in the result; the pointer does not move), else a click at its centre. A ref
+  keeps pointing at the same element across `ui_tree()` calls; if it is gone or changed, the
+  call says so.
+- **In a native app, fill a field with `set_value("e2", "text")`**: one call instead of a click
+  and a `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web
+  pages don't take it (tested on Firefox and Chromium): in a browser, use `click_element`, then
+  `type_text`.
 - **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
   `type_text` and `press_key` return `changes`: the lines of that window that changed
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
@@ -69,8 +74,9 @@ ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  .
 
 - **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,
   pages scroll, and popups appear.
-- **Read the image.** `screenshot()` returns `{path, width, height}`. Open the PNG with the
-  Read tool so you can actually see it.
+- **The picture is in the answer.** `screenshot()` shows it to you directly, with `path`,
+  `width` and `height`. Don't Read the path as well: that pays for it twice. Only when it says
+  it is too big to show, or you passed `path=`, is the file all you have.
 - **One action, then verify.** After each click, keypress or typed string, take a new
   screenshot and confirm the expected change happened before you continue. If it didn't,
   work out why. Don't repeat the action blindly.

@@ -8,7 +8,12 @@ Arms:
   shots  ccdesk without ui_tree/click_element: screenshots and coordinates.
   tree   ccdesk with every tool.
   loaded ccdesk with every tool and alwaysLoad: schemas up front, no ToolSearch round trip.
-All arms: same prompt, same model, no user settings/plugins/hooks, Skill tool off.
+  base, base-shots, base-loaded  the same three on another ccdesk, to measure a change. $CCDESK_BASE
+         is its command.
+  cul, cul-loaded  agent-sh/computer-use-linux instead of ccdesk. $CUL_BIN is its binary. Its overlay,
+         uinput pointer and portal screenshots are off, to keep it on the private screen.
+All arms: same prompt, same model, no user settings/plugins/hooks, Skill tool off, each run on the same
+private screen with a window manager and its own D-Bus, so nothing can reach the real session.
 """
 
 import argparse
@@ -20,10 +25,16 @@ import sys
 import time
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+from ccdesk.headless import Headless  # noqa: E402
+
 HERE = Path(__file__).resolve().parent
 APP = HERE / "form_app.py"
 SYS_PY = os.environ.get("CCDESK_A11Y_PYTHON", "/usr/bin/python3")
-CCDESK = shutil.which("ccdesk") or "ccdesk"
+CCDESK = os.environ.get("CCDESK_BIN") or shutil.which("ccdesk") or "ccdesk"
+CUL_ENV = {"COMPUTER_USE_LINUX_INDICATOR": "0", "CU_DISABLE_ABS_POINTER": "1",
+           "COMPUTER_USE_LINUX_SCREENSHOT_BACKEND": "x11"}
+SHOTS_DENY = ["mcp__ccdesk__ui_tree", "mcp__ccdesk__click_element", "mcp__ccdesk__set_value"]
 PROMPT = (
     'A GTK window titled "Signup" is open on the X display in $DISPLAY (a test display, not the '
     'user\'s screen). Fill it in: Full name "Ana Torres", Email "ana@example.org", plan Pro, '
@@ -34,24 +45,16 @@ PROMPT = (
 EXPECTED = {"Full name": "Ana Torres", "Email": "ana@example.org", "plan": "Pro",
             "newsletter": False, "terms": True}
 ARMS = {
-    "none": {"mcp": False, "deny": []},
-    "shots": {"mcp": True, "deny": ["mcp__ccdesk__ui_tree", "mcp__ccdesk__click_element"]},
-    "tree": {"mcp": True, "deny": []},
-    "loaded": {"mcp": True, "deny": [], "always_load": True},
+    "none": {"deny": []},
+    "shots": {"server": "ccdesk", "deny": SHOTS_DENY},
+    "tree": {"server": "ccdesk", "deny": []},
+    "loaded": {"server": "ccdesk", "deny": [], "always_load": True},
+    "base-shots": {"server": "base", "deny": SHOTS_DENY},
+    "base": {"server": "base", "deny": []},
+    "base-loaded": {"server": "base", "deny": [], "always_load": True},
+    "cul": {"server": "cul", "deny": []},
+    "cul-loaded": {"server": "cul", "deny": [], "always_load": True},
 }
-
-
-def start_xvfb(display):
-    # A second benchmark (or a leftover form) on the same display would corrupt every result.
-    if subprocess.run(["xdpyinfo", "-display", display], capture_output=True).returncode == 0:
-        sys.exit(f"display {display} is already in use; stop whatever runs there first")
-    proc = subprocess.Popen(["Xvfb", display, "-screen", "0", "1920x1080x24", "-nolisten", "tcp"],
-                            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    for _ in range(50):
-        if subprocess.run(["xdpyinfo", "-display", display], capture_output=True).returncode == 0:
-            return proc
-        time.sleep(0.1)
-    sys.exit("Xvfb did not start")
 
 
 def start_form(env, state):
@@ -70,11 +73,16 @@ def start_form(env, state):
 
 def claude_cmd(arm, workdir, model):
     cfg = {"mcpServers": {}}
-    if ARMS[arm]["mcp"]:
-        cfg["mcpServers"]["ccdesk"] = {"type": "stdio", "command": CCDESK,
-                                       "args": ["mcp", "--audit-log", str(workdir / "audit.log")]}
+    server = ARMS[arm].get("server")
+    if server == "cul":
+        entry = {"type": "stdio", "command": os.environ["CUL_BIN"], "args": ["mcp"], "env": CUL_ENV}
+    elif server:
+        command = os.environ["CCDESK_BASE"] if server == "base" else CCDESK
+        entry = {"type": "stdio", "command": command, "args": ["mcp", "--audit-log", str(workdir / "audit.log")]}
+    if server:
         if ARMS[arm].get("always_load"):
-            cfg["mcpServers"]["ccdesk"]["alwaysLoad"] = True
+            entry["alwaysLoad"] = True
+        cfg["mcpServers"]["computer-use-linux" if server == "cul" else "ccdesk"] = entry
     (workdir / "mcp.json").write_text(json.dumps(cfg))
     return ["claude", "-p", PROMPT, "--model", model, "--output-format", "stream-json", "--verbose",
             "--setting-sources", "", "--strict-mcp-config", "--mcp-config", str(workdir / "mcp.json"),
@@ -125,14 +133,12 @@ def main():
     ap.add_argument("--arms", default="none,shots,tree")
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--model", default="opus")
-    ap.add_argument("--display", default=":77")
     ap.add_argument("--out", default=str(HERE / "results"))
     args = ap.parse_args()
     out = Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
-    env = dict(os.environ, DISPLAY=args.display)
-    env.pop("WAYLAND_DISPLAY", None)
-    xvfb = start_xvfb(args.display)
+    screen = Headless(size="1920x1080")
+    env = {k: v for k, v in screen.start().items() if k not in ("CLAUDECODE", "CLAUDE_CODE_ENTRYPOINT")}
     try:
         for rep in range(1, args.reps + 1):
             for arm in args.arms.split(","):
@@ -156,7 +162,7 @@ def main():
                 (workdir / "row.json").write_text(json.dumps(row, indent=1))
                 print(json.dumps({k: v for k, v in row.items() if k not in ("tools", "answer")}), flush=True)
     finally:
-        xvfb.kill()
+        screen.stop()
 
 
 if __name__ == "__main__":
