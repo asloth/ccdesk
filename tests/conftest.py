@@ -205,10 +205,18 @@ class FakeA11yHelper:
         self.requests = []
         self.apps = [{"name": "Firefox", "pid": 1, "windows": ["Form — Mozilla Firefox"]}]
         self.tree_error: str | None = None
+        self.actions: dict[str, str] = {}  # path -> the native action that element offers
+        self.values: dict[str, dict] = {}  # path -> the answer to a set request
+        self.argvs: list[list[str]] = []
 
-    def __call__(self, argv, timeout):
-        req = json.loads(argv[-1])
+    def __call__(self, argv, timeout, stdin=None):
+        req = json.loads(stdin or argv[-1])
         self.requests.append(req)
+        self.argvs.append(list(argv))
+        if req["op"] == "action":
+            return json.dumps({"action": self.actions.get(req["path"])})
+        if req["op"] == "set":
+            return json.dumps(self.values.get(req["path"], {"verified": True}))
         if req["op"] == "apps":
             return json.dumps({"apps": self.apps})
         if req["op"] == "tree" and self.tree_error:

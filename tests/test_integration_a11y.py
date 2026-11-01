@@ -108,3 +108,26 @@ def test_refs_survive_a_new_tree(gtk, desk):
     first = desk.a11y.refs["e1"]
     tree = desk.ui_tree(window="ccdesk-gtk", query="Apply")["tree"]
     assert desk.a11y.refs["e1"] == first and tree.startswith("e2 ")  # the button gets a new ref
+
+
+def test_native_action_and_set_value(desk, gtk):
+    tree = desk.ui_tree(window="ccdesk-gtk")["tree"]
+    pointer = desk.backend.run(["xdotool", "getmouselocation"])
+    done = desk.click_element(ref_of(tree, r'(?:push )?button "Apply settings"'))
+    assert done["activated"].lower() == "click"
+    gtk(lambda s: s["clicks"] == 1)
+    assert desk.backend.run(["xdotool", "getmouselocation"]) == pointer
+
+    assert desk.click_element(ref_of(tree, r'check box "I agree"'))["activated"].lower() == "click"
+    gtk(lambda s: s["agree"])
+
+    done = desk.set_value(ref_of(tree, r'text "Display name"'), "Ana Ñandú 🦥")
+    assert done["verified"] is True and "Ana" in done["changes"]
+    gtk(lambda s: s["entry"] == "Ana Ñandú 🦥")
+
+    assert desk.set_value(ref_of(tree, r'slider "Level"'), "75")["verified"] is True
+    gtk(lambda s: s["level"] == 75)
+    with pytest.raises(CcdeskError, match="number"):
+        desk.set_value(ref_of(tree, r'slider "Level"'), "lots")
+    with pytest.raises(CcdeskError, match="no settable value"):
+        desk.set_value(ref_of(tree, r'(?:push )?button "Apply settings"'), "x")

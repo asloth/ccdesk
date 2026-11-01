@@ -15,7 +15,7 @@ import time
 from datetime import datetime
 from pathlib import Path
 
-from ccdesk.a11y import A11y, WindowNotFound, bus_enabled, missing_hint
+from ccdesk.a11y import NATIVE_ROLES, A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
 from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError, ValidationError
 from ccdesk.parsing import (
@@ -599,6 +599,11 @@ class Desktop:
             label = f'{node["role"]} {node["name"]!r}'
             if not node.get("showing") or not node.get("box"):
                 raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            if btn == 1 and n == 1 and node["role"] in NATIVE_ROLES and self._may_skip_pointer(force):
+                self._before_native()
+                action = self.a11y.activate(str(ref).strip())
+                if action:
+                    return self._changes(self._in_tree_window({"activated": action, "element": label}))
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             window = self._guard(force, (px, py))
@@ -607,6 +612,45 @@ class Desktop:
                                                     "button": button, "count": n}, window))
 
         return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force}, do)
+
+    def _may_skip_pointer(self, force: bool) -> bool:
+        """A native action reaches its element wherever the pointer and focus are, so _guard has
+        nothing to check, unless the tree is of another window than activate_window() chose."""
+        return force or self._target is None or self.a11y.tree_window() == self._target.title
+
+    def _before_native(self) -> None:
+        self._yielded = self._yield_to_user()
+        self._after = self._pending = None
+
+    def _in_tree_window(self, result: dict) -> dict:
+        if self._yielded:
+            result["yielded_ms"] = self._yielded
+        result["window"] = {"title": self.a11y.tree_window()}
+        return result
+
+    def set_value(self, ref: str, text: str, force: bool = False) -> dict:
+        def do():
+            self._ready()
+            if not isinstance(text, str):
+                raise ValidationError("text must be a string")
+            if len(text) > MAX_TEXT:
+                raise ValidationError(f"text is longer than {MAX_TEXT} characters")
+            key = str(ref).strip()
+            node = self.a11y.resolve(key)
+            label = f'{node["role"]} {node["name"]!r}'
+            if not node.get("showing"):
+                raise CcdeskError(f"{key} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            if not self._may_skip_pointer(force):
+                raise PolicyError(f"{key} is in {self.a11y.tree_window()!r}, not {self._target.title!r} from "
+                                  f"activate_window(); call ui_tree() on that window, or pass force=true")
+            self._before_native()
+            answer = self.a11y.set_value(key, text)
+            if not answer["verified"]:
+                raise CcdeskError(f"{key} ({label}) holds {answer.get('value')!r} after writing: the app changed or "
+                                  f"rejected it. Check the field; don't repeat this blindly")
+            return self._changes(self._in_tree_window({"set": label, "verified": True, "chars": len(text)}))
+
+        return self._act("set_value", {"ref": ref, "text": text, "force": force}, do)
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()

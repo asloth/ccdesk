@@ -7,10 +7,14 @@ Requests:
   {"op": "apps"}
   {"op": "tree", "window": str|None, "query": str|None, "page": bool, "max_nodes": int}
   {"op": "resolve", "path": "3.0.1.4"}
+  {"op": "action", "path": "3.0.1.4", "names": ["click", ...]}
+  {"op": "set", "path": "3.0.1.4", "text": str}: pass "-" as the argument and the request on stdin,
+  so the text stays out of the process list.
 """
 
 import json
 import sys
+import time
 
 try:
     import gi
@@ -37,6 +41,7 @@ STATES = {
     "required": Atspi.StateType.REQUIRED,
 }
 EDITABLE = {"entry", "text", "password text", "document text"}
+NUMERIC = {"slider", "spin button", "scroll bar", "dial"}
 MAX_VISIT = 20000
 MAX_TEXT = 200
 
@@ -209,17 +214,77 @@ def tree(req):
             "frame_box": frame_node.get("box")}
 
 
-def resolve(req):
-    parts = [int(x) for x in str(req["path"]).split(".")]
+def find(path):
     obj = desktop()
-    for i in parts:
+    for i in [int(x) for x in str(path).split(".")]:
         try:
             obj = obj.get_child_at_index(i)
         except Exception:
             obj = None
         if obj is None:
-            return {"error": "element is gone; call ui_tree() again"}
-    return {"node": describe(obj, req["path"], 0)}
+            return None
+    return obj
+
+
+GONE = {"error": "element is gone; call ui_tree() again"}
+
+
+def resolve(req):
+    obj = find(req["path"])
+    return {"node": describe(obj, req["path"], 0)} if obj else GONE
+
+
+def action(req):
+    """Run the first of `names` the element offers. {"action": None} means nothing ran."""
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    if obj.get_action_iface() is None:
+        return {"action": None}
+    offered = [Atspi.Action.get_action_name(obj, i) or "" for i in range(Atspi.Action.get_n_actions(obj))]
+    lowered = [name.lower() for name in offered]
+    for want in req["names"]:
+        if want in lowered:
+            i = lowered.index(want)
+            return {"action": offered[i] if Atspi.Action.do_action(obj, i) else None}
+    return {"action": None}
+
+
+def full_text(obj):
+    return Atspi.Text.get_text(obj, 0, Atspi.Text.get_character_count(obj))
+
+
+def set_value(req):
+    """Write a value and read it back, so the answer is what the app holds, not what was sent."""
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    role, text = obj.get_role_name() or "", req["text"]
+    if role == "password text":
+        return {"error": "this is a password field: ask the user to type it themselves"}
+    if role in NUMERIC and obj.get_value_iface() is not None:
+        try:
+            number = float(text)
+        except ValueError:
+            return {"error": f"{role} takes a number, not {text!r}"}
+        Atspi.Value.set_current_value(obj, number)
+        read = lambda: Atspi.Value.get_current_value(obj)
+        same = lambda got: abs(got - number) < 1e-6
+    elif obj.get_editable_text_iface() is not None and obj.get_text_iface() is not None:
+        if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
+            return {"error": "this field is read-only"}
+        if not Atspi.EditableText.set_text_contents(obj, text):
+            return {"error": "the app refused the new text"}
+        read, same = lambda: full_text(obj), lambda got: got == text
+    else:
+        return {"error": f"{role} has no settable value: use click_element, then type_text"}
+    got = read()
+    for _ in range(10):  # the app may apply it a moment later
+        if same(got):
+            return {"verified": True}
+        time.sleep(0.05)
+        got = read()
+    return {"verified": False, "value": str(got)[:MAX_TEXT]}
 
 
 def apps(_req):
@@ -229,8 +294,8 @@ def apps(_req):
 
 
 def main():
-    req = json.loads(sys.argv[1])
-    ops = {"apps": apps, "tree": tree, "resolve": resolve}
+    req = json.loads(sys.stdin.read() if sys.argv[1] == "-" else sys.argv[1])
+    ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value}
     try:
         result = ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing

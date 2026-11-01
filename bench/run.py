@@ -35,7 +35,7 @@ EXPECTED = {"Full name": "Ana Torres", "Email": "ana@example.org", "plan": "Pro"
             "newsletter": False, "terms": True}
 ARMS = {
     "none": {"mcp": False, "deny": []},
-    "shots": {"mcp": True, "deny": ["mcp__ccdesk__ui_tree", "mcp__ccdesk__click_element"]},
+    "shots": {"mcp": True, "deny": ["mcp__ccdesk__ui_tree", "mcp__ccdesk__click_element", "mcp__ccdesk__set_value"]},
     "tree": {"mcp": True, "deny": []},
     "loaded": {"mcp": True, "deny": [], "always_load": True},
 }

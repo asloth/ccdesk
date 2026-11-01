@@ -158,7 +158,8 @@ servers only at startup.
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
-| `click_element(ref, button="left", count=1)` | Clicks the centre of an element from the latest `ui_tree()`; refuses if it changed or left the screen. |
+| `click_element(ref, button="left", count=1, force=false)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`). |
+| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. Rich-text editors have no settable value: use `click_element`, then `type_text`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -277,7 +278,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
-- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `move`,
+- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `click_element`, `set_value`, `move`,
   `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with
@@ -288,8 +289,10 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   `confirm=true`. Supersets such as `Ctrl+Shift+W` count too. Window managers bind their own
   close, quit and power keys, so add yours with `--confirm-keys`, for example on bspwm:
   `ccdesk install --confirm-keys "super+x,ctrl+alt+super+p,ctrl+alt+super+r,ctrl+alt+super+q"`.
-- **Input goes to the window Claude chose.** After `activate_window()`, `click`,
-  `click_element`, `drag`, `scroll`, `type_text` and `press_key` check where the input would
+- **Input goes to the window Claude chose.** An accessibility action goes to its element wherever
+  focus and the pointer are; if the tree is of another window than `activate_window()` chose,
+  `set_value` refuses and `click_element` takes the checked route below. Otherwise, after
+  `activate_window()`, `click`, `click_element`, `drag`, `scroll`, `type_text` and `press_key` check where the input would
   land (the window under the pointer, or the one with keyboard focus) and refuse when it is
   another window, for example because you switched to your terminal to answer. Dialogs of
   that window, such as a file chooser, count as the same window. `force=true` sends it

@@ -23,7 +23,8 @@ INSTRUCTIONS = """\
 ccdesk drives the local Linux desktop. Work in a loop: screenshot(), Read the PNG it returns,
 do ONE action, then screenshot() again to verify before the next action. Coordinates are
 screen pixels in the screenshot's space (origin top-left). For region screenshots add the
-returned origin. Save tokens: try ui_tree() first (text, no pixels) and click_element(ref).
+returned origin. Save tokens: try ui_tree() first (text, no pixels), click_element(ref) and
+set_value(ref, text).
 After a ui_tree(), actions return `changes` (the lines that changed in that window): use it to
 verify instead of another ui_tree() or screenshot. Refs stay valid across ui_tree() calls.
 Without a tree, actions return screen_changed (and changed_area): if false, the action did
@@ -39,7 +40,7 @@ or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR fir
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
-    "ui_tree", "click_element", "wait_for_change", "manage_window", "list_monitors",
+    "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors",
 )
 
 # What each tool may do, for hosts deciding what to ask about. Hints, not enforcement: --read-only
@@ -52,7 +53,7 @@ ANNOTATIONS = {
     "wait": OBSERVE, "wait_for_change": OBSERVE, "doctor": OBSERVE,
     "move": ARRANGE, "scroll": ARRANGE, "activate_window": ARRANGE, "manage_window": ARRANGE,
     "clipboard": ARRANGE,
-    "click": ACT, "click_element": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT,
+    "click": ACT, "click_element": ACT, "set_value": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT,
 }
 
 
@@ -167,9 +168,18 @@ def build_server(desktop: Desktop) -> MCPServer:
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
                       force: bool = False) -> dict:
-        """Click the centre of an element from the latest ui_tree() result, e.g. ref="e12".
-        Fails if the element changed or left the screen; call ui_tree() again then."""
+        """Click an element from the latest ui_tree() result, e.g. ref="e12". A single left click on
+        a button, checkbox, link or menu item runs its accessibility action when it has one, without
+        moving the pointer; otherwise it clicks the centre. Fails if the element changed or left the
+        screen; call ui_tree() again then."""
         return desktop.click_element(ref, button=button, count=count, force=force)
+
+    @tool
+    def set_value(ref: str, text: str, force: bool = False) -> dict:
+        """Replace the value of a field, slider or spin button from ui_tree(), in one call, and read
+        it back: an answer means the app holds it. Refuses password fields. If it says there is no
+        settable value (rich-text editors), use click_element, then type_text."""
+        return desktop.set_value(ref, text, force=force)
 
     @tool
     def clipboard(action: Literal["get", "set"] = "get", text: str | None = None) -> dict:

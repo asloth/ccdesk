@@ -233,3 +233,98 @@ def test_refuses_to_type_into_a_focused_password_field(make_desk, helper, fake, 
     d.click_element("e2")
     d.type_text("hello")
     assert fake.calls[-1][0] == "type_text"
+
+
+def test_click_element_prefers_the_native_action(make_desk, helper, fake, no_settle, read_audit):
+    helper.actions["3.0.29.5"] = "click"
+    d = make_desk()
+    d.ui_tree()
+    r = d.click_element("e4")
+    assert r["activated"] == "click" and r["element"] == "push button 'Save'"
+    assert r["window"] == {"title": "Form — Mozilla Firefox"} and "changes" in r
+    assert not [c for c in fake.calls if c[0] == "click"]  # the pointer stayed where it was
+    assert read_audit()[-1]["status"] == "ok"
+
+
+@pytest.mark.parametrize("args", [{"button": "right"}, {"count": 2}])
+def test_other_clicks_keep_the_pointer(make_desk, helper, fake, no_settle, args):
+    helper.actions["3.0.29.5"] = "click"
+    d = make_desk()
+    d.ui_tree()
+    assert "clicked" in d.click_element("e4", **args)
+
+
+def test_fields_and_elements_without_an_action_use_the_pointer(make_desk, helper, fake, no_settle):
+    helper.actions["3.0.29.2"] = "click"  # an entry: a click there is for focus
+    d = make_desk()
+    d.ui_tree()
+    assert "clicked" in d.click_element("e2")
+    assert "clicked" in d.click_element("e4")  # no action offered
+    assert [r["op"] for r in helper.requests].count("action") == 1
+
+
+def test_native_action_timeout_is_not_replayed_with_the_pointer(make_desk, helper, fake, no_settle):
+    import subprocess
+
+    d = make_desk()
+    d.ui_tree()
+    real = d.a11y._runner
+
+    def slow(argv, timeout, stdin=None):
+        if '"op": "action"' in argv[-1]:
+            raise subprocess.TimeoutExpired(argv, timeout)
+        return real(argv, timeout)
+
+    d.a11y._runner = slow
+    with pytest.raises(CcdeskError, match="may have run"):
+        d.click_element("e4")
+    assert not [c for c in fake.calls if c[0] == "click"]
+
+
+def test_native_action_respects_read_only_and_the_chosen_window(make_desk, helper, fake, no_settle):
+    helper.actions["3.0.29.5"] = "click"
+    d = make_desk(read_only=True)
+    d.ui_tree()
+    with pytest.raises(PolicyError):
+        d.click_element("e4")
+
+    # The tree is of Firefox, but activate_window() chose the terminal: back to the checked route.
+    d = make_desk()
+    d.ui_tree()
+    fake.active = fake.under = "0x01e00003"
+    d.activate_window("Terminal")
+    with pytest.raises(PolicyError, match="Terminal"):
+        d.click_element("e4")
+    assert "activated" in d.click_element("e4", force=True)
+
+
+def test_set_value_keeps_the_text_out_of_the_process_list(make_desk, helper, no_settle, read_audit):
+    d = make_desk()
+    d.ui_tree()
+    r = d.set_value("e2", "ana@example.org")
+    assert r["verified"] is True and r["set"] == "entry 'Feedback email'" and r["chars"] == 15 and "changes" in r
+    assert helper.requests[-2] == {"op": "set", "path": "3.0.29.2", "text": "ana@example.org"}
+    assert not any("ana@" in " ".join(argv) for argv in helper.argvs)
+    assert helper.argvs[-2][-1] == "-"
+    assert read_audit()[-1]["tool"] == "set_value"
+
+
+def test_set_value_reports_what_the_app_holds(make_desk, helper, no_settle):
+    helper.values["3.0.29.2"] = {"verified": False, "value": "ANA"}
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(CcdeskError, match="holds 'ANA'"):
+        d.set_value("e2", "ana")
+
+
+def test_set_value_is_refused_by_read_only_and_for_another_window(make_desk, helper, fake, no_settle):
+    d = make_desk(read_only=True)
+    d.ui_tree()
+    with pytest.raises(PolicyError):
+        d.set_value("e2", "x")
+    d = make_desk()
+    d.ui_tree()
+    d.activate_window("Terminal")
+    with pytest.raises(PolicyError, match="Terminal"):
+        d.set_value("e2", "x")
+    assert d.set_value("e2", "x", force=True)["verified"]
