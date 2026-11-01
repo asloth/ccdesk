@@ -5,13 +5,15 @@ from __future__ import annotations
 import functools
 import inspect
 import json
+import os
 from typing import Literal
 
 try:  # mcp >= 2.0
-    from mcp.server.mcpserver import MCPServer
+    from mcp.server.mcpserver import Image, MCPServer
     from mcp.server.mcpserver.exceptions import ToolError
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
+    from mcp.server.fastmcp import Image
     from mcp.server.fastmcp.exceptions import ToolError
 from mcp.types import TextContent, ToolAnnotations
 
@@ -20,7 +22,7 @@ from ccdesk.desktop import Desktop
 from ccdesk.errors import CcdeskError
 
 INSTRUCTIONS = """\
-ccdesk drives the local Linux desktop. Work in a loop: screenshot(), Read the PNG it returns,
+ccdesk drives the local Linux desktop. Work in a loop: screenshot() (the picture is in its answer),
 do ONE action, then screenshot() again to verify before the next action. Coordinates are
 screen pixels in the screenshot's space (origin top-left). For region screenshots add the
 returned origin. Save tokens: try ui_tree() first (text, no pixels), click_element(ref) and
@@ -43,6 +45,8 @@ TOOL_NAMES = (
     "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors",
 )
 
+MAX_PICTURE_BYTES = 3_500_000
+
 # What each tool may do, for hosts deciding what to ask about. Hints, not enforcement: --read-only
 # and the other checks in safety.py are what actually refuse.
 OBSERVE = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
@@ -57,9 +61,21 @@ ANNOTATIONS = {
 }
 
 
-def compact(result: dict) -> list[TextContent]:
+def compact(result: dict) -> list:
     """One line of JSON: the SDK's default indents it, and the model pays for every space."""
-    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"), default=str))]
+    picture = result.pop("_picture", None)
+    blocks = [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"), default=str))]
+    return [*blocks, Image(path=picture).to_image_content()] if picture else blocks
+
+
+def with_picture(result: dict) -> dict:
+    """Put the screenshot in the answer: reading the file instead takes another request, and each
+    request re-reads the whole context. Too big for the API (5 MB once in base64), it stays a file."""
+    if os.path.getsize(result["path"]) <= MAX_PICTURE_BYTES:
+        result["_picture"] = result["path"]
+    else:
+        result["note"] = "too big to show here: pass scale=0.5 or a region, or Read the path"
+    return result
 
 
 def build_server(desktop: Desktop) -> MCPServer:
@@ -82,12 +98,13 @@ def build_server(desktop: Desktop) -> MCPServer:
     @tool
     def screenshot(region: str | None = None, path: str | None = None, scale: float = 1.0,
                    window: str | None = None) -> dict:
-        """Capture the screen (or region "x,y,width,height") to a PNG. Returns path, width, height
-        and approx_tokens (what reading it costs). scale=0.5 halves each side for ~4x fewer tokens;
-        then divide image pixels by scale to get screen pixels. Read the returned path to see it.
+        """Capture the screen (or region "x,y,width,height") and show it in this answer, with path,
+        width, height and approx_tokens (what it costs). scale=0.5 halves each side for ~4x fewer
+        tokens; then divide image pixels by scale to get screen pixels. path: only save it there.
         window: capture only that window, by id or title. It is a crop of the screen, so anything
         covering the window shows too: activate_window() it first."""
-        return desktop.screenshot(region=region, path=path, scale=scale, window=window)
+        result = desktop.screenshot(region=region, path=path, scale=scale, window=window)
+        return result if path else with_picture(result)
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
@@ -176,9 +193,9 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
-        """Replace the value of a field, slider or spin button from ui_tree(), in one call, and read
-        it back: an answer means the app holds it. Refuses password fields. If it says there is no
-        settable value (rich-text editors), use click_element, then type_text."""
+        """Replace the value of a field, slider or spin button of a native app from ui_tree(), in one
+        call, and read it back: an answer means the app holds it. Refuses password fields. Web pages
+        don't take it: in a browser, use click_element, then type_text."""
         return desktop.set_value(ref, text, force=force)
 
     @tool

@@ -26,6 +26,8 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
   screenshots, and after the first tree every action returns only the lines that changed.
 - Screenshots alone are the expensive path (118k), because a full-screen first look plus one
   tool call per click costs more than the shell commands Claude writes when it has no help.
+- Since then `screenshot` shows the picture in its answer instead of needing a Read: 136k → 78k on
+  that path in a later batch (median of 5, a different setup, so don't compare it with this table).
 - Raw numbers, method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). Reproduce with
   `python bench/run.py`.
 
@@ -142,7 +144,7 @@ servers only at startup.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and returns `{path, width, height, approx_tokens}`. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
+| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
 | `click(x, y, button="left", count=1, force=false)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
 | `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
@@ -159,7 +161,7 @@ servers only at startup.
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`). |
-| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. Rich-text editors have no settable value: use `click_element`, then `type_text`. |
+| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. For native apps: Firefox and Chromium web forms refuse or ignore it (it says so), so there use `click_element`, then `type_text`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a

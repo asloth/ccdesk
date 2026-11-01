@@ -65,6 +65,21 @@ def test_results_are_one_line_of_json(client):
     assert text == '{"waited":0.0}'
 
 
+def test_screenshot_answers_with_the_picture(tmp_path, monkeypatch):
+    from ccdesk import server
+    from tests.pngutil import write_png
+
+    png = tmp_path / "s.png"
+    write_png(png, 4, 4)
+    blocks = server.compact(server.with_picture({"path": str(png), "width": 4, "height": 4}))
+    assert [b.type for b in blocks] == ["text", "image"]
+    assert json.loads(blocks[0].text) == {"path": str(png), "width": 4, "height": 4}
+
+    monkeypatch.setattr(server, "MAX_PICTURE_BYTES", 1)  # would be rejected, and break the session
+    blocks = server.compact(server.with_picture({"path": str(png)}))
+    assert [b.type for b in blocks] == ["text"] and "too big" in blocks[0].text
+
+
 def test_headless_adds_instructions(make_desk):
     from ccdesk.server import HEADLESS
 

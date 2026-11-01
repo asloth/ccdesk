@@ -53,3 +53,27 @@ the window that changed, so verifying needs no extra `ui_tree()` call.
 Overall vs no ccdesk: 89k → 63k (−29%), or 57k (−37%) with alwaysLoad.
 
 Reproduce: `PATH=~/.local/opt/xvfb/usr/bin:$PATH python3 bench/run.py --reps 3`
+
+## Pictures in the answer, and the old against the new (2026-11-01)
+
+Same form and prompt, Claude Code 2.1.316, Opus 5.5, 5 runs per arm, all succeeded. The setup changed:
+every arm now runs on a private screen with a window manager and its own D-Bus, so these numbers
+compare with each other, not with the tables above.
+
+| Input tokens, median (range) | before | after | requests |
+|---|---|---|---|
+| Screenshots only | 135,660 (127,297 to 286,811) | **77,776** (76,800 to 213,784) | 8 → **5** |
+| ui_tree, deferred | 70,547 (68,645 to 125,690) | 72,704 (69,522 to 96,976) | 5 → 5 |
+| ui_tree, alwaysLoad | 64,489 (64,489 to 66,522) | 63,286 (63,286 to 63,877) | 4 → 4 |
+
+- `screenshot` now shows the picture in its answer. The three Reads, one request each, are gone and
+  the pictures cost the same: **43% fewer input tokens** on the screenshot path, and 20 s → 15 s.
+- With a tree there is no real change: the differences are inside the noise. `set_value` took tool
+  calls from 13 to 11, and 10 to 7 with alwaysLoad, but they already ran in parallel, so requests did
+  not drop. "before" for the tree arms comes from an earlier batch the same day.
+- Each arm had the odd long run (213,784 is one run of 13 requests), so read the medians with that.
+- `see=true` on actions was tried first and dropped: in 5 runs the model never used it.
+- Not measured: computer-use-linux (the `cul` arms exist in `run.py` but have not been run), web
+  pages, wide screens. One small app.
+
+Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-shots,shots,tree,loaded --reps 5`

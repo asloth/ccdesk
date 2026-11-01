@@ -51,10 +51,10 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   one (`activated` in the result; the pointer does not move), else a click at its centre. A ref
   keeps pointing at the same element across `ui_tree()` calls; if it is gone or changed, the
   call says so.
-- **Fill a field with `set_value("e2", "text")`**: one call instead of a click and a
-  `type_text`, and it reads the value back. It also sets sliders and spin buttons. A web form
-  may not notice a value set this way: if it says the field is empty on submit, or there is no
-  settable value (rich-text editors), use `click_element`, then `type_text`.
+- **In a native app, fill a field with `set_value("e2", "text")`**: one call instead of a click
+  and a `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web
+  pages don't take it (tested on Firefox and Chromium): in a browser, use `click_element`, then
+  `type_text`.
 - **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
   `type_text` and `press_key` return `changes`: the lines of that window that changed
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
@@ -74,8 +74,9 @@ ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  .
 
 - **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,
   pages scroll, and popups appear.
-- **Read the image.** `screenshot()` returns `{path, width, height}`. Open the PNG with the
-  Read tool so you can actually see it.
+- **The picture is in the answer.** `screenshot()` shows it to you directly, with `path`,
+  `width` and `height`. Don't Read the path as well: that pays for it twice. Only when it says
+  it is too big to show, or you passed `path=`, is the file all you have.
 - **One action, then verify.** After each click, keypress or typed string, take a new
   screenshot and confirm the expected change happened before you continue. If it didn't,
   work out why. Don't repeat the action blindly.
