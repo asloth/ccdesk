@@ -359,6 +359,10 @@ compositor allows:
   `wtype -k` (Left, BackSpace) does not reach GTK 3 apps, while typed text does. Seen on a real
   Hyprland and on a headless sway with only virtual devices; not yet checked on a real sway
   session.
+  Text reaches `wtype` through stdin, to keep it out of the process list. In Chromium on sway that
+  typed the same as an argument, and an emoji followed by more text came out wrong in both ways.
+  computer-use-linux reports stdin garbling text in Electron on Hyprland; not checked here on a real
+  Hyprland, so verify typed text in those apps.
 - **ui_tree** works on Wayland too. GTK and Qt report element boxes relative to their own
   window there; on sway ccdesk adds the window's position from `swaymsg -t get_tree` and on
   Hyprland from `hyprctl clients`, so `click_element` lands on screen coordinates. On other
