@@ -401,6 +401,9 @@ class Desktop:
             # A typed trailing newline did not submit Firefox's address bar: send a real Return instead.
             body = text[:-1] if text.endswith("\n") else text
             enter = bool(submit) or body != text
+            if self.a11y.on_secret_field():
+                raise PolicyError("the focused field is a password field: ccdesk does not type into those. "
+                                  "Ask the user to type it themselves")
             window = self._guard(force)
             if replace:
                 self.backend.press_key(SELECT_ALL)

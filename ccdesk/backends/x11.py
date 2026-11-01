@@ -115,7 +115,9 @@ class X11Backend(Backend):
         self._xdotool(*argv)
 
     def type_text(self, text: str) -> None:
-        self._xdotool("type", "--clearmodifiers", "--delay", "12", "--", text, timeout=max(15, len(text) * 0.05 + 5))
+        # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
+        self._xdotool("type", "--clearmodifiers", "--delay", "12", "--file", "-", input=text,
+                      timeout=max(15, len(text) * 0.05 + 5))
 
     def press_key(self, combo: KeyCombo) -> None:
         self._xdotool("key", "--clearmodifiers", combo.xdotool())

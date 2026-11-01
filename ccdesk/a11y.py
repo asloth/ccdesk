@@ -153,7 +153,8 @@ class A11y:
         request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
         with self._lock:
             result, nodes = self._read(request)
-            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes}}
+            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes},
+                          "window": result["window"], "secret": secret_focused(nodes)}
         lines = []
         base = min((n["depth"] for _, n in nodes), default=0)
         for ref, n in nodes:
@@ -178,6 +179,7 @@ class A11y:
             before = self._last["lines"]
             after = {ref: format_node(ref, n, 0) for ref, n in nodes}
             self._last["lines"] = after
+            self._last["secret"] = secret_focused(nodes)
         changed = [line for ref, line in after.items() if before.get(ref) != line]
         gone = [ref for ref in before if ref not in after]
         if not changed and not gone:
@@ -187,6 +189,11 @@ class A11y:
         if gone:
             changed.append("gone: " + " ".join(gone))
         return "\n".join(changed)
+
+    def on_secret_field(self) -> bool:
+        """Whether the latest read of the tree had a password field focused. Costs no extra read,
+        so it knows nothing without a tree, or if focus moved by other means since."""
+        return bool(self._last and self._last["secret"])
 
     def resolve(self, ref: str) -> dict:
         known = self.refs.get(str(ref).strip())
@@ -198,6 +205,10 @@ class A11y:
         if node is None or node["role"] != known.role or node["name"] != known.name:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")
         return node
+
+
+def secret_focused(nodes: list[tuple[str, dict]]) -> bool:
+    return any(n["role"] == "password text" and "focused" in n.get("states", ()) for _, n in nodes)
 
 
 def shift(node: dict, offset: tuple[int, int]) -> None:

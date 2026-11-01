@@ -82,15 +82,18 @@ def test_x11_input_commands():
         ["xdotool", "mousemove", "5", "6"],
         ["xdotool", "mousemove", "1", "2", "click", "--repeat", "3", "--delay", "30", "5",
          "click", "--repeat", "2", "--delay", "30", "6"],
-        ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--", "hi there"],
+        ["xdotool", "type", "--clearmodifiers", "--delay", "12", "--file", "-"],
         ["xdotool", "key", "--clearmodifiers", "ctrl+shift+t"],
     ]
 
 
-def test_x11_type_text_starting_with_dash_is_not_an_option():
-    b, r = make(X11Backend, X11_ALL)
-    b.type_text("--help")
-    assert r.calls[0][0][-2:] == ["--", "--help"]
+@pytest.mark.parametrize("backend,tools", [(X11Backend, "x11"), (WaylandBackend, "wtype"), (WaylandBackend, "ydotool")])
+def test_typed_text_stays_out_of_the_process_list(backend, tools):
+    b, r = make(backend, {"x11": X11_ALL, "wtype": WL_ALL, "ydotool": {"grim", "ydotool"}}[tools])
+    b.type_text("--help secret")
+    argv, text, _ = r.calls[-1]
+    assert "--help secret" not in " ".join(argv)  # readable in /proc/PID/cmdline
+    assert text == "--help secret"
 
 
 def test_x11_drag_releases_button_on_failure():
@@ -289,7 +292,7 @@ def test_wayland_input_commands():
         ["ydotool", "click", "--repeat", "2", "--next-delay", "80", "0xc1"],
         ["ydotool", "mousemove", "--absolute", "-x", "1", "-y", "2"],
         ["ydotool", "mousemove", "--wheel", "-x", "0", "-y", "-3"],
-        ["wtype", "-s", "60", "-d", "12", "--", "hi"],
+        ["wtype", "-s", "60", "-d", "12", "-"],
         ["wtype", "-s", "60", "-M", "logo", "-k", "q", "-m", "logo"],
     ]
 
@@ -307,7 +310,7 @@ def test_wayland_screenshot_and_text_fallback():
     b.screenshot("/tmp/s.png", Region(1, 2, 3, 4))
     b.type_text("x")
     assert r.calls[0][0] == ["grim", "-s", "1", "-g", "1,2 3x4", "/tmp/s.png"]
-    assert r.calls[1][0] == ["ydotool", "type", "--key-delay", "12", "--", "x"]
+    assert r.calls[1][0] == ["ydotool", "type", "--key-delay", "12", "--file", "-"]
     with pytest.raises(UnsupportedError, match="wtype"):
         b.press_key(parse_key_combo("Return"))
 

@@ -305,6 +305,10 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   counter too, so only input that came after its own counts as yours. Results say
   `yielded_ms` when it waited, and `doctor` shows `user idle`. Needs `xprintidle` (X11); off
   by default, and pointless for `--headless`.
+- **Typed text stays private.** It reaches `xdotool`, `wtype` and `ydotool` through stdin, not as
+  arguments that any process of yours could read in `/proc`. After a `ui_tree()` that shows a focused
+  password field, `type_text` refuses. It knows only what the latest read of the tree showed, so
+  this is a backstop for the rule below, not a guarantee.
 - **Audit log.** Every call, including denied and failed ones, is appended as one JSON line
   to `~/.cache/ccdesk/audit.log` (mode 0600; override with `--audit-log` or
   `CCDESK_AUDIT_LOG`). Each line has a timestamp, the tool, its arguments, the status

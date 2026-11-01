@@ -218,3 +218,18 @@ def test_window_relative_boxes_are_shifted(make_desk, helper, fake):
     assert r["tree"] == 'e1 push button "Save" @180,313 38x22' and r["origin"] == {"x": 100, "y": 50}
     d.click_element("e1")
     assert fake.calls[-1] == ("click", 199, 324, 1, 1)
+
+
+def test_refuses_to_type_into_a_focused_password_field(make_desk, helper, fake, no_settle, read_audit):
+    helper.nodes["3.0.29.2"].update(role="password text", states=["focused"])
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(PolicyError, match="password field"):
+        d.type_text("hunter2")
+    assert not [c for c in fake.calls if c[0] == "type_text"]
+    assert read_audit()[-1]["status"] == "denied"
+    # Focus moved on, and an action's re-read noticed: typing works again.
+    helper.nodes["3.0.29.2"].update(states=[])
+    d.click_element("e2")
+    d.type_text("hello")
+    assert fake.calls[-1][0] == "type_text"

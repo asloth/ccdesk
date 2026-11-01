@@ -205,9 +205,9 @@ class WaylandBackend(Backend):
             return
         self.need("screenshot", "grim", "gnome-screenshot")
 
-    def _ydotool(self, *args: str) -> str:
+    def _ydotool(self, *args: str, **kw) -> str:
         self.need("pointer input", "ydotool")
-        return self.run(["ydotool", *args])
+        return self.run(["ydotool", *args], **kw)
 
     def _pointer(self) -> VirtualPointer | None:
         """A virtual pointer, or None where sway's seat or ydotool has to do it."""
@@ -310,9 +310,10 @@ class WaylandBackend(Backend):
 
     def type_text(self, text: str) -> None:
         if self.which("wtype"):
-            self.run(["wtype", *WTYPE_SETTLE, "-d", "12", "--", text], timeout=max(15, len(text) * 0.05 + 5))
+            # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
+            self.run(["wtype", *WTYPE_SETTLE, "-d", "12", "-"], input=text, timeout=max(15, len(text) * 0.05 + 5))
         else:
-            self._ydotool("type", "--key-delay", "12", "--", text)
+            self._ydotool("type", "--key-delay", "12", "--file", "-", input=text)
 
     def press_key(self, combo: KeyCombo) -> None:
         if self._hyprland():  # a named key from wtype on its own never reaches GTK 3
