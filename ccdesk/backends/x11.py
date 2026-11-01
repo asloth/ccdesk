@@ -117,9 +117,15 @@ class X11Backend(Backend):
         self._xdotool(*argv)
 
     def type_text(self, text: str) -> None:
-        # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
-        self._xdotool("type", "--clearmodifiers", "--delay", "12", "--file", "-", input=text,
-                      timeout=max(15, len(text) * 0.05 + 5))
+        # xdotool silently drops newlines (4.20260303: from stdin and from an argument alike),
+        # so multi-line text would arrive as one line. Each line break is a real Return.
+        for i, line in enumerate(text.replace("\r\n", "\n").split("\n")):
+            if i:
+                self._xdotool("key", "--clearmodifiers", "Return")
+            if line:
+                # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
+                self._xdotool("type", "--clearmodifiers", "--delay", "12", "--file", "-", input=line,
+                              timeout=max(15, len(line) * 0.05 + 5))
 
     def press_key(self, combo: KeyCombo) -> None:
         self._xdotool("key", "--clearmodifiers", combo.xdotool())

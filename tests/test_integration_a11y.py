@@ -131,3 +131,26 @@ def test_native_action_and_set_value(desk, gtk):
         desk.set_value(ref_of(tree, r'slider "Level"'), "lots")
     with pytest.raises(CcdeskError, match="no settable value"):
         desk.set_value(ref_of(tree, r'(?:push )?button "Apply settings"'), "x")
+
+
+def test_multiline_text_keeps_its_line_breaks(tmp_path, desk):
+    state = tmp_path / "typed.txt"
+    env = dict(os.environ, GDK_BACKEND="x11")
+    app = Path(__file__).with_name("gtk_text_app.py")
+    proc = subprocess.Popen([PY, str(app), str(state)], env=env)
+    try:
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline and not state.exists():
+            time.sleep(0.05)
+        wid = desk.backend.run(["xdotool", "search", "--onlyvisible", "--name", "ccdesk-text"]).split()[-1]
+        desk.backend.run(["xdotool", "windowfocus", wid])
+        time.sleep(0.2)
+        text = "uno\ndós\n\nfour\ttabs"
+        desk.backend.type_text(text)
+        deadline = time.monotonic() + 5
+        while time.monotonic() < deadline and state.read_text() != text:
+            time.sleep(0.05)
+        assert state.read_text() == text
+    finally:
+        proc.terminate()
+        proc.wait(5)

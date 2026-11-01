@@ -96,6 +96,12 @@ def test_typed_text_stays_out_of_the_process_list(backend, tools):
     assert text == "--help secret"
 
 
+def test_x11_line_breaks_are_real_returns():
+    b, r = make(X11Backend, X11_ALL)
+    b.type_text("one\r\n\nthree")
+    assert [(c[0][1], c[1]) for c in r.calls] == [("type", "one"), ("key", None), ("key", None), ("type", "three")]
+
+
 def test_x11_drag_releases_button_on_failure():
     b, r = make(X11Backend, X11_ALL, fail=("xdotool mousemove 50",))
     with pytest.raises(CommandError):
