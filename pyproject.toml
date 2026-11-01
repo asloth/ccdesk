@@ -11,7 +11,7 @@ license = "MIT"
 license-files = ["LICENSE"]
 authors = [{ name = "Sara Benel" }]
 requires-python = ">=3.10"
-dependencies = ["mcp>=1.2"]
+dependencies = ["mcp>=1.10"]
 keywords = ["claude", "claude-code", "mcp", "computer-use", "linux", "x11", "wayland", "xdotool"]
 classifiers = [
     "Environment :: X11 Applications",

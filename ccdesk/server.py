@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import json
 from typing import Literal
 
 try:  # mcp >= 2.0
@@ -12,6 +13,7 @@ try:  # mcp >= 2.0
 except ImportError:  # mcp 1.x
     from mcp.server.fastmcp import FastMCP as MCPServer
     from mcp.server.fastmcp.exceptions import ToolError
+from mcp.types import TextContent, ToolAnnotations
 
 from ccdesk import __version__
 from ccdesk.desktop import Desktop
@@ -40,6 +42,24 @@ TOOL_NAMES = (
     "ui_tree", "click_element", "wait_for_change", "manage_window", "list_monitors",
 )
 
+# What each tool may do, for hosts deciding what to ask about. Hints, not enforcement: --read-only
+# and the other checks in safety.py are what actually refuse.
+OBSERVE = ToolAnnotations(readOnlyHint=True, destructiveHint=False, openWorldHint=False)
+ARRANGE = ToolAnnotations(readOnlyHint=False, destructiveHint=False, openWorldHint=False)
+ACT = ToolAnnotations(readOnlyHint=False, destructiveHint=True, openWorldHint=True)
+ANNOTATIONS = {
+    "screenshot": OBSERVE, "list_windows": OBSERVE, "list_monitors": OBSERVE, "ui_tree": OBSERVE,
+    "wait": OBSERVE, "wait_for_change": OBSERVE, "doctor": OBSERVE,
+    "move": ARRANGE, "scroll": ARRANGE, "activate_window": ARRANGE, "manage_window": ARRANGE,
+    "clipboard": ARRANGE,
+    "click": ACT, "click_element": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT,
+}
+
+
+def compact(result: dict) -> list[TextContent]:
+    """One line of JSON: the SDK's default indents it, and the model pays for every space."""
+    return [TextContent(type="text", text=json.dumps(result, ensure_ascii=False, separators=(",", ":"), default=str))]
+
 
 def build_server(desktop: Desktop) -> MCPServer:
     kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
@@ -51,12 +71,12 @@ def build_server(desktop: Desktop) -> MCPServer:
         @functools.wraps(fn)
         def reporting(*args, **kw):
             try:
-                return fn(*args, **kw)
+                return compact(fn(*args, **kw))
             except CcdeskError as exc:
                 # ToolError messages reach the model; other exceptions are masked by the SDK.
                 raise ToolError(str(exc)) from exc
 
-        return server.tool()(reporting)
+        return server.tool(annotations=ANNOTATIONS[fn.__name__], structured_output=False)(reporting)
 
     @tool
     def screenshot(region: str | None = None, path: str | None = None, scale: float = 1.0,

@@ -12,6 +12,7 @@ import pytest
 
 pytest.importorskip("mcp")
 
+from ccdesk.safety import INPUT_TOOLS  # noqa: E402
 from ccdesk.server import TOOL_NAMES, build_server  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -43,6 +44,24 @@ def test_registered_tools(make_desk):
     assert props["click_element"] == {"ref", "button", "count", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
+
+
+def test_every_tool_says_what_it_may_do(make_desk):
+    import anyio
+
+    tools = anyio.run(build_server(make_desk()).list_tools)
+    hints = {t.name: t.model_dump(by_alias=True, mode="json")["annotations"] for t in tools}
+    assert set(hints) == SPEC_TOOLS
+    looks = {name for name, h in hints.items() if h["readOnlyHint"]}
+    assert looks == {"screenshot", "list_windows", "list_monitors", "ui_tree", "wait", "wait_for_change", "doctor"}
+    assert not looks & INPUT_TOOLS  # read-only mode and the hints agree
+    for name in ("click", "click_element", "drag", "type_text", "press_key", "launch"):
+        assert hints[name]["destructiveHint"] is True, name
+
+
+def test_results_are_one_line_of_json(client):
+    text = _text(client.call("wait", {"seconds": 0}))
+    assert text == '{"waited":0.0}'
 
 
 def test_headless_adds_instructions(make_desk):
@@ -121,7 +140,7 @@ def test_stdio_session(client, tmp_path):
 
     ok = client.call("wait", {"seconds": 0})
     assert not ok.get("isError")
-    assert "waited" in _text(ok) or ok.get("structuredContent", {}).get("waited") == 0
+    assert json.loads(_text(ok)) == {"waited": 0.0}
 
     denied = client.call("click", {"x": 1, "y": 1})
     assert denied.get("isError") is True
@@ -132,8 +151,7 @@ def test_stdio_session(client, tmp_path):
 
     report = client.call("doctor", {})
     assert not report.get("isError")
-    assert '"read_only": true' in _text(report).replace("True", "true") or \
-        report.get("structuredContent", {}).get("policy", {}).get("read_only") is True
+    assert json.loads(_text(report))["policy"]["read_only"] is True
 
     log = [json.loads(line) for line in (tmp_path / "audit.log").read_text().splitlines()]
     assert [e["tool"] for e in log] == ["server_start", "wait", "click", "launch", "doctor"]

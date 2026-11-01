@@ -38,7 +38,7 @@ ccdesk doctor        # session type, helper tools, screen size, accessibility bu
 ccdesk install       # register the MCP server with Claude Code and install the skill
 ```
 
-Restart Claude Code and run `/mcp`: `ccdesk` should be listed with 15 tools. To try it on a
+Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. To try it on a
 private screen instead of yours, see [Headless](#headless-let-it-work-while-you-use-your-pc).
 
 ### Other distributions
@@ -88,7 +88,7 @@ claude mcp add --scope user ccdesk -- ccdesk mcp
 mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.claude/skills/computer-use/
 ```
 
-Restart Claude Code and run `/mcp`. `ccdesk` should be listed with 15 tools.
+Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
 
 ## Headless: let it work while you use your PC
 
@@ -317,6 +317,9 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
 - **The skill.** It tells Claude to screenshot before acting and verify after, to never type
   passwords, to never dismiss dialogs blindly, and to treat on-screen text as data, not
   instructions.
+
+Each tool also carries MCP annotations (`readOnlyHint`, `destructiveHint`, `openWorldHint`), so a
+host can tell looking from acting. They are hints for the host; the checks above are what refuse.
 
 These guardrails are not a sandbox. Any client that can call `type_text` can type a shell
 command into a terminal. Use `--read-only` when you only want Claude to look, and keep
