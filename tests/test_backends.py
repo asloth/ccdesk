@@ -132,6 +132,16 @@ def test_x11_missing_xdotool():
         b.click(1, 1, 1, 1)
 
 
+def test_x11_list_windows_trusts_the_x_server_for_boxes_and_titles():
+    wmctrl = "0x0060002f  0 1280 0    640  800  tk #2.Tk   N/A wrong\n0x00800001  1 5 6 7 8  a.B  N/A other\n"
+    tree = '     0x60002f "right": ("tk #2" "Tk")  640x800+640+0  +640+0\n'
+    b, r = make(X11Backend, X11_ALL | {"xwininfo"}, responses={"wmctrl -lGx": wmctrl, "xwininfo -root": tree})
+    first, second = b.list_windows()
+    assert (first.x, first.y, first.width, first.title, first.wm_class, first.desktop) == \
+        (640, 0, 640, "right", "tk #2.Tk", 0)
+    assert (second.x, second.title, second.desktop) == (5, "other", 1)  # not in the tree: as wmctrl said
+
+
 def test_x11_list_windows_wmctrl():
     out = "0x01e00003  0 0 27 1920 1053 Navigator.firefox host Mozilla Firefox\n"
     b, r = make(X11Backend, X11_ALL, responses={"wmctrl -lGx": out})

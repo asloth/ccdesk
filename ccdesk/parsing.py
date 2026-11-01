@@ -280,15 +280,42 @@ class Window:
         }
 
 
+XWININFO_TREE_LINE = re.compile(
+    r'^\s*(0x[0-9a-fA-F]+) (?:"(.*)"|\(has no name\)): \((?:"(.*?)" "(.*?)")?\)\s+(\d+)x(\d+)\S*\s+([+-]-?\d+)([+-]-?\d+)\s*$')
+
+
+def parse_xwininfo_tree(output: str) -> dict[str, dict]:
+    """`xwininfo -root -tree`, by window id: title, class and the box in absolute screen pixels."""
+    found = {}
+    for line in output.splitlines():
+        m = XWININFO_TREE_LINE.match(line)
+        if m:
+            wid, title, instance, cls, w, h, x, y = m.groups()
+            found[f"0x{int(wid, 16):08x}"] = {
+                "title": title, "wm_class": f"{instance}.{cls}" if cls is not None else None,
+                "x": int(x.removeprefix("+")), "y": int(y.removeprefix("+")), "width": int(w), "height": int(h)}
+    return found
+
+
 def parse_wmctrl_lgx(output: str) -> list[Window]:
-    """Parse `wmctrl -lGx` lines: id desktop x y w h class host title."""
+    """Parse `wmctrl -lGx` lines: id desktop x y w h class host title.
+
+    A class may hold spaces ("tk #2.Tk"), so it runs up to its first token with a dot; that token
+    joins instance and class. X11Backend replaces these fields from `xwininfo -tree` when it can.
+    """
     windows = []
     for line in output.splitlines():
-        parts = line.split(None, 8)
-        if len(parts) < 8:
+        parts = line.split(None, 6)
+        if len(parts) < 7:
             continue
-        wid, desk, x, y, w, h, wm_class, _host = parts[:8]
-        title = parts[8] if len(parts) > 8 else ""
+        wid, desk, x, y, w, h, rest = parts
+        tokens = rest.split()
+        end = next((i for i, t in enumerate(tokens) if "." in t), 0) + 1
+        if len(tokens) < end + 1:  # no host: not a line of this format
+            continue
+        wm_class = " ".join(tokens[:end])
+        pieces = rest.split(None, end + 1)
+        title = pieces[end + 1] if len(pieces) > end + 1 else ""
         try:
             windows.append(
                 Window(

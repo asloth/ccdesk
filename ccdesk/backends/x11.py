@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from dataclasses import replace
 
 from ccdesk.backends.base import Backend, interpolate
 from ccdesk.errors import CommandError
@@ -13,6 +14,7 @@ from ccdesk.parsing import (
     parse_display_geometry,
     parse_shell_vars,
     parse_wmctrl_lgx,
+    parse_xwininfo_tree,
     parse_xprop_wm_class,
     parse_xrandr_monitors,
     parse_xrdb_dpi,
@@ -128,9 +130,24 @@ class X11Backend(Backend):
         if self.which("wmctrl"):
             out = self.try_run(["wmctrl", "-lGx"])
             if out is not None:
-                return parse_wmctrl_lgx(out)
+                return self._true_boxes(parse_wmctrl_lgx(out))
         # No window manager (e.g. bare Xvfb) or no wmctrl: ask xdotool directly.
         return self._xdotool_windows()
+
+    def _true_boxes(self, windows: list[Window]) -> list[Window]:
+        """wmctrl counts a window's offset twice under window managers without frames (bspwm: 640
+        comes out as 1280), and a class with a space can shift its columns. wmctrl still decides
+        which windows there are and on which desktop; the X server knows the rest."""
+        out = self.try_run(["xwininfo", "-root", "-tree"]) if self.which("xwininfo") else None
+        tree = parse_xwininfo_tree(out or "")
+        fixed = []
+        for window in windows:
+            known = tree.get(window.id)
+            if known:
+                fields = {k: v for k, v in known.items() if v is not None}
+                window = replace(window, **fields)
+            fixed.append(window)
+        return fixed
 
     def _xdotool_windows(self) -> list[Window]:
         ids = self._client_list()
