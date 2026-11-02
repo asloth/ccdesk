@@ -179,8 +179,8 @@ while it is on.
 | `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
 | `click(x, y, button="left", count=1, force=false, expect_title?)` | Moves the pointer and clicks. `count=2` double-clicks. |
 | `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, expect_title?)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false, expect_title?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
 | `type_text(text, submit=false, replace=false, force=false, expect_title?)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
 | `press_key(key, modifiers=[], confirm=false, force=false, expect_title?)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
@@ -337,7 +337,7 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   floating window of the same app on the same workspace.
 - **Input goes to the tab Claude chose.** A browser is one window with many tabs, so the
   check above passes when you switch from the tab Claude was using to your mail. Pass
-  `expect_title="Kimai"` to any of those six tools and it refuses unless the receiving
+  `expect_title="Kimai"` to `click`, `click_element`, `type_text` or `press_key` and it refuses unless the receiving
   window's title contains that text (case-insensitive); Firefox and Chromium put the active
   tab's title in the window title. `force=true` does not skip it, and when the window can't
   be known the call is refused rather than sent unchecked.

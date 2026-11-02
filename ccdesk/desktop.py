@@ -377,23 +377,22 @@ class Desktop:
         return self._act("move", {"x": x, "y": y}, do)
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
-             force: bool = False, expect_title: str | None = None) -> dict:
+             force: bool = False) -> dict:
         def do():
             self._ready()
             x0, y0 = self._point(from_x, from_y)
             x1, y1 = self._point(to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
-            window = self._guard(force, (x0, y0), expect_title)
+            window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
                                                     "duration_ms": ms}, window))
 
         args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
-                "force": force, "expect_title": expect_title}
+                "force": force}
         return self._act("drag", args, do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False,
-               expect_title: str | None = None) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -401,12 +400,11 @@ class Desktop:
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
-            window = self._guard(force, (px, py), expect_title)
+            window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
             return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window))
 
-        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force,
-                                      "expect_title": expect_title}, do)
+        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
 
     def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False,
                   expect_title: str | None = None) -> dict:

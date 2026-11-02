@@ -78,6 +78,24 @@ def with_picture(result: dict) -> dict:
     return result
 
 
+def slim_schema(schema: dict) -> dict:
+    """What the model needs from a generated input schema. The SDK adds a title to every field and
+    spells an optional string as anyOf [string, null]; every session pays for those characters.
+    Arguments are still validated against the function's own signature."""
+    slim = {k: v for k, v in schema.items() if k != "title" and not (k == "default" and v is None)}
+    options = slim.get("anyOf")
+    if isinstance(options, list):
+        real = [o for o in options if o != {"type": "null"}]
+        if len(real) == 1:
+            del slim["anyOf"]
+            slim.update(slim_schema(real[0]))
+    if isinstance(slim.get("items"), dict):
+        slim["items"] = slim_schema(slim["items"])
+    if isinstance(slim.get("properties"), dict):
+        slim["properties"] = {name: slim_schema(field) for name, field in slim["properties"].items()}
+    return slim
+
+
 def build_server(desktop: Desktop) -> MCPServer:
     kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
@@ -120,17 +138,14 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.move(x, y)
 
     @tool
-    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False,
-             expect_title: str | None = None) -> dict:
+    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False) -> dict:
         """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release."""
-        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force,
-                            expect_title=expect_title)
+        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force)
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False,
-               expect_title: str | None = None) -> dict:
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
         """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks."""
-        return desktop.scroll(x, y, dx=dx, dy=dy, force=force, expect_title=expect_title)
+        return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
 
     @tool
     def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
@@ -236,6 +251,9 @@ def build_server(desktop: Desktop) -> MCPServer:
         Disabled unless the server was started with --allow-launch."""
         return desktop.launch(command)
 
+    # Private to the SDK: if it moves, the server still works, with the longer schemas.
+    for registered in getattr(getattr(server, "_tool_manager", None), "_tools", {}).values():
+        registered.parameters = slim_schema(registered.parameters)
     return server
 
 

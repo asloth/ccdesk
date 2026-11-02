@@ -421,7 +421,15 @@ def test_wait_allows_five_minutes(make_desk, fake):
         make_desk().wait(301)
 
 
-@pytest.mark.parametrize("call", GUARDED + [lambda d, **kw: d.click_element("e4", **kw)])
+TAB_GUARDED = [
+    lambda d, **kw: d.click(5, 5, **kw),
+    lambda d, **kw: d.type_text("rm -rf ~", **kw),
+    lambda d, **kw: d.press_key("Return", **kw),
+    lambda d, **kw: d.click_element("e4", **kw),
+]
+
+
+@pytest.mark.parametrize("call", TAB_GUARDED)
 def test_expect_title_guards_the_tab(make_desk, fake, read_audit, call):
     """Firefox is one window with many tabs: the user switched to Gmail, the window id stayed."""
     d = make_desk()
