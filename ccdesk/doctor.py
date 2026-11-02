@@ -88,11 +88,25 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     elif backend.name == "kde":
         warnings.append(
             "KDE Plasma: input goes through ydotool (/dev/uinput): absolute clicks depend on the "
-            "pointer acceleration curve, so verify them with a screenshot"
+            "pointer acceleration curve, so verify them with a screenshot, and keys and text assume "
+            "a US layout and ASCII"
         )
         if not tools.get("windows", {}).get("kdotool"):
-            warnings.append("window listing and control on KDE needs kdotool (AUR: kdotool, or "
-                            "`cargo install kdotool`); screenshots and input work without it")
+            warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "
+                            "`cargo install kdotool`). Screenshots and input work without it, but with no "
+                            "focus guard, and on a scaled display their coordinates will be wrong")
+        if not backend.first_tool("magick", "convert"):
+            warnings.append("region screenshots and scaled displays on KDE need ImageMagick (magick or convert)")
+        try:
+            missing = backend.kwin_missing()
+        except CcdeskError as exc:
+            missing = None
+            warnings.append(f"kdotool is installed but could not run a KWin script ({exc}). It needs kdotool "
+                            "0.3 or newer: until then there is no window list or focus guard, and on a "
+                            "scaled display screenshot coordinates will be wrong")
+        if missing:
+            warnings.append(f"this KWin lacks {', '.join(missing)}: the window list may include panels, "
+                            "windows on other activities, or boxes off by the title bar. Please report it")
         if tools.get("keyboard", {}).get("ydotool") and not ydotoold_socket(env):
             warnings.append("ydotoold is not running: start it with `systemctl --user enable --now ydotool`")
     if backend.name == "x11" and not tools.get("windows", {}).get("wmctrl"):

@@ -7,16 +7,27 @@ back from the recorder.
 from __future__ import annotations
 
 import json
+import shutil
+import subprocess
 
 import pytest
 
 from ccdesk.backends import KdeBackend, X11Backend, get_backend, is_kde
-from ccdesk.backends.kde import kwin_window_at, parse_kwin_screens, parse_kwin_windows, ydotoold_socket
-from ccdesk.backends.keycodes import ydotool_key_sequence
+from ccdesk.backends.kde import (
+    KWIN_CHECK,
+    WINDOWS_SCRIPT,
+    kwin_on_show,
+    kwin_window_at,
+    parse_kwin_screens,
+    parse_kwin_windows,
+    ydotoold_socket,
+)
+from ccdesk.backends.keycodes import keycode, ydotool_key_sequence
+from ccdesk.desktop import Desktop
 from ccdesk.doctor import build_report, format_report
-from ccdesk.errors import CommandError, UnsupportedError
-from ccdesk.parsing import Region, Window, parse_key_combo
-from ccdesk.safety import Policy
+from ccdesk.errors import CommandError, PolicyError, UnsupportedError
+from ccdesk.parsing import Region, Window, parse_key_combo, parse_window_ref
+from ccdesk.safety import AuditLog, Policy
 
 KDE_ENV = {"WAYLAND_DISPLAY": "wayland-0", "DISPLAY": ":0", "XDG_SESSION_TYPE": "wayland",
            "XDG_CURRENT_DESKTOP": "KDE"}
@@ -133,15 +144,16 @@ def test_window_at_outside_the_frame():
 def test_screenshot_uses_spectacle(tmp_path):
     b, r = make()
     b.screenshot(str(tmp_path / "s.png"), None)
-    assert r.argvs() == [["spectacle", "--fullscreen", "--background", "--nonotify",
+    assert [a for a in r.argvs() if a[0] != "kdotool"] == [["spectacle", "--fullscreen", "--background", "--nonotify",
                           "--output", str(tmp_path / "s.png")]]
 
 
 def test_region_screenshot_crops_the_grab(tmp_path):
     b, r = make()
     b.screenshot(str(tmp_path / "s.png"), Region(1900, 380, 400, 300))
-    assert r.argvs()[0][:2] == ["spectacle", "--fullscreen"]
-    crop = r.argvs()[1]
+    argvs = [a for a in r.argvs() if a[0] != "kdotool"]  # kdotool is asked for the logical size
+    assert argvs[0][:2] == ["spectacle", "--fullscreen"]
+    crop = argvs[1]
     assert crop[0] == "convert" and crop[2:6] == ["-crop", "400x300+1900+380", "+repage", f"PNG24:{tmp_path / 's.png'}"]
 
 
@@ -328,6 +340,7 @@ def test_doctor_does_not_warn_about_a_working_setup(tmp_path):
     b, _ = make(env={**KDE_ENV, "XDG_RUNTIME_DIR": str(tmp_path)},
                 responses={"kdotool kwinscript": json.dumps([win()]), "kdotool get_desktop": "1"})
     b.monitors = lambda: []
+    b.kwin_missing = list  # the self-check finds every property (the fake answers one JSON to every script)
     report = build_report(b, Policy(), "/tmp/audit.log", a11y=StubA11y())
     text = format_report(report)
     assert "needs kdotool" not in text and "ydotoold is not running" not in text
@@ -339,3 +352,250 @@ def test_doctor_formats_monitors_without_a_primary_flag():
     b.monitors = lambda: [{"name": "DP-3", "x": 0, "y": 0, "width": 1920, "height": 1080, "scale": 1}]
     text = format_report(build_report(b, Policy(), "/tmp/audit.log", a11y=StubA11y()))
     assert "monitor:             DP-3 1920x1080+0+0" in text
+
+
+# -- fixes from review ---------------------------------------------------
+
+
+def png(width, height):
+    return b"\x89PNG\r\n\x1a\n\x00\x00\x00\rIHDR" + width.to_bytes(4, "big") + height.to_bytes(4, "big") + b"0" * 8
+
+
+def screens(*boxes):
+    return json.dumps([{"name": f"m{i}", "x": x, "y": y, "width": w, "height": h, "scale": 1}
+                       for i, (x, y, w, h) in enumerate(boxes)])
+
+
+class Grabs(Recorder):
+    """spectacle writes an image of this size; the resizer's size is read back from the command."""
+
+    def __init__(self, size, responses=None):
+        super().__init__(responses)
+        self.size = size
+
+    def __call__(self, argv, input=None, timeout=None, detach=False):
+        out = super().__call__(argv, input, timeout, detach)
+        if argv[0] == "spectacle":
+            with open(argv[argv.index("--output") + 1], "wb") as fh:
+                fh.write(png(*self.size))
+        return out
+
+
+def make_grabs(size, boxes, installed=KDE_ALL):
+    r = Grabs(size, {"kdotool kwinscript": screens(*boxes)})
+    return KdeBackend(env=KDE_ENV, runner=r, which=lambda n: f"/usr/bin/{n}" if n in installed else None), r
+
+
+def test_kwin_ids_are_ids_not_titles():
+    assert parse_window_ref(UUID) == ("id", UUID)
+
+
+def desktop_for(b, tmp_path):
+    return Desktop(backend=b, policy=Policy(), audit=AuditLog(tmp_path / "audit.log"), shots_dir=tmp_path)
+
+
+def test_desktop_finds_a_window_by_its_kwin_id(tmp_path):
+    b, _ = make(responses={"kdotool kwinscript": json.dumps([win()])})
+    assert desktop_for(b, tmp_path).find_window(UUID).id == UUID
+
+
+def test_a_grab_at_logical_size_is_left_alone(tmp_path):
+    b, r = make_grabs((1920, 1080), [(0, 0, 1920, 1080)])
+    b.screenshot(str(tmp_path / "s.png"), None)
+    assert not [a for a in r.argvs() if a[0] == "convert"]
+
+
+def test_a_scaled_grab_comes_down_to_logical_pixels(tmp_path):
+    b, r = make_grabs((3840, 2160), [(0, 0, 1920, 1080)])
+    b.screenshot(str(tmp_path / "s.png"), None)
+    assert next(a for a in r.argvs() if a[0] == "convert")[2:4] == ["-resize", "1920x1080!"]
+
+
+def test_a_scaled_region_is_resized_before_the_crop(tmp_path):
+    b, r = make_grabs((3840, 2160), [(0, 0, 1920, 1080)])
+    b.screenshot(str(tmp_path / "s.png"), Region(10, 20, 30, 40))
+    ops = [a[2] for a in r.argvs() if a[0] == "convert"]
+    assert ops == ["-resize", "-crop"]
+
+
+def test_a_scaled_grab_without_imagemagick_refuses(tmp_path):
+    b, _ = make_grabs((3840, 2160), [(0, 0, 1920, 1080)], KDE_ALL - {"convert"})
+    with pytest.raises(UnsupportedError, match="ImageMagick"):
+        b.screenshot(str(tmp_path / "s.png"), None)
+
+
+def test_window_origin_is_the_content_box_of_the_matching_window():
+    raw = [win(pid=5, title="a", cx=1, cy=2), win(pid=5, title="b", cx=3, cy=4), win(pid=6, cx=5, cy=6)]
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(raw)})
+    assert b.window_origin(5, "b") == (3, 4)
+    assert b.window_origin(7, None) is None
+
+
+def test_ui_tree_warns_when_kde_cannot_place_the_window(tmp_path):
+    b, _ = make(installed=KDE_ALL - {"kdotool"})
+    desktop = desktop_for(b, tmp_path)
+    desktop.a11y.tree = lambda *a: {"tree": "", "truncated": False}
+    assert "relative to the window" in desktop.ui_tree()["note"]
+
+
+def test_transient_for_follows_the_kwin_parent():
+    raw = [win(id="{dialog}", transient_for=UUID), win()]
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(raw)})
+    assert b.transient_for("{dialog}") == UUID
+    assert b.transient_for(UUID) is None
+
+
+def test_shell_surfaces_are_not_listed_but_still_take_clicks():
+    raw = [win(), win(id="{panel}", shell=True, title="", cls="plasmashell"), win(id="{menu}", popup=True)]
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(raw), "kdotool get_desktop": "1"})
+    assert [w.id for w in b.list_windows()] == [UUID]
+    assert b.window_at(5, 5) == "{menu}"
+    # the guard can name a panel, but an app's menu belongs to the focus and is not a shell surface
+    assert b.shell_window("{panel}").title == "a Plasma plasmashell surface"
+    assert b.shell_window("{menu}") is None and b.shell_window(UUID) is None
+
+
+def test_menus_plasma_opens_are_shell_but_an_apps_menu_is_not():
+    raw = [win(), win(id="{panel}", shell=True, cls="plasmashell"),
+           win(id="{desktop-menu}", popup=True, cls="plasmashell"),             # right click on the desktop
+           win(id="{tray-menu}", popup=True, cls="org.kde.foo", transient_for="{panel}"),
+           win(id="{submenu}", popup=True, cls="", transient_for="{tray-menu}"),
+           win(id="{app-menu}", popup=True, cls="kitty", transient_for=UUID)]
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(raw), "kdotool get_desktop": "1"})
+    assert [w for w in ("{desktop-menu}", "{tray-menu}", "{submenu}", "{app-menu}") if b.shell_window(w)] == [
+        "{desktop-menu}", "{tray-menu}", "{submenu}"]
+
+
+def test_a_click_on_a_panel_is_refused_when_a_window_was_activated(tmp_path):
+    """The panel is not in list_windows, but it is not a menu of the focused window either."""
+    raw = [win(active=True), win(id="{panel}", shell=True, title="Panel", x=0, y=0, width=800, height=40)]
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(raw), "kdotool get_desktop": "1"})
+    b.monitors = lambda: [{"name": "a", "x": 0, "y": 0, "width": 800, "height": 600, "scale": 1.0}]
+    d = desktop_for(b, tmp_path)
+    d.activate_window(UUID)
+    with pytest.raises(PolicyError, match=r"over 'Panel' \(\{panel\}\)"):
+        d.click(5, 5)
+
+
+@pytest.mark.parametrize("raw,current,expected", [
+    (win(desktops=[1, 3]), 3, True),
+    (win(desktops=[1, 3]), 2, False),
+    (win(desktops=[], desktop=None), 2, True),
+    (win(hidden=True), 1, False),
+    (win(on_activity=False), 1, False),
+    (win(desktops=[None], desktop=None), 2, True),  # an entry KWin left out: unknown, not a crash
+    (win(desktops=[None, 3]), 2, False),
+])
+def test_on_show_reads_every_desktop_and_the_activity(raw, current, expected):
+    assert kwin_on_show(raw, current) is expected
+
+
+@pytest.mark.parametrize("key,code", [
+    ("-", 12), ("=", 13), ("[", 26), ("]", 27), (";", 39), ("'", 40), ("`", 41), ("\\", 43), (",", 51),
+    (".", 52), ("/", 53), ("Next", 109), ("Pause", 119),
+])
+def test_unshifted_keys_have_codes(key, code):
+    assert keycode(key) == (code, False)
+
+
+@pytest.mark.parametrize("key,code", [("question", 53), ("underscore", 12), ("colon", 39)])
+def test_named_shifted_keys_hold_shift(key, code):
+    assert keycode(key) == (code, True)
+
+
+@pytest.mark.parametrize("key", ["Ñ", "é", "KP_Nonsense"])
+def test_keys_with_no_code_say_so(key):
+    with pytest.raises(UnsupportedError, match="no keycode"):
+        keycode(key)
+
+
+def test_non_ascii_text_warns():
+    b, _ = make()
+    assert b.typing_warning("plain") is None
+    assert "ASCII" in b.typing_warning("café")
+
+
+def test_mixed_scales_drawn_at_one_factor_resize(tmp_path):
+    b, r = make_grabs((7680, 2160), [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+    b.screenshot(str(tmp_path / "s.png"), None)
+    assert next(a for a in r.argvs() if a[0] == "convert")[2:4] == ["-resize", "3840x1080!"]
+
+
+@pytest.mark.parametrize("size", [(5760, 2160), (1920, 1080)])  # two factors; smaller than the layout
+def test_grabs_one_resize_cannot_fix_are_refused(tmp_path, size):
+    b, _ = make_grabs(size, [(0, 0, 1920, 1080), (1920, 0, 1920, 1080)])
+    with pytest.raises(CommandError, match="one scale"):
+        b.screenshot(str(tmp_path / "s.png"), None)
+
+
+def test_a_monitor_left_of_zero_is_cut_so_pixels_stay_screen_coordinates(tmp_path):
+    b, r = make_grabs((3840, 1080), [(-1920, 0, 1920, 1080), (0, 0, 1920, 1080)])
+    b.screenshot(str(tmp_path / "s.png"), None)
+    assert [a[2:4] for a in r.argvs() if a[0] == "convert"] == [["-crop", "1920x1080+1920+0"]]
+
+
+def test_doctor_says_when_kdotool_cannot_run_a_script():
+    b, _ = make(fail=("kdotool kwinscript",), responses={"kdotool get_desktop": "1"})
+    b.monitors = list
+    report = build_report(b, Policy(), "/tmp/audit.log", a11y=StubA11y())
+    assert any("could not run a KWin script" in w and "0.3 or newer" in w for w in report["warnings"])
+
+
+def test_doctor_names_kwin_properties_that_are_missing():
+    b, _ = make(responses={"kdotool kwinscript": json.dumps(["clientGeometry"]), "kdotool get_desktop": "1"})
+    b.monitors = list
+    report = build_report(b, Policy(), "/tmp/audit.log", a11y=StubA11y())
+    assert any("lacks clientGeometry" in w for w in report["warnings"])
+
+
+NODE = shutil.which("node")
+
+
+def run_kwin(script, workspace):
+    """Run a KWin script under node against a fake workspace, as kdotool would inside KWin."""
+    js = f"var workspace={workspace};var r;function output_result(x){{r=x;}}{script};console.log(r);"
+    return json.loads(subprocess.run([NODE, "-e", js], capture_output=True, text=True, check=True).stdout)
+
+
+FAKE_WINDOW = ("{internalId:'{u}',caption:'T',resourceClass:'k',pid:1,minimized:false,hidden:false,"
+               "frameGeometry:{x:10,y:20,width:100,height:50},desktops:[{x11DesktopNumber:2}],activities:[]")
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_windows_script_reads_kwin_as_documented():
+    ws = f"{{currentActivity:'a',stackingOrder:[{FAKE_WINDOW},clientGeometry:{{x:10,y:44}},dock:true}}]}}"
+    [w] = run_kwin(WINDOWS_SCRIPT, ws)
+    assert (w["cx"], w["cy"], w["shell"], w["desktops"], w["on_activity"]) == (10, 44, True, [2], True)
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_windows_script_fails_to_known_sides_when_kwin_differs():
+    # a type flag that is a method, a content box that is a method, an activity list but no current one
+    ws = (f"{{stackingOrder:[{FAKE_WINDOW},clientGeometry:function(){{return {{x:1,y:2}};}},"
+          "dock:function(){return true;},activities:['b']}]}")
+    [w] = run_kwin(WINDOWS_SCRIPT, ws)
+    assert (w["cx"], w["cy"], w["shell"], w["on_activity"]) == (1, 2, False, True)
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_kwin_check_lists_what_is_missing():
+    assert run_kwin(KWIN_CHECK, f"{{currentActivity:'a',stackingOrder:[{FAKE_WINDOW}}}]}}") == [
+        "desktopWindow", "dock", "notification", "criticalNotification", "onScreenDisplay", "splash",
+        "tooltip", "popupWindow", "appletPopup", "clientGeometry"]
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_hidden_and_minimized_fail_to_on_show_and_popups_are_not_shell():
+    # hidden and minimized as methods: the window still counts as on show, like the type flags
+    ws = (f"{{currentActivity:'a',stackingOrder:[{FAKE_WINDOW},hidden:function(){{return true;}},"
+          "minimized:function(){return true;},popupWindow:true},"
+          f"{FAKE_WINDOW},appletPopup:true}}]}}")
+    menu, launcher = run_kwin(WINDOWS_SCRIPT, ws)
+    assert (menu["hidden"], menu["minimized"], menu["popup"], menu["shell"]) == (False, False, True, False)
+    assert (launcher["popup"], launcher["shell"]) == (False, True)
+
+
+@pytest.mark.skipif(not NODE, reason="needs node")
+def test_kwin_check_names_a_missing_stacking_order():
+    assert "workspace.stackingOrder" in run_kwin(KWIN_CHECK, "{currentActivity:'a'}")
+    assert "workspace.stackingOrder" in run_kwin(KWIN_CHECK, f"{{currentActivity:'a',activeWindow:{FAKE_WINDOW}}}}}")

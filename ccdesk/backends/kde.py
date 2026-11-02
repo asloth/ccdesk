@@ -2,7 +2,7 @@
 
 KWin does not speak wlr-screencopy, so grim cannot grab the screen on Plasma: the compositor
 answers "the screen capture protocol is not supported". spectacle does, through KDE's own
-screenshot stack, on Wayland and on X11.
+screenshot stack. A Plasma session on X11 does not come here: it has xdotool and the X11 backend.
 
 Windows come from kdotool, which loads a small script into KWin over D-Bus and reads its answer
 back. That is the only route to the window list on Plasma Wayland, where nothing outside the
@@ -10,7 +10,8 @@ compositor can enumerate windows. One script answers for every window at once.
 
 Input is ydotool, which writes to /dev/uinput: Plasma offers neither the virtual-pointer nor the
 virtual-keyboard protocol, so there is no unprivileged path. Absolute positioning then depends on
-the pointer acceleration curve, so clicks have to be verified with a screenshot.
+the pointer acceleration curve, so clicks have to be verified with a screenshot. ydotool also sends
+US-layout keycodes and only knows ASCII, so other text is better pasted.
 """
 
 from __future__ import annotations
@@ -19,23 +20,55 @@ import json
 import os
 import re
 import tempfile
+from dataclasses import replace
 
 from ccdesk.backends.keycodes import ydotool_key_sequence
 from ccdesk.backends.wayland import WaylandBackend
 from ccdesk.errors import CcdeskError, CommandError, UnsupportedError
-from ccdesk.parsing import KeyCombo, Region, Window
+from ccdesk.parsing import KeyCombo, Region, Window, png_size
 
-# One KWin script answers every window: id, title, class, pid, frame box, state and desktop.
+# One KWin script answers every window: id, title, class, pid, frame and content boxes, state, desktops,
+# activity and parent. Two kinds of surface are left out of list_windows. `shell` is Plasma's own:
+# panels, the desktop, notifications, on-screen displays and applet popups such as the launcher. They
+# take input themselves, so the focus guard names them (shell_window). `popup` is an app's menu or
+# tooltip, which belongs to the focused window, as menus do on every other backend.
 # workspace.stackingOrder runs bottom to top, so the last window holding a point is the one that
-# receives a click there.
+# receives a click there. Each property is read so that a missing or renamed one fails to a known side:
+# a flag that is not a boolean counts as false (the window stays listed and on show), a content box
+# that is not a rectangle falls back to the frame, and an unknown activity counts as the current one.
+# `ccdesk doctor` runs KWIN_CHECK to say when any of them is missing.
 WINDOWS_SCRIPT = (
-    "var out=[];var ls=workspace.stackingOrder;"
-    "for(var i=0;i<ls.length;i++){var w=ls[i];var f=w.frameGeometry;var d=null;"
-    "try{if(w.desktops&&w.desktops.length){d=w.desktops[0].x11DesktopNumber;}}catch(e){}"
+    "function is(v){return v===true;}"
+    "var out=[];var ls=workspace.stackingOrder;var act=workspace.currentActivity;"
+    "for(var i=0;i<ls.length;i++){var w=ls[i];var f=w.frameGeometry;var c=w.clientGeometry;"
+    "if(typeof c==='function'){try{c=c.call(w);}catch(e){c=null;}}"
+    "if(!c||typeof c.x!=='number'){c=f;}var ds=[];"
+    "try{var dl=w.desktops||[];for(var j=0;j<dl.length;j++){ds.push(dl[j].x11DesktopNumber);}}catch(e){}"
+    "var acts=w.activities||[];var t=null;"
+    "try{if(w.transientFor){t=String(w.transientFor.internalId);}}catch(e){}"
     "out.push({id:String(w.internalId),title:w.caption,cls:w.resourceClass,pid:w.pid,"
-    "x:f.x,y:f.y,width:f.width,height:f.height,minimized:w.minimized,"
-    "active:(w===workspace.activeWindow),desktop:d});}"
+    "x:f.x,y:f.y,width:f.width,height:f.height,cx:c.x,cy:c.y,minimized:is(w.minimized),hidden:is(w.hidden),"
+    "active:(w===workspace.activeWindow),desktop:ds.length?ds[0]:null,desktops:ds,"
+    "on_activity:(typeof act!=='string'||acts.length===0||acts.indexOf(act)>=0),transient_for:t,"
+    "shell:(is(w.desktopWindow)||is(w.dock)||is(w.notification)||is(w.criticalNotification)"
+    "||is(w.onScreenDisplay)||is(w.splash)||is(w.appletPopup)),popup:(is(w.tooltip)||is(w.popupWindow))});}"
     "output_result(JSON.stringify(out));"
+)
+# The KWin properties WINDOWS_SCRIPT relies on, checked on one window: their names, if missing.
+KWIN_FLAGS = ("desktopWindow", "dock", "notification", "criticalNotification", "onScreenDisplay", "splash",
+              "tooltip", "popupWindow", "appletPopup", "hidden", "minimized")
+KWIN_CHECK = (
+    "var miss=[];var ls=workspace.stackingOrder;"
+    "if(!ls||typeof ls.length!=='number'){miss.push('workspace.stackingOrder');ls=[];}"
+    "var w=workspace.activeWindow||ls[0];"
+    "if(w){var fl=" + json.dumps(list(KWIN_FLAGS)) + ";"
+    "for(var i=0;i<fl.length;i++){if(typeof w[fl[i]]!=='boolean'){miss.push(fl[i]);}}"
+    "var c=w.clientGeometry;if(typeof c==='function'){c=c.call(w);}"
+    "if(!c||typeof c.x!=='number'){miss.push('clientGeometry');}"
+    "if(!Array.isArray(w.activities)&&!(w.activities&&typeof w.activities.length==='number')){miss.push('activities');}"
+    "if(!w.desktops||typeof w.desktops.length!=='number'){miss.push('desktops');}}"
+    "if(typeof workspace.currentActivity!=='string'){miss.push('workspace.currentActivity');}"
+    "output_result(JSON.stringify(miss));"
 )
 SCREENS_SCRIPT = (
     "var o=[];var s=workspace.screens;"
@@ -48,21 +81,39 @@ SCREENS_SCRIPT = (
 KDOTOOL_ID = re.compile(r"^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$")
 
 
+def kwin_window(raw) -> Window:
+    try:
+        return Window(
+            id=str(raw["id"]), title=raw.get("title") or "", wm_class=raw.get("cls") or "",
+            x=int(raw.get("x") or 0), y=int(raw.get("y") or 0),
+            width=int(raw.get("width") or 0), height=int(raw.get("height") or 0),
+            desktop=None if raw.get("desktop") is None else int(raw["desktop"]),
+        )
+    except (AttributeError, KeyError, TypeError, ValueError) as exc:
+        raise CommandError(f"unexpected window from kdotool: {raw!r}") from exc
+
+
+def unlisted(raw) -> bool:
+    """A shell surface or an app's popup: in the stacking order, not in list_windows."""
+    return bool(isinstance(raw, dict) and (raw.get("shell") or raw.get("popup")))
+
+
+def plasma_surface(raw: dict, by_id: dict[str, dict]) -> bool:
+    """A shell surface, or a menu Plasma itself opened (on a panel, the tray or the desktop): a popup
+    from plasmashell, or one whose parents lead to a shell surface. An app's own menu is neither."""
+    for _ in range(4):
+        if raw.get("shell") or (raw.get("popup") and str(raw.get("cls") or "").lower() == "plasmashell"):
+            return True
+        raw = by_id.get(str(raw.get("transient_for")))
+        if raw is None:
+            return False
+    return False
+
+
 def parse_kwin_windows(payload) -> list[Window]:
     if not isinstance(payload, list):
         raise CommandError("kdotool did not return a window list")
-    windows: list[Window] = []
-    for raw in payload:
-        try:
-            windows.append(Window(
-                id=str(raw["id"]), title=raw.get("title") or "", wm_class=raw.get("cls") or "",
-                x=int(raw.get("x") or 0), y=int(raw.get("y") or 0),
-                width=int(raw.get("width") or 0), height=int(raw.get("height") or 0),
-                desktop=None if raw.get("desktop") is None else int(raw["desktop"]),
-            ))
-        except (KeyError, TypeError, ValueError) as exc:
-            raise CommandError(f"unexpected window from kdotool: {raw!r}") from exc
-    return windows
+    return [kwin_window(raw) for raw in payload if not unlisted(raw)]
 
 
 def parse_kwin_screens(payload) -> list[dict]:
@@ -79,17 +130,23 @@ def parse_kwin_screens(payload) -> list[dict]:
     return monitors
 
 
+def kwin_on_show(raw: dict, current_desktop: int | None) -> bool:
+    """Whether a window from the KWin script can be seen now. No desktops means all of them."""
+    if raw.get("minimized") or raw.get("hidden") or raw.get("on_activity") is False:
+        return False
+    desktops = raw.get("desktops") or ([raw["desktop"]] if raw.get("desktop") is not None else [])
+    numbers = {d for d in desktops if isinstance(d, int)}  # an entry KWin left out counts as unknown
+    return not numbers or current_desktop is None or current_desktop in numbers
+
+
 def kwin_window_at(windows: list[dict], x: int, y: int, current_desktop: int | None = None) -> str | None:
     """Id of the window that would receive a click at (x, y), from the stacking order KWin reports.
 
     This is inferred, like the Hyprland version: KWin exposes no query for it."""
     for raw in reversed(windows):
-        if raw.get("minimized"):
-            continue
-        desktop = raw.get("desktop")
-        if desktop is not None and current_desktop is not None and int(desktop) != current_desktop:
-            continue
         try:
+            if not kwin_on_show(raw, current_desktop):
+                continue
             wx, wy = int(raw.get("x")), int(raw.get("y"))
             ww, wh = int(raw.get("width")), int(raw.get("height"))
         except (TypeError, ValueError):
@@ -157,15 +214,17 @@ class KdeBackend(WaylandBackend):
     def screenshot(self, path: str, region: Region | None) -> None:
         if region is None:
             self._spectacle(path)
+            self._to_logical(path)
             return
         # spectacle has no way to pass a region: grab the screen and cut the part asked for.
+        tool = self.first_tool("magick", "convert")
+        if not tool:
+            raise UnsupportedError("region screenshots on KDE need ImageMagick (magick or convert)")
         fd, tmp = tempfile.mkstemp(prefix="ccdesk-kde-", suffix=".png")
         os.close(fd)
         try:
             self._spectacle(tmp)
-            tool = self.first_tool("magick", "convert")
-            if not tool:
-                raise UnsupportedError("region screenshots on KDE need ImageMagick (magick or convert)")
+            self._to_logical(tmp)
             self.run([tool, tmp, "-crop", f"{region.width}x{region.height}+{region.x}+{region.y}",
                       "+repage", f"PNG24:{path}"], timeout=30)
         finally:
@@ -177,6 +236,48 @@ class KdeBackend(WaylandBackend):
         self.run(["spectacle", "--fullscreen", "--background", "--nonotify", "--output", path], timeout=45)
         if not os.path.exists(path) or not os.path.getsize(path):
             raise CommandError("spectacle wrote no screenshot (is the screen locked?)")
+
+    def _to_logical(self, path: str) -> None:
+        """Bring a grab to the logical pixels windows and the pointer use, what grim -s 1 does. A scaled
+        monitor comes out of spectacle bigger than KWin says it is. Without kdotool there is no way to
+        know, and the image is the only size there is."""
+        monitors = self.monitors()
+        if not monitors:
+            return
+        # ccdesk's screen starts at 0,0 (screen_size). A monitor left of or above that widens the grab,
+        # so the part of it past 0,0 is cut off afterwards and pixels stay screen coordinates.
+        ox, oy = min(0, *(m["x"] for m in monitors)), min(0, *(m["y"] for m in monitors))
+        screen = (max(m["x"] + m["width"] for m in monitors), max(m["y"] + m["height"] for m in monitors))
+        size = (screen[0] - ox, screen[1] - oy)
+        width, height = png_size(path)
+        if (width, height) != size:
+            self._rescale(path, (width, height), size)
+        if ox or oy:
+            self.run([self.need("screenshots past 0,0 on KDE", "magick", "convert"), path, "-crop",
+                      f"{screen[0]}x{screen[1]}+{-ox}+{-oy}", "+repage", f"PNG24:{path}"], timeout=30)
+
+    def _rescale(self, path: str, got: tuple[int, int], size: tuple[int, int]) -> None:
+        width, height = got
+        # KWin draws every output at one scale, so a good grab is the layout times one factor. Two
+        # factors (outputs at their own scales, side by side) or a grab smaller than the layout can't
+        # be mapped back by one resize: say so rather than hand back wrong coordinates.
+        sx, sy = width / size[0], height / size[1]
+        if sx < 1 or sy < 1 or abs(sx - sy) > 0.02 * max(sx, sy):
+            raise CommandError(f"spectacle's {width}x{height} grab does not match KWin's {size[0]}x{size[1]} "
+                               "layout at one scale (monitors at different scales?): coordinates would be wrong")
+        if not self.first_tool("magick", "convert"):
+            raise UnsupportedError("screenshots on a scaled KDE display need ImageMagick (magick or convert)")
+        self.scale_png(path, *size)
+
+    def kwin_missing(self) -> list[str] | None:
+        """KWin properties the window script needs and this KWin lacks; None without kdotool. Raises
+        CommandError when kdotool is there but cannot run a script (older than 0.3, or KWin refused)."""
+        if not self.which("kdotool"):
+            return None
+        missing = self._kwin_json(KWIN_CHECK)
+        if not (isinstance(missing, list) and all(isinstance(m, str) for m in missing)):
+            raise CommandError(f"kdotool's KWin check answered {str(missing)[:120]!r}")
+        return missing
 
     def monitors(self) -> list[dict]:
         if not self.which("kdotool"):
@@ -203,6 +304,12 @@ class KdeBackend(WaylandBackend):
         self.need("keyboard input on KDE", "ydotool")
         self.run(["ydotool", "type", "--key-delay", "12", "--file", "-"], input=text,
                  timeout=max(15, len(text) * 0.05 + 5))
+
+    def typing_warning(self, text: str) -> str | None:
+        if text.isascii():
+            return None
+        return ("ydotool only types ASCII: other characters may be lost or wrong. Check the field. If wrong: "
+                "clipboard(action=\"set\", text=...) and ctrl+v")
 
     def press_key(self, combo: KeyCombo) -> None:
         self.need("keyboard input on KDE", "ydotool")
@@ -234,20 +341,37 @@ class KdeBackend(WaylandBackend):
             self._kdotool("windowstate", target, "--remove", state)
         self._kdotool("windowactivate", target)
 
+    def window_origin(self, pid: int | None, title: str | None) -> tuple[int, int] | None:
+        found = [w for w in self._safe_windows() if not unlisted(w) and (pid is None or w.get("pid") == pid)]
+        if title is not None and len(found) > 1:
+            found = [w for w in found if w.get("title") == title] or found
+        if not found:
+            return None
+        return int(found[0].get("cx", found[0].get("x", 0))), int(found[0].get("cy", found[0].get("y", 0)))
+
+    def transient_for(self, window_id: str) -> str | None:
+        raw = next((w for w in self._safe_windows() if str(w.get("id")) == window_id), None)
+        return raw.get("transient_for") if raw else None
+
     def window_on_show(self, window_id: str) -> bool | None:
         raw = next((w for w in self._safe_windows() if str(w.get("id")) == window_id), None)
         if raw is None:
             return None
-        if raw.get("minimized"):
-            return False
-        desktop, current = raw.get("desktop"), self.current_desktop()
-        return desktop is None or current is None or int(desktop) == current
+        return kwin_on_show(raw, None if raw.get("minimized") else self.current_desktop())
 
     def active_window(self) -> str | None:
         return next((str(w.get("id")) for w in self._safe_windows() if w.get("active")), None)
 
     def window_at(self, x: int, y: int) -> str | None:
         return kwin_window_at(self._safe_windows(), x, y, self.current_desktop())
+
+    def shell_window(self, window_id: str) -> Window | None:
+        by_id = {str(w.get("id")): w for w in self._safe_windows() if isinstance(w, dict)}
+        raw = by_id.get(window_id)
+        if raw is None or not plasma_surface(raw, by_id):
+            return None
+        window = kwin_window(raw)
+        return window if window.title else replace(window, title=f"a Plasma {raw.get('cls') or 'shell'} surface")
 
     def current_desktop(self) -> int | None:
         if not self.which("kdotool"):

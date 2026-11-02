@@ -11,6 +11,9 @@ from __future__ import annotations
 from ccdesk.errors import UnsupportedError
 from ccdesk.parsing import MODIFIER_ORDER, KeyCombo
 
+# Evdev codes name physical keys, so all of this assumes a US layout: elsewhere a key arrives as
+# whatever that layout has in the same place.
+
 # The left-hand modifier of each family: pressing either works, and apps see the same modifier.
 MODIFIER_CODES = {"ctrl": 29, "alt": 56, "shift": 42, "super": 125}
 
@@ -27,6 +30,7 @@ KEY_CODES = {
     "F9": 67, "F10": 68, "F11": 87, "F12": 88,
     "Print": 99, "Home": 102, "Up": 103, "Page_Up": 104, "Left": 105, "Right": 106, "End": 107,
     "Down": 108, "Page_Down": 109, "Insert": 110, "Delete": 111, "Menu": 139,
+    "Num_Lock": 69, "Scroll_Lock": 70, "KP_Enter": 96, "Pause": 119,
 }
 # F13 to F24 sit apart from F1 to F12 in the kernel's table.
 KEY_CODES.update({f"F{n}": 183 + n - 13 for n in range(13, 25)})
@@ -38,6 +42,17 @@ SHIFTED = {
     "(": "9", ")": "0", "_": "minus", "+": "equal", "plus": "equal",
     "{": "bracketleft", "}": "bracketright", "|": "backslash", ":": "semicolon",
     '"': "apostrophe", "<": "comma", ">": "period", "?": "slash", "~": "grave",
+    "exclam": "1", "at": "2", "numbersign": "3", "dollar": "4", "percent": "5", "asciicircum": "6",
+    "ampersand": "7", "asterisk": "8", "parenleft": "9", "parenright": "0", "underscore": "minus",
+    "braceleft": "bracketleft", "braceright": "bracketright", "bar": "backslash", "colon": "semicolon",
+    "quotedbl": "apostrophe", "less": "comma", "greater": "period", "question": "slash",
+    "asciitilde": "grave",
+}
+# The same keys unshifted: normalize_key() keeps "-" as typed, and the table above names it "minus".
+UNSHIFTED = {
+    "-": "minus", "=": "equal", "[": "bracketleft", "]": "bracketright", ";": "semicolon",
+    "'": "apostrophe", "`": "grave", "\\": "backslash", ",": "comma", ".": "period", "/": "slash",
+    "Prior": "Page_Up", "Next": "Page_Down",
 }
 
 
@@ -47,9 +62,11 @@ def keycode(key: str) -> tuple[int, bool]:
         return MODIFIER_CODES[key], False
     if key in KEY_CODES:
         return KEY_CODES[key], False
+    if key in UNSHIFTED:
+        return KEY_CODES[UNSHIFTED[key]], False
     if key in SHIFTED:
         return KEY_CODES[SHIFTED[key]], True
-    if len(key) == 1 and key.isupper():  # "A" is "a" with shift
+    if len(key) == 1 and key.isupper() and key.lower() in KEY_CODES:  # "A" is "a" with shift
         return KEY_CODES[key.lower()], True
     raise UnsupportedError(f"ydotool has no keycode for {key!r}; use type_text for text")
 

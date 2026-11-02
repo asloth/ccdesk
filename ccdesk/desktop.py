@@ -177,11 +177,18 @@ class Desktop:
         else the focused one. None when the backend cannot tell."""
         try:
             wid = self.backend.window_at(*point) if point else None
-            if wid not in windows:  # menus and dropdowns are not in list_windows: they belong to the focus
-                wid = self.backend.active_window()
+            if wid in windows:
+                return windows[wid]
+            # A panel or the desktop is not listed either, but takes the click itself.
+            shell = self.backend.shell_window(wid) if wid else None
+            if shell is not None:
+                return shell
+            wid = self.backend.active_window()  # menus and dropdowns are not listed: they belong to the focus
+            if wid in windows:
+                return windows[wid]
+            return self.backend.shell_window(wid) if wid else None  # e.g. a focused launcher's search box
         except CcdeskError:
             return None
-        return windows.get(wid)
 
     def _belongs_to_target(self, window: Window) -> bool:
         """The target itself, or one of its dialogs (a file chooser, a print dialog)."""
@@ -563,8 +570,8 @@ class Desktop:
             result = {"monitors": self.backend.monitors(),
                       "screen": {"width": size[0], "height": size[1]} if size else None}
             if not result["monitors"]:
-                result["note"] = ("monitors unknown: X11 needs xrandr; on Wayland only sway and Hyprland "
-                                  "report them. The screen size is still usable")
+                result["note"] = ("monitors unknown: X11 needs xrandr; on Wayland only sway, Hyprland and "
+                                  "Plasma with kdotool report them. The screen size is still usable")
             return result
 
         return self._act("list_monitors", {}, do)
@@ -582,7 +589,7 @@ class Desktop:
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
                 result["note"] = "truncated: narrow it with query=..., page=true or window=..."
-            if self.backend.name == "wayland" and "origin" not in result:
+            if self.backend.name in ("wayland", "kde") and "origin" not in result:
                 result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
                                   "not say where it is); verify with a screenshot")
             return result

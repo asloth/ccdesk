@@ -319,6 +319,21 @@ def test_pointer_over_a_popup_falls_back_to_focus(make_desk, fake):
         d.click(5, 5)
 
 
+def test_a_panel_under_the_pointer_or_a_focused_launcher_is_refused(make_desk, fake):
+    """A panel is not listed either, but it takes the click itself: it is no menu of the focus."""
+    d = make_desk()
+    d.activate_window(FIREFOX)
+    fake.active = FIREFOX
+    fake.shells["panel"] = Window(id="panel", title="Panel", wm_class="plasmashell", x=0, y=0, width=800, height=40)
+    fake.under = "panel"
+    with pytest.raises(PolicyError, match="'Panel'"):
+        d.click(5, 5)
+    assert d.click(5, 5, force=True)["window"] == {"id": "panel", "title": "Panel"}
+    fake.under, fake.active = None, "panel"  # the launcher has keyboard focus: typing would search in it
+    with pytest.raises(PolicyError, match="keyboard focus is on 'Panel'"):
+        d.type_text("rm -rf ~")
+
+
 def test_dialogs_of_the_target_are_allowed(make_desk, fake):
     """A file chooser opened by Firefox takes focus; it is still Firefox's input."""
     d = make_desk()

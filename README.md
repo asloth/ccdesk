@@ -53,8 +53,8 @@ On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. 
 monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
 one monitor only.
 
-On KDE Plasma, Wayland included, the X11 tools are not what you need: see
-[KDE Plasma](#kde-plasma-wayland-and-x11).
+On KDE Plasma under Wayland, the X11 tools are not what you need: see
+[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
 
 ## Why it exists
 
@@ -485,30 +485,38 @@ compositor allows:
 
 `ccdesk doctor` reports exactly which of these are present.
 
-### KDE Plasma (Wayland and X11)
+### KDE Plasma (Wayland)
 
-Plasma has its own backend, picked from `XDG_CURRENT_DESKTOP`. Three tools do the work:
+Plasma on Wayland has its own backend, picked from `XDG_CURRENT_DESKTOP`. On X11 it uses the X11
+backend and needs none of this. Three tools do the work:
 
 ```sh
 sudo pacman -S spectacle ydotool      # Arch; elsewhere: spectacle, ydotool
-paru -S kdotool                       # AUR, or `cargo install kdotool`
+paru -S kdotool                       # 0.3 or newer. AUR, or `cargo install kdotool`
 systemctl --user enable --now ydotool # the input daemon, as you, not root
 ```
 
 - **Screenshots** go through `spectacle`, because KWin implements no wlr-screencopy and `grim`
   exits with "the screen capture protocol is not supported". A region shot is cut out of a full
-  grab and needs ImageMagick.
+  grab and needs ImageMagick. So does a scaled display, where the grab is brought down to logical
+  pixels to match windows and the pointer.
 - **Windows** come from `kdotool`, which loads a script into KWin over D-Bus and reads its answer
   back. One script answers for every window, with its frame box, desktop and state, so
   `list_windows`, `activate_window`, `manage_window` and the window-under-the-pointer check all
   work. Without `kdotool`, screenshots and input still work and the window tools say what is
-  missing.
+  missing, but nothing checks where input lands, and coordinates are wrong on a scaled display.
+  Panels, the desktop and other shell surfaces are left out of `list_windows`, but the focus
+  guard still sees them: a click on a panel, or typing into the open launcher, is refused like
+  any other window that is not the one you activated.
 - **Input** is `ydotool`, through `/dev/uinput`, with `ydotoold` running as your user (the Arch
   package ships that user unit). Plasma offers neither the virtual-pointer nor the
   virtual-keyboard protocol, so there is no unprivileged path, and absolute clicks depend on the
   pointer acceleration curve: verify them with a screenshot. `press_key` needs no `wtype`:
-  ccdesk turns key names into the keycodes `ydotool key` takes.
-- `ui_tree` works as everywhere else, once the accessibility bus is on (see above).
+  ccdesk turns key names into the keycodes `ydotool key` takes. Keys and `type_text` assume a US
+  layout, and `ydotool` only types ASCII, so paste anything else through the clipboard.
+- `ui_tree` works as everywhere else, once the accessibility bus is on (see above). With `kdotool`,
+  its boxes are moved to screen coordinates; without it, `ui_tree` says they may be relative to
+  the window.
 
 `ccdesk doctor` lists whichever of these is missing.
 
