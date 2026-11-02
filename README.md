@@ -2,6 +2,8 @@
 
 **Claude Code can't see your desktop on Linux. ccdesk gives it eyes and hands.**
 
+It also works with other MCP clients: see [Using it with opencode](#using-it-with-opencode).
+
 A small MCP server that lets Claude Code take screenshots, move and click the mouse, type,
 press keys, list and focus windows, use the clipboard and read the accessibility tree, plus a
 skill that teaches the safe loop: look, one action, verify.
@@ -91,6 +93,53 @@ mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.cla
 ```
 
 Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
+
+## Using it with opencode
+
+ccdesk is a standard MCP server, so opencode can run it too. Let opencode write the entry, because
+the config format changes between versions (v2 reads `mcp.servers.<name>`, and silently ignores a
+server placed directly under `mcp`):
+
+```sh
+opencode mcp add --global ccdesk -- ccdesk mcp   # or: ccdesk mcp --headless, for a private screen
+opencode mcp list                                # ccdesk should say connected
+```
+
+Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "ccdesk": {
+        "type": "local",
+        "command": ["ccdesk", "mcp"],
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+opencode's default, Code Mode, has the model call tools from code. ccdesk's loop relies on each
+result and screenshot reaching the model directly, so `codemode: false` is the recommended setting.
+
+opencode already reads the skill from `~/.claude/skills`, so `ccdesk install` covers it. Without
+Claude Code, copy it yourself:
+
+```sh
+mkdir -p ~/.config/opencode/skills/computer-use
+cp skills/computer-use/SKILL.md ~/.config/opencode/skills/computer-use/
+```
+
+To restrict the tools, opencode's permission rules match them as `ccdesk_<tool>`.
+
+**Tested on opencode v2.0.32**, once, with `ccdesk mcp --headless`, `codemode: false` and
+`deepseek-v4.1-flash-free`: its agent launched the benchmark form, described it from a screenshot,
+then filled and submitted it through `ui_tree`, `set_value` and `click_element`, and the saved values
+were correct. Screenshots need a model with vision. **Not tested:** Code Mode with a full task, input
+on your real screen, or other models. The token numbers in this README were measured on Claude Code
+only.
 
 ## Headless: let it work while you use your PC
 
