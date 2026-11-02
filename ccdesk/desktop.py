@@ -430,6 +430,9 @@ class Desktop:
                 self.backend.sleep(KEY_SETTLE)  # autocomplete and validation catch up first
                 self.backend.press_key(RETURN)
             result = {"typed_chars": len(body)}
+            warning = self.backend.typing_warning(body)
+            if warning:
+                result["warning"] = warning
             if replace:
                 result["replaced"] = True
             if enter:

@@ -456,6 +456,13 @@ def test_expect_title_needs_a_known_window(make_desk, fake):
         d.press_key("a", expect_title="  ")
 
 
+def test_type_text_passes_on_the_backend_warning(make_desk, fake, monkeypatch):
+    monkeypatch.setattr(fake, "typing_warning", lambda text: "check it" if "🙂" in text else None, raising=False)
+    d = make_desk()
+    assert d.type_text("hi 🙂")["warning"] == "check it"
+    assert "warning" not in d.type_text("hi")
+
+
 def test_closed_target_is_reported(make_desk, fake):
     d = make_desk()
     d.activate_window(FIREFOX)

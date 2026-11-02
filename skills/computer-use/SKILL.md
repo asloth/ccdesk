@@ -183,6 +183,8 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 - `press_key("Return")`, `press_key("ctrl+l")`, `press_key("t", modifiers=["ctrl","shift"])`.
   Names: `Return`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Up/Down/Left/Right`,
   `Page_Up/Page_Down`, `Home`, `End`, `F1`-`F12`.
+- If `type_text` returns `warning`, read it: on Wayland, Chromium corrupts typed emoji. Check the
+  field, and fix it with `clipboard(action="set", text=...)` and `ctrl+v`.
 - `type_text` types into whatever has keyboard focus. Click the field first and verify the
   cursor is there.
 - To submit, pass `submit=true` (it presses Return after a short pause) instead of a

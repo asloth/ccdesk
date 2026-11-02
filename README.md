@@ -398,7 +398,9 @@ compositor allows:
   Hyprland and on a headless sway with only virtual devices; not yet checked on a real sway
   session.
   Text reaches `wtype` through stdin, to keep it out of the process list. In Chromium on sway that
-  typed the same as an argument, and an emoji followed by more text came out wrong in both ways.
+  typed the same as an argument. Accents, arrows, dashes and CJK arrive intact, but Chromium cuts
+  emoji to 16 bits, so `🙂` becomes a private-use character. `type_text` warns when text has emoji;
+  use `clipboard` and `ctrl+v` there. `xdotool` on X11 typed the same emoji into Chromium correctly.
   computer-use-linux reports stdin garbling text in Electron on Hyprland; not checked here on a real
   Hyprland, so verify typed text in those apps.
 - **ui_tree** works on Wayland too. GTK and Qt report element boxes relative to their own

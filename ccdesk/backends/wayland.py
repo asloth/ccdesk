@@ -33,6 +33,21 @@ HYPR_MINIMIZED = "special:ccdesk"  # Hyprland has no minimized state: a hidden w
 POINTER_SETTLE = 0.03  # between arriving somewhere and pressing, so the app has seen the motion
 # wtype uploads its own keymap first; apps that have not applied it yet drop the first key.
 WTYPE_SETTLE = ["-s", "60"]
+SYMBOL_FROM = 0x2000  # general punctuation and up: arrows, dashes, CJK, emoji
+EMOJI_FROM = 0x10000  # above 16 bits: Chromium cuts these down, so U+1F642 arrives as U+F642
+EMOJI_WARNING = ("text has emoji: on Wayland, Chromium receives them corrupted (seen on sway; expect the same "
+                 "from Electron apps). Check the field. If wrong: clipboard(action=\"set\", text=...) and ctrl+v")
+
+
+def typing_runs(text: str) -> list[str]:
+    """Split text where it enters or leaves symbols. Chromium on sway lost an arrow in "café → done",
+    and kept it when it came in a wtype of its own."""
+    runs, start = [], 0
+    for i in range(1, len(text)):
+        if (ord(text[i]) >= SYMBOL_FROM) != (ord(text[i - 1]) >= SYMBOL_FROM):
+            runs.append(text[start:i])
+            start = i
+    return [*runs, text[start:]]
 
 
 def parse_sway_tree(tree: dict) -> list[Window]:
@@ -311,9 +326,13 @@ class WaylandBackend(Backend):
     def type_text(self, text: str) -> None:
         if self.which("wtype"):
             # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
-            self.run(["wtype", *WTYPE_SETTLE, "-d", "12", "-"], input=text, timeout=max(15, len(text) * 0.05 + 5))
+            for run in typing_runs(text):
+                self.run(["wtype", *WTYPE_SETTLE, "-d", "12", "-"], input=run, timeout=max(15, len(run) * 0.05 + 5))
         else:
             self._ydotool("type", "--key-delay", "12", "--file", "-", input=text)
+
+    def typing_warning(self, text: str) -> str | None:
+        return EMOJI_WARNING if any(ord(c) >= EMOJI_FROM for c in text) else None
 
     def press_key(self, combo: KeyCombo) -> None:
         if self._hyprland():  # a named key from wtype on its own never reaches GTK 3
