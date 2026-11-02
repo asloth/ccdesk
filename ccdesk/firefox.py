@@ -20,6 +20,7 @@ SERVER_NAME = "firefox-devtools"
 PACKAGE = "@mozilla/firefox-devtools-mcp@0.10.6"  # pinned: npx -y would run whatever is newest
 AUTOMATION_FLAGS = ("--marionette", "--remote-debugging-port")
 MARIONETTE_PORT = 2828
+REMOTE_PORT = "9222"  # stated: Firefox takes the argument after this flag as its value
 
 AUTOMATION_WARNING = (
     "While Firefox runs with --marionette, sites can see navigator.webdriver=true and some "
@@ -49,7 +50,8 @@ def prepare_profile() -> Path:
     Leaves a userChrome.css alone once the user has edited it (it no longer starts with MARK)."""
     profile = profile_dir() / PROFILE_SUBDIR
     (profile / "chrome").mkdir(mode=0o700, parents=True, exist_ok=True)
-    os.chmod(profile_dir(), 0o700)  # it will hold logins
+    for private in (profile_dir(), profile):  # mkdir applies mode only to the last folder, and these hold logins
+        os.chmod(private, 0o700)
     css = profile / "chrome" / "userChrome.css"
     if not css.exists() or css.read_text(errors="replace").startswith(MARK):
         css.write_text(USER_CHROME)
@@ -90,9 +92,10 @@ def processes(proc: Path = Path("/proc"), uid: int | None = None) -> list[dict]:
         except OSError:  # the process exited while we looked
             continue
         if _is_firefox(argv):
-            on = all(any(a == f or a.startswith(f + "=") for a in argv) for f in AUTOMATION_FLAGS)
+            # Either flag opens a control port, so doctor warns about it. Mozilla's server needs both.
+            flags = [any(a == f or a.startswith(f + "=") for a in argv) for f in AUTOMATION_FLAGS]
             agent = any(a == own or a.startswith(own + os.sep) for a in argv)
-            found.append({"pid": int(entry.name), "automation": on, "agent": agent})
+            found.append({"pid": int(entry.name), "automation": any(flags), "ready": all(flags), "agent": agent})
     return sorted(found, key=lambda p: p["pid"])
 
 
@@ -101,6 +104,7 @@ def status(proc: Path = Path("/proc")) -> dict:
     found = processes(proc)
     running = [p for p in found if not p["agent"]]
     return {"running": bool(running), "automation": any(p["automation"] for p in running),
+            "ready": any(p["ready"] for p in running),
             "pids": [p["pid"] for p in running], "agent_running": any(p["agent"] for p in found)}
 
 
@@ -110,17 +114,18 @@ def start(extra: list[str], automation: bool = True, proc: Path = Path("/proc"),
     a second `firefox` would only open a window in it, without the flags."""
     state = status(proc)
     if state["running"]:
-        if state["automation"] == automation:
+        if state["ready"] if automation else not state["automation"]:
             out(f"Firefox is already running with automation {'on' if automation else 'off'}")
             return 0
-        out(f"Firefox is running with automation {'on' if state['automation'] else 'off'}. Quit it "
+        now = "on" if state["ready"] else "partly on" if state["automation"] else "off"
+        out(f"Firefox is running with automation {now}. Quit it "
             f"(Ctrl+Q; with session restore on, your tabs come back), then run this again.")
         return 1
     exe = shutil.which("firefox")
     if not exe:
         out("firefox is not on PATH")
         return 1
-    argv = [exe, *(AUTOMATION_FLAGS if automation else ()), *extra]
+    argv = [exe, *((*AUTOMATION_FLAGS, REMOTE_PORT) if automation else ()), *extra]
     popen(argv, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
           start_new_session=True)  # outlives this command
     if automation:

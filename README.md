@@ -2,6 +2,8 @@
 
 **Claude Code can't see your desktop on Linux. ccdesk gives it eyes and hands.**
 
+It also works with other MCP clients: see [Using it with opencode](#using-it-with-opencode).
+
 A small MCP server that lets Claude Code take screenshots, move and click the mouse, type,
 press keys, list and focus windows, use the clipboard and read the accessibility tree, plus a
 skill that teaches the safe loop: look, one action, verify.
@@ -91,6 +93,55 @@ mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.cla
 ```
 
 Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
+
+## Using it with opencode
+
+ccdesk is a standard MCP server, so opencode can run it too. Let opencode write the entry, because
+the config format changes between versions (v2 reads `mcp.servers.<name>`, and silently ignores a
+server placed directly under `mcp`):
+
+```sh
+command -v ccdesk                                       # prints the full path to use below
+opencode mcp add --global ccdesk -- /full/path/to/ccdesk mcp   # add --headless for a private screen
+opencode mcp list                                # ccdesk should say connected
+```
+
+Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`. Running `mcp add` again
+removes this setting. Keep the command it wrote, with its full path:
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "ccdesk": {
+        "type": "local",
+        "command": ["/full/path/to/ccdesk", "mcp"],
+        "codemode": false
+      }
+    }
+  }
+}
+```
+
+opencode's default, Code Mode, has the model call tools from code. ccdesk's loop relies on each
+result and screenshot reaching the model directly, so `codemode: false` is the recommended setting.
+
+opencode already reads the skill from `~/.claude/skills`, so `ccdesk install` covers it. Without
+Claude Code, copy it yourself:
+
+```sh
+mkdir -p ~/.config/opencode/skills/computer-use
+cp skills/computer-use/SKILL.md ~/.config/opencode/skills/computer-use/
+```
+
+To restrict the tools, opencode's permission rules match them as `ccdesk_<tool>`.
+
+**Tested on opencode v2.0.32**, once, with `ccdesk mcp --headless`, `codemode: false` and
+`deepseek-v4.1-flash-free`: its agent launched the benchmark form, described it from a screenshot,
+then filled and submitted it through `ui_tree`, `set_value` and `click_element`, and the saved values
+were correct. Screenshots need a model with vision. **Not tested:** Code Mode with a full task, input
+on your real screen, or other models. The token numbers in this README were measured on Claude Code
+only.
 
 ## Headless: let it work while you use your PC
 
@@ -340,7 +391,8 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   `expect_title="Kimai"` to `click`, `click_element`, `type_text` or `press_key` and it refuses unless the receiving
   window's title contains that text (case-insensitive); Firefox and Chromium put the active
   tab's title in the window title. `force=true` does not skip it, and when the window can't
-  be known the call is refused rather than sent unchecked.
+  be known the call is refused rather than sent unchecked. It is checked once, just before the
+  input: a tab switch while text is being typed is not caught. `drag` and `scroll` don't take it.
 - **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
   `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
   until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then

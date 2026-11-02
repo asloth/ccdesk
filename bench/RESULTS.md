@@ -76,6 +76,8 @@ compare with each other, not with the tables above.
 - Not measured: computer-use-linux (the `cul` arms exist in `run.py` but have not been run), web
   pages, wide screens. One small app.
 
+Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-shots,shots,tree,loaded --reps 5`
+
 ## Smaller tool schemas (2026-11-01)
 
 Same form and prompt, Opus 5.5, 5 runs per arm, all filled the form correctly. `before` is the build
@@ -90,5 +92,3 @@ merged in PR #3; `after` adds the slimmer schemas and the tab guard.
 - Deferred, the 1.2% is inside the noise: the ranges overlap, and only the tools the model loads count.
 
 Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-loaded,loaded,base,tree --reps 5`
-
-Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-shots,shots,tree,loaded --reps 5`

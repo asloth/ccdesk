@@ -92,7 +92,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
                                   run=backend.try_run)
     if report["firefox"]["automation"]:
-        warnings.append("Firefox is running with automation on (--marionette): sites can see "
+        warnings.append("Firefox is running with an automation flag on: with --marionette, sites can see "
                         "navigator.webdriver and may block it as a bot. When the task is done, quit it "
                         "and run `ccdesk firefox --off`")
     if report["mcp"] is None:

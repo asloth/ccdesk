@@ -67,6 +67,8 @@ class Plan:
             lines.append("[2] `claude` is not on PATH; register the server(s) yourself with:")
             lines += [f"    {shlex.join(argv)}" for argv in self.commands if "remove" not in argv]
         firefox = next((argv for argv in self.commands if FIREFOX_NAME in argv and "add" in argv), None)
+        if firefox and not shutil.which("npx"):
+            lines += ["", "npx is not on PATH: firefox-devtools needs Node.js, and won't start until it is installed."]
         if firefox and "--connect-existing" in firefox:
             lines += ["", f"firefox-devtools attaches to a Firefox started with `ccdesk firefox`. {AUTOMATION_WARNING}"]
         elif firefox:

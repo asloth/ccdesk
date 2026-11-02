@@ -96,6 +96,16 @@ def slim_schema(schema: dict) -> dict:
     return slim
 
 
+def slim_tools(server: MCPServer) -> None:
+    """Slim every registered schema. This reaches into the SDK: if it moves, the server still
+    works, with the longer schemas, and test_live_schemas_are_slim says so."""
+    try:
+        for registered in server._tool_manager._tools.values():
+            registered.parameters = slim_schema(registered.parameters)
+    except Exception:  # whatever a moved or frozen SDK raises: this is only a saving
+        pass
+
+
 def build_server(desktop: Desktop) -> MCPServer:
     kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
@@ -251,9 +261,7 @@ def build_server(desktop: Desktop) -> MCPServer:
         Disabled unless the server was started with --allow-launch."""
         return desktop.launch(command)
 
-    # Private to the SDK: if it moves, the server still works, with the longer schemas.
-    for registered in getattr(getattr(server, "_tool_manager", None), "_tools", {}).values():
-        registered.parameters = slim_schema(registered.parameters)
+    slim_tools(server)
     return server
 
 
