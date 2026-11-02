@@ -53,6 +53,9 @@ On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. 
 monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
 one monitor only.
 
+On KDE Plasma, Wayland included, the X11 tools are not what you need: see
+[KDE Plasma](#kde-plasma-wayland-and-x11).
+
 ## Why it exists
 
 There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
@@ -435,7 +438,7 @@ compositor allows:
 - **Screenshots** need `grim`, which requires wlr-screencopy (sway, Hyprland, river, Wayfire).
   It runs as `grim -s 1`: logical pixels, so coordinates match, but on a scaled monitor the
   image is not at full physical resolution. GNOME falls back to `gnome-screenshot -f`, and only
-  for full-screen captures. KDE has neither.
+  for full-screen captures. KDE has neither; on Plasma `spectacle` does it (see below).
 - **Pointer input** on sway goes through sway itself (`swaymsg seat - cursor set/press/release`):
   exact positions, no root, nothing extra to install. Elsewhere ccdesk speaks the
   wlr-virtual-pointer protocol directly (`ccdesk/backends/vpointer.py`, standard library only):
@@ -463,20 +466,51 @@ compositor allows:
   compositors the result carries a note to verify with a screenshot.
 - **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland, with Lua
   `hl.dsp.focus`, falling back to the old `focuswindow` for versions before Lua; the fallback is
-  untested, and `press_key` and `manage_window` need a version with Lua). Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
-- **Window control** (`manage_window`) is implemented on sway and Hyprland; other compositors
-  refuse with a clear error. On Hyprland, move and resize make a tiled window float, maximize
-  uses Hyprland's maximized state, minimize moves the window to a hidden special workspace, and
-  restore undoes those, brings a minimized window to the workspace on show, and re-tiles only
-  windows this ccdesk server floated (a restart forgets them). **Monitors** come from `swaymsg` or
-  `hyprctl`; on Hyprland they and the screen size are logical pixels. ccdesk's coordinates start at
-  0,0, so `doctor` warns about a monitor at a negative position.
+  untested, and `press_key` and `manage_window` need a version with Lua). On Plasma, `kdotool`
+  does it through KWin scripting. Elsewhere ccdesk falls back to XWayland via `xdotool`, which
+  only sees X11 apps.
+- **Window control** (`manage_window`) is implemented on sway, Hyprland and KDE Plasma; other
+  compositors refuse with a clear error. On Hyprland, move and resize make a tiled window float,
+  maximize uses Hyprland's maximized state, minimize moves the window to a hidden special
+  workspace, and restore undoes those, brings a minimized window to the workspace on show, and
+  re-tiles only windows this ccdesk server floated (a restart forgets them). On Plasma the moves
+  and sizes go to KWin, which decides what a tiled window does with them. **Monitors** come from
+  `swaymsg`, `hyprctl` or, on Plasma, KWin; on Hyprland they and the screen size are logical
+  pixels. ccdesk's coordinates start at 0,0, so `doctor` warns about a monitor at a negative
+  position.
   **Per-window screenshots** crop the window's box, which needs a compositor that lists windows.
 - **Clipboard** uses `wl-copy` / `wl-paste`.
 - If you only need to drive XWayland apps, `CCDESK_BACKEND=x11` (or `--backend x11`)
   forces the X11 backend.
 
 `ccdesk doctor` reports exactly which of these are present.
+
+### KDE Plasma (Wayland and X11)
+
+Plasma has its own backend, picked from `XDG_CURRENT_DESKTOP`. Three tools do the work:
+
+```sh
+sudo pacman -S spectacle ydotool      # Arch; elsewhere: spectacle, ydotool
+paru -S kdotool                       # AUR, or `cargo install kdotool`
+systemctl --user enable --now ydotool # the input daemon, as you, not root
+```
+
+- **Screenshots** go through `spectacle`, because KWin implements no wlr-screencopy and `grim`
+  exits with "the screen capture protocol is not supported". A region shot is cut out of a full
+  grab and needs ImageMagick.
+- **Windows** come from `kdotool`, which loads a script into KWin over D-Bus and reads its answer
+  back. One script answers for every window, with its frame box, desktop and state, so
+  `list_windows`, `activate_window`, `manage_window` and the window-under-the-pointer check all
+  work. Without `kdotool`, screenshots and input still work and the window tools say what is
+  missing.
+- **Input** is `ydotool`, through `/dev/uinput`, with `ydotoold` running as your user (the Arch
+  package ships that user unit). Plasma offers neither the virtual-pointer nor the
+  virtual-keyboard protocol, so there is no unprivileged path, and absolute clicks depend on the
+  pointer acceleration curve: verify them with a screenshot. `press_key` needs no `wtype`:
+  ccdesk turns key names into the keycodes `ydotool key` takes.
+- `ui_tree` works as everywhere else, once the accessibility bus is on (see above).
+
+`ccdesk doctor` lists whichever of these is missing.
 
 ## Support matrix
 
@@ -487,7 +521,7 @@ compositor allows:
 | Wayland: sway | ✅ grim | ✅ swaymsg seat | ✅ wtype / ydotool | ⚠️ wtype (see above) | ✅ swaymsg | ✅ wl-clipboard |
 | Wayland: Hyprland | ✅ grim | ✅ virtual pointer | ✅ wtype / ydotool | ✅ hl.dsp.send_shortcut | ✅ hyprctl | ✅ wl-clipboard |
 | Wayland: GNOME | ⚠️ full screen only | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
-| Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
+| Wayland: KDE Plasma | ✅ spectacle | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ✅ ydotool | ✅ kdotool | ✅ wl-clipboard |
 | Headless (`--headless`, any session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ private clipboard |
 | No display (SSH, CI) | ❌ (doctor explains) | ❌ | ❌ | ❌ | ❌ | ❌ |
 
@@ -554,7 +588,7 @@ ccdesk/
   parsing.py      pure parsers: keys, regions, wmctrl/xdotool output, PNG header
   doctor.py       environment report
   install.py      Claude Code registration and skill copy
-  backends/       x11.py, wayland.py, vpointer.py, base.py
+  backends/       x11.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
 skills/computer-use/SKILL.md
 tests/
 ```

@@ -8,6 +8,7 @@ from pathlib import Path
 
 from ccdesk import __version__, firefox
 from ccdesk.backends import Backend, detect_session
+from ccdesk.backends.kde import ydotoold_socket
 from ccdesk.errors import CcdeskError
 from ccdesk.safety import Policy
 
@@ -84,6 +85,16 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         )
         if env.get("DISPLAY"):
             warnings.append("XWayland is available: set CCDESK_BACKEND=x11 to drive X11 apps only")
+    elif backend.name == "kde":
+        warnings.append(
+            "KDE Plasma: input goes through ydotool (/dev/uinput): absolute clicks depend on the "
+            "pointer acceleration curve, so verify them with a screenshot"
+        )
+        if not tools.get("windows", {}).get("kdotool"):
+            warnings.append("window listing and control on KDE needs kdotool (AUR: kdotool, or "
+                            "`cargo install kdotool`); screenshots and input work without it")
+        if tools.get("keyboard", {}).get("ydotool") and not ydotoold_socket(env):
+            warnings.append("ydotoold is not running: start it with `systemctl --user enable --now ydotool`")
     if backend.name == "x11" and not tools.get("windows", {}).get("wmctrl"):
         if tools.get("windows", {}).get("xprop"):
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
@@ -145,7 +156,7 @@ def format_report(report: dict) -> str:
     lines.append(f"  scale:               {scale_text}")
     for m in report["monitors"]:
         lines.append("  monitor:             {name} {width}x{height}+{x}+{y}{p}".format(
-            **m, p=" (primary)" if m["primary"] else ""))
+            **m, p=" (primary)" if m.get("primary") else ""))
     lines += ["", "Tools"]
     for cap, found in report["tools"].items():
         parts = [f"{name} ({path})" if path else f"{name} (missing)" for name, path in found.items()]
