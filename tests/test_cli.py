@@ -110,13 +110,15 @@ def test_install_dry_run_writes_nothing(home, tmp_path, monkeypatch, capsys):
     log = fake_claude(tmp_path, monkeypatch)
     assert main(["install", "--dry-run", "--read-only"]) == 0
     out = capsys.readouterr().out
-    target = home / ".claude" / "skills" / "computer-use" / "SKILL.md"
+    target = home / ".agents" / "skills" / "computer-use" / "SKILL.md"
+    link = home / ".claude" / "skills" / "computer-use"
     assert f"would write {target}" in out
+    assert f"would link {link} -> {target.parent}" in out
     assert "would run: claude mcp add --scope user ccdesk -- " in out
     assert out.rstrip().endswith("mcp --read-only")
     assert "claude mcp remove --scope user ccdesk" in out
     assert not target.exists()
-    assert not (home / ".claude").exists()
+    assert not (home / ".claude").exists() and not (home / ".agents").exists()
     assert not log.exists()
 
 
@@ -131,8 +133,11 @@ def test_install_dry_run_without_claude(home, monkeypatch, capsys):
 def test_install_for_real(home, tmp_path, monkeypatch, capsys):
     log = fake_claude(tmp_path, monkeypatch)
     assert main(["install", "--allow-launch"]) == 0
-    target = home / ".claude" / "skills" / "computer-use" / "SKILL.md"
+    target = home / ".agents" / "skills" / "computer-use" / "SKILL.md"
     assert target.read_bytes() == (ROOT / "skills" / "computer-use" / "SKILL.md").read_bytes()
+    link = home / ".claude" / "skills" / "computer-use"
+    assert link.is_symlink() and not Path(os.readlink(link)).is_absolute()  # survives a moved home
+    assert (link / "SKILL.md").read_bytes() == target.read_bytes()
     calls = log.read_text().splitlines()
     assert calls[0] == "mcp remove --scope user ccdesk"
     assert calls[1].startswith("mcp add --scope user ccdesk -- ")
@@ -142,8 +147,44 @@ def test_install_for_real(home, tmp_path, monkeypatch, capsys):
 def test_install_respects_claude_config_dir(tmp_path, monkeypatch, capsys):
     fake_claude(tmp_path, monkeypatch)
     monkeypatch.setenv("CLAUDE_CONFIG_DIR", str(tmp_path / "cfg"))
+    monkeypatch.setenv("HOME", str(tmp_path / "home"))
     main(["install", "--dry-run"])
-    assert str(tmp_path / "cfg" / "skills" / "computer-use" / "SKILL.md") in capsys.readouterr().out
+    assert f"would link {tmp_path / 'cfg' / 'skills' / 'computer-use'} -> " in capsys.readouterr().out
+
+
+SKILL = ROOT / "skills" / "computer-use" / "SKILL.md"
+
+
+def test_install_replaces_an_older_copy_with_the_link(home, tmp_path, monkeypatch, capsys):
+    fake_claude(tmp_path, monkeypatch)
+    old = home / ".claude" / "skills" / "computer-use"
+    old.mkdir(parents=True)
+    (old / "SKILL.md").write_text("an older version")
+    main(["install", "--dry-run"])
+    assert "# replaces an older copy from ccdesk install" in capsys.readouterr().out
+    assert main(["install"]) == 0
+    assert old.is_symlink() and (old / "SKILL.md").read_bytes() == SKILL.read_bytes()
+    assert main(["install"]) == 0  # running it again changes nothing
+    assert "already links to" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize("setup,says", [
+    (lambda d: d.symlink_to(d.parent / "mine", target_is_directory=True), "it is a link to"),
+    (lambda d: (d.mkdir(), (d / "SKILL.md").write_text("x"), (d / "notes.md").write_text("y")),
+     "a folder with other files"),
+])
+def test_install_leaves_what_the_user_put_there(home, tmp_path, monkeypatch, capsys, setup, says):
+    fake_claude(tmp_path, monkeypatch)
+    spot = home / ".claude" / "skills" / "computer-use"
+    spot.parent.mkdir(parents=True)
+    (spot.parent / "mine").mkdir()
+    setup(spot)
+    before = sorted(p.name for p in spot.iterdir())
+    assert main(["install"]) == 0
+    out = capsys.readouterr().out
+    assert says in out and "did not link" in out
+    assert sorted(p.name for p in spot.iterdir()) == before
+    assert (home / ".agents" / "skills" / "computer-use" / "SKILL.md").exists()
 
 
 def test_skill_frontmatter():
