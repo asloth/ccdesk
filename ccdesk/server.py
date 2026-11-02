@@ -102,7 +102,7 @@ def slim_tools(server: MCPServer) -> None:
     try:
         for registered in server._tool_manager._tools.values():
             registered.parameters = slim_schema(registered.parameters)
-    except (AttributeError, TypeError):
+    except Exception:  # whatever a moved or frozen SDK raises: this is only a saving
         pass
 
 

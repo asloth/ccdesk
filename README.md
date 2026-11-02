@@ -101,7 +101,8 @@ the config format changes between versions (v2 reads `mcp.servers.<name>`, and s
 server placed directly under `mcp`):
 
 ```sh
-opencode mcp add --global ccdesk -- "$(command -v ccdesk)" mcp   # add --headless for a private screen
+command -v ccdesk                                       # prints the full path to use below
+opencode mcp add --global ccdesk -- /full/path/to/ccdesk mcp   # add --headless for a private screen
 opencode mcp list                                # ccdesk should say connected
 ```
 
@@ -391,7 +392,7 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   window's title contains that text (case-insensitive); Firefox and Chromium put the active
   tab's title in the window title. `force=true` does not skip it, and when the window can't
   be known the call is refused rather than sent unchecked. It is checked once, just before the
-  input: a tab switch while text is being typed is not caught.
+  input: a tab switch while text is being typed is not caught. `drag` and `scroll` don't take it.
 - **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
   `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
   until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then

@@ -5,6 +5,7 @@ import json
 import pytest
 
 from ccdesk import firefox
+from ccdesk import install as install_module
 from ccdesk.cli import main
 from tests.test_cli import fake_claude, home  # noqa: F401 (home is a fixture)
 
@@ -26,8 +27,8 @@ CONTENT = ["/usr/lib/firefox/firefox", "-contentproc", "-isForBrowser", "tab"]
 
 def test_finds_the_browser_not_its_tab_processes(tmp_path):
     proc = fake_proc(tmp_path, BROWSER, CONTENT, ["/usr/bin/zsh"])
-    assert firefox.processes(proc) == [{"pid": 100, "automation": False, "agent": False}]
-    assert firefox.status(proc) == {"running": True, "automation": False, "pids": [100], "agent_running": False}
+    assert firefox.processes(proc) == [{"pid": 100, "automation": False, "ready": False, "agent": False}]
+    assert firefox.status(proc) == {"running": True, "automation": False, "ready": False, "pids": [100], "agent_running": False}
 
 
 def test_claudes_own_firefox_is_not_the_users(tmp_path, monkeypatch):
@@ -35,7 +36,7 @@ def test_claudes_own_firefox_is_not_the_users(tmp_path, monkeypatch):
     monkeypatch.setenv("XDG_DATA_HOME", str(tmp_path / "data"))
     own = str(tmp_path / "data" / "ccdesk" / "firefox" / "firefox_devtools_mcp_profile")
     proc = fake_proc(tmp_path, [*AUTOMATED, "-profile", own])
-    assert firefox.status(proc) == {"running": False, "automation": False, "pids": [], "agent_running": True}
+    assert firefox.status(proc) == {"running": False, "automation": False, "ready": False, "pids": [], "agent_running": True}
 
 
 def test_either_flag_counts_as_automation(tmp_path):
@@ -63,6 +64,19 @@ def test_start_with_automation(tmp_path, monkeypatch):
     assert firefox.start(["-P", "work"], proc=fake_proc(tmp_path), popen=popen, out=out.append) == 0
     assert popen.argv == ["/usr/bin/firefox", "--marionette", "--remote-debugging-port", "9222", "-P", "work"]
     assert "navigator.webdriver" in out[0]
+
+
+def test_one_flag_is_not_ready_for_the_mcp_server(tmp_path, monkeypatch):
+    """Mozilla's server needs both flags, so one flag still means quit and start again."""
+    monkeypatch.setattr(firefox.shutil, "which", lambda name: "/usr/bin/firefox")
+    popen, out = Popen(), []
+    proc = fake_proc(tmp_path, [*BROWSER, "--marionette"])
+    assert firefox.status(proc)["automation"] and not firefox.status(proc)["ready"]
+    assert firefox.start([], proc=proc, popen=popen, out=out.append) == 1
+    assert popen.argv is None and "partly on" in out[0]
+    out.clear()
+    assert firefox.start([], automation=False, proc=proc, popen=popen, out=out.append) == 1
+    assert popen.argv is None and "partly on" in out[0]
 
 
 def test_never_quits_a_running_firefox(tmp_path, monkeypatch):
@@ -126,9 +140,16 @@ def test_install_without_firefox_leaves_it_alone(home, tmp_path, monkeypatch, ca
     assert "firefox-devtools" not in log.read_text()
 
 
+def test_install_firefox_says_when_npx_is_missing(home, monkeypatch, capsys):
+    real = install_module.shutil.which
+    monkeypatch.setattr(install_module.shutil, "which", lambda name: None if name == "npx" else real(name))
+    assert main(["install", "--firefox", "--dry-run"]) == 0
+    assert "npx is not on PATH" in capsys.readouterr().out
+
+
 def test_doctor_warns_when_automation_is_left_on(monkeypatch, capsys):
     monkeypatch.setenv("CCDESK_BACKEND", "x11")
-    state = {"running": True, "automation": True, "pids": [100], "agent_running": False}
+    state = {"running": True, "automation": True, "ready": True, "pids": [100], "agent_running": False}
     monkeypatch.setattr(firefox, "status", lambda: state)
     main(["doctor", "--json"])
     report = json.loads(capsys.readouterr().out)

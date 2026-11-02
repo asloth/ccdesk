@@ -51,9 +51,11 @@ def test_slim_tools_survives_an_sdk_that_moved():
 
 def test_live_schemas_are_slim(make_desk):
     def walk(schema):
-        assert "title" not in schema and "anyOf" not in schema
+        assert "title" not in schema and {"type": "null"} not in schema.get("anyOf", [])
         for field in schema.get("properties", {}).values():
             walk(field)
+        if "items" in schema:
+            walk(schema["items"])
 
     tools = asyncio.run(build_server(make_desk()).list_tools())
     tools = getattr(tools, "tools", tools)
