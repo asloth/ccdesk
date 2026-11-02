@@ -38,10 +38,9 @@ def test_claudes_own_firefox_is_not_the_users(tmp_path, monkeypatch):
     assert firefox.status(proc) == {"running": False, "automation": False, "pids": [], "agent_running": True}
 
 
-def test_automation_needs_both_flags(tmp_path):
-    proc = fake_proc(tmp_path, AUTOMATED, [*BROWSER, "--marionette"],
-                     ["firefox", "--marionette", "--remote-debugging-port=9222"])
-    assert [p["automation"] for p in firefox.processes(proc)] == [True, False, True]
+def test_either_flag_counts_as_automation(tmp_path):
+    proc = fake_proc(tmp_path, AUTOMATED, [*BROWSER, "--marionette"], [*BROWSER, "--remote-debugging-port=9222"], BROWSER)
+    assert [p["automation"] for p in firefox.processes(proc)] == [True, True, True, False]
 
 
 def test_other_users_are_ignored(tmp_path):
@@ -62,7 +61,7 @@ def test_start_with_automation(tmp_path, monkeypatch):
     monkeypatch.setattr(firefox.shutil, "which", lambda name: "/usr/bin/firefox")
     popen, out = Popen(), []
     assert firefox.start(["-P", "work"], proc=fake_proc(tmp_path), popen=popen, out=out.append) == 0
-    assert popen.argv == ["/usr/bin/firefox", "--marionette", "--remote-debugging-port", "-P", "work"]
+    assert popen.argv == ["/usr/bin/firefox", "--marionette", "--remote-debugging-port", "9222", "-P", "work"]
     assert "navigator.webdriver" in out[0]
 
 
@@ -103,8 +102,9 @@ def test_install_firefox_gives_claude_its_own(home, tmp_path, monkeypatch, capsy
     assert calls[2] == "mcp remove --scope user firefox-devtools"
     assert calls[3] == ("mcp add --scope user firefox-devtools -- npx -y @mozilla/firefox-devtools-mcp@0.10.6 "
                         f"--profile-path {profile} --tool-preset slim")
-    assert profile.is_dir() and (profile.stat().st_mode & 0o777) == 0o700
-    assert (profile / "firefox_devtools_mcp_profile" / "chrome" / "userChrome.css").is_file()
+    inner = profile / "firefox_devtools_mcp_profile"
+    assert (profile.stat().st_mode & 0o777) == (inner.stat().st_mode & 0o777) == 0o700
+    assert (inner / "chrome" / "userChrome.css").is_file()
     out = capsys.readouterr().out
     assert "your own Firefox is not touched" in out and "orange" in out
 

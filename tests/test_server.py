@@ -1,5 +1,6 @@
 """The MCP server: exact tool names, and a real JSON-RPC session over stdio."""
 
+import asyncio
 import json
 import os
 import select
@@ -13,7 +14,7 @@ import pytest
 pytest.importorskip("mcp")
 
 from ccdesk.safety import INPUT_TOOLS  # noqa: E402
-from ccdesk.server import TOOL_NAMES, build_server, slim_schema  # noqa: E402
+from ccdesk.server import TOOL_NAMES, build_server, slim_schema, slim_tools  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
@@ -39,6 +40,26 @@ def test_slim_schema_keeps_what_the_model_needs():
         "either": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
         "title": {"type": "string"},
     }}
+
+
+def test_slim_tools_survives_an_sdk_that_moved():
+    class Moved:
+        _tool_manager = type("Manager", (), {"_tools": ["a list now"]})()
+    slim_tools(Moved())
+    slim_tools(object())
+
+
+def test_live_schemas_are_slim(make_desk):
+    def walk(schema):
+        assert "title" not in schema and "anyOf" not in schema
+        for field in schema.get("properties", {}).values():
+            walk(field)
+
+    tools = asyncio.run(build_server(make_desk()).list_tools())
+    tools = getattr(tools, "tools", tools)
+    assert len(tools) == len(TOOL_NAMES)
+    for tool in tools:
+        walk(tool.model_dump(by_alias=True, mode="json")["inputSchema"])
 
 
 def test_registered_tools(make_desk):

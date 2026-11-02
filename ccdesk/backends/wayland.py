@@ -34,6 +34,7 @@ POINTER_SETTLE = 0.03  # between arriving somewhere and pressing, so the app has
 # wtype uploads its own keymap first; apps that have not applied it yet drop the first key.
 WTYPE_SETTLE = ["-s", "60"]
 SYMBOL_FROM = 0x2000  # general punctuation and up: arrows, dashes, CJK, emoji
+MAX_TYPING_RUNS = 64  # each is a process and a settle: past this, one wtype is the better trade
 EMOJI_FROM = 0x10000  # above 16 bits: Chromium cuts these down, so U+1F642 arrives as U+F642
 EMOJI_WARNING = ("text has emoji: on Wayland, Chromium receives them corrupted (seen on sway; expect the same "
                  "from Electron apps). Check the field. If wrong: clipboard(action=\"set\", text=...) and ctrl+v")
@@ -47,7 +48,8 @@ def typing_runs(text: str) -> list[str]:
         if (ord(text[i]) >= SYMBOL_FROM) != (ord(text[i - 1]) >= SYMBOL_FROM):
             runs.append(text[start:i])
             start = i
-    return [*runs, text[start:]]
+    runs.append(text[start:])
+    return runs if len(runs) <= MAX_TYPING_RUNS else [text]
 
 
 def parse_sway_tree(tree: dict) -> list[Window]:

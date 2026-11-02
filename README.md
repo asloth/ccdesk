@@ -101,11 +101,12 @@ the config format changes between versions (v2 reads `mcp.servers.<name>`, and s
 server placed directly under `mcp`):
 
 ```sh
-opencode mcp add --global ccdesk -- ccdesk mcp   # or: ccdesk mcp --headless, for a private screen
+opencode mcp add --global ccdesk -- "$(command -v ccdesk)" mcp   # add --headless for a private screen
 opencode mcp list                                # ccdesk should say connected
 ```
 
-Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`:
+Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`. Running `mcp add` again
+removes this setting. Keep the command it wrote, with its full path:
 
 ```json
 {
@@ -113,7 +114,7 @@ Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`:
     "servers": {
       "ccdesk": {
         "type": "local",
-        "command": ["ccdesk", "mcp"],
+        "command": ["/full/path/to/ccdesk", "mcp"],
         "codemode": false
       }
     }
@@ -389,7 +390,8 @@ ccdesk drives your real desktop with your user's privileges. The guardrails are:
   `expect_title="Kimai"` to `click`, `click_element`, `type_text` or `press_key` and it refuses unless the receiving
   window's title contains that text (case-insensitive); Firefox and Chromium put the active
   tab's title in the window title. `force=true` does not skip it, and when the window can't
-  be known the call is refused rather than sent unchecked.
+  be known the call is refused rather than sent unchecked. It is checked once, just before the
+  input: a tab switch while text is being typed is not caught.
 - **Yielding to you.** On your own screen you share one pointer and keyboard with Claude.
   `ccdesk mcp --yield-ms 3000` (or `ccdesk install --yield-ms 3000`) holds every input action
   until you have left the mouse and keyboard alone for 3 s, waiting up to 15 s and then

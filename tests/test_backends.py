@@ -65,6 +65,13 @@ def test_wayland_types_symbols_in_their_own_wtype():
     assert [text for argv, text, _ in r.calls if argv[0] == "wtype"] == ["café ", "→", " done", "plain ñandú", "→"]
 
 
+def test_many_symbols_stay_in_one_wtype():
+    text = "a → b " * 40  # 80 runs would be 80 processes
+    b, r = make(WaylandBackend, WL_ALL)
+    b.type_text(text)
+    assert [typed for argv, typed, _ in r.calls if argv[0] == "wtype"] == [text]
+
+
 def test_only_wayland_warns_about_emoji():
     b, _ = make(WaylandBackend, WL_ALL)
     assert "corrupted" in b.typing_warning("hi 🙂") and b.typing_warning("café → 日本語") is None
