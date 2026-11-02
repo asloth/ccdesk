@@ -76,4 +76,19 @@ compare with each other, not with the tables above.
 - Not measured: computer-use-linux (the `cul` arms exist in `run.py` but have not been run), web
   pages, wide screens. One small app.
 
+## Smaller tool schemas (2026-11-01)
+
+Same form and prompt, Opus 5.5, 5 runs per arm, all filled the form correctly. `before` is the build
+merged in PR #3; `after` adds the slimmer schemas and the tab guard.
+
+| Input tokens, median (range) | before | after | first request |
+|---|---|---|---|
+| ui_tree, alwaysLoad | 63,322 (63,318 to 63,909) | **60,294** (60,294, every run) | 14,868 → **14,112** |
+| ui_tree, deferred | 68,064 (67,473 to 68,960) | 67,270 (66,902 to 68,506) | 10,615 → 10,617 |
+
+- With alwaysLoad the schemas are in every request, so the saving repeats: **4.8% fewer input tokens**.
+- Deferred, the 1.2% is inside the noise: the ranges overlap, and only the tools the model loads count.
+
+Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-loaded,loaded,base,tree --reps 5`
+
 Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-shots,shots,tree,loaded --reps 5`
