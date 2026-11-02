@@ -1,4 +1,4 @@
-"""Command line entry point: ccdesk doctor | install | mcp | version."""
+"""Command line entry point: ccdesk doctor | firefox | install | mcp | peek | version."""
 
 from __future__ import annotations
 
@@ -52,7 +52,7 @@ def _yield_ms(spec: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ccdesk", description="Desktop control for Claude Code on Linux.")
-    sub = parser.add_subparsers(dest="command", metavar="{doctor,install,mcp,peek,version}")
+    sub = parser.add_subparsers(dest="command", metavar="{doctor,firefox,install,mcp,peek,version}")
 
     p = sub.add_parser("doctor", help="report session type, helper tools, screen size and scale")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -63,6 +63,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--always-load", action="store_true",
                    help="load the tool schemas in every session (saves a round trip when you use the "
                         "desktop, costs ~2.6k tokens per request when you don't)")
+    p.add_argument("--firefox", nargs="?", const="agent", choices=["agent", "mine"],
+                   help="also register Mozilla's firefox-devtools MCP server: Claude's own Firefox "
+                        "(agent, the default) or yours, started with `ccdesk firefox` (mine)")
     _policy_flags(p)
     _headless_flags(p)
 
@@ -71,6 +74,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--backend", choices=["x11", "wayland"], help="force a backend instead of auto-detecting")
     p.add_argument("--audit-log", metavar="PATH", help="audit log path (default ~/.cache/ccdesk/audit.log)")
     _headless_flags(p)
+
+    p = sub.add_parser("firefox", help="start your Firefox with automation on (for install --firefox mine)")
+    p.add_argument("--off", action="store_true", help="start it normally again (quit the automated one first)")
+    p.add_argument("extra", nargs="*", metavar="-- FIREFOX_ARGS", help='passed to firefox, e.g. -- -P work')
 
     p = sub.add_parser("peek", help="screenshot the headless screens of running ccdesk servers")
     p.add_argument("--open", action="store_true", help="open each screenshot with xdg-open")
@@ -110,7 +117,12 @@ def main(argv: list[str] | None = None) -> int:
                 flags += ["--size", args.size]
             if args.wm != "auto":
                 flags += ["--wm", args.wm]
-        return install(flags, dry_run=args.dry_run, always_load=args.always_load)
+        return install(flags, dry_run=args.dry_run, always_load=args.always_load, firefox=args.firefox)
+
+    if args.command == "firefox":
+        from ccdesk import firefox
+
+        return firefox.start(args.extra, automation=not args.off)
 
     if args.command == "mcp":
         return _mcp(args)

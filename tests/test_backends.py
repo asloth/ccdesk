@@ -57,6 +57,21 @@ def test_detect_session(env, expected):
     assert detect_session(env) == expected
 
 
+def test_wayland_types_symbols_in_their_own_wtype():
+    b, r = make(WaylandBackend, WL_ALL)
+    b.type_text("café → done")
+    b.type_text("plain ñandú")
+    b.type_text("→")
+    assert [text for argv, text, _ in r.calls if argv[0] == "wtype"] == ["café ", "→", " done", "plain ñandú", "→"]
+
+
+def test_only_wayland_warns_about_emoji():
+    b, _ = make(WaylandBackend, WL_ALL)
+    assert "corrupted" in b.typing_warning("hi 🙂") and b.typing_warning("café → 日本語") is None
+    x, _ = make(X11Backend, X11_ALL)
+    assert x.typing_warning("hi 🙂") is None
+
+
 def test_get_backend_types():
     assert isinstance(get_backend(env={"DISPLAY": ":0"}), X11Backend)
     assert isinstance(get_backend(env={"WAYLAND_DISPLAY": "w"}), WaylandBackend)

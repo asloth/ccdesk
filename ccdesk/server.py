@@ -78,6 +78,24 @@ def with_picture(result: dict) -> dict:
     return result
 
 
+def slim_schema(schema: dict) -> dict:
+    """What the model needs from a generated input schema. The SDK adds a title to every field and
+    spells an optional string as anyOf [string, null]; every session pays for those characters.
+    Arguments are still validated against the function's own signature."""
+    slim = {k: v for k, v in schema.items() if k != "title" and not (k == "default" and v is None)}
+    options = slim.get("anyOf")
+    if isinstance(options, list):
+        real = [o for o in options if o != {"type": "null"}]
+        if len(real) == 1:
+            del slim["anyOf"]
+            slim.update(slim_schema(real[0]))
+    if isinstance(slim.get("items"), dict):
+        slim["items"] = slim_schema(slim["items"])
+    if isinstance(slim.get("properties"), dict):
+        slim["properties"] = {name: slim_schema(field) for name, field in slim["properties"].items()}
+    return slim
+
+
 def build_server(desktop: Desktop) -> MCPServer:
     kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
@@ -108,10 +126,11 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-              force: bool = False) -> dict:
+              force: bool = False, expect_title: str | None = None) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
-        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway."""
-        return desktop.click(x, y, button=button, count=count, force=force)
+        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
+        expect_title: refuse unless the receiving window's title contains it (a browser tab)."""
+        return desktop.click(x, y, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def move(x: int, y: int) -> dict:
@@ -129,19 +148,23 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
 
     @tool
-    def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False) -> dict:
+    def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
+                  expect_title: str | None = None) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
         replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
         submit=true presses Return afterwards (a trailing newline does the same).
-        After activate_window(), refuses if focus moved to another window; force=true types anyway."""
-        return desktop.type_text(text, submit=submit, replace=replace, force=force)
+        After activate_window(), refuses if focus moved to another window; force=true types anyway.
+        expect_title: refuse unless the focused window's title contains it (case-insensitive). A
+        browser window's title names its active tab, so this catches a tab switch; force does not skip it."""
+        return desktop.type_text(text, submit=submit, replace=replace, force=force, expect_title=expect_title)
 
     @tool
-    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False) -> dict:
+    def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False,
+                  expect_title: str | None = None) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
         Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
-        refuses if focus moved to another window; force=true presses anyway."""
-        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force)
+        refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text."""
+        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force, expect_title=expect_title)
 
     @tool
     def list_windows() -> dict:
@@ -184,12 +207,12 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-                      force: bool = False) -> dict:
+                      force: bool = False, expect_title: str | None = None) -> dict:
         """Click an element from the latest ui_tree() result, e.g. ref="e12". A single left click on
         a button, checkbox, link or menu item runs its accessibility action when it has one, without
         moving the pointer; otherwise it clicks the centre. Fails if the element changed or left the
-        screen; call ui_tree() again then."""
-        return desktop.click_element(ref, button=button, count=count, force=force)
+        screen; call ui_tree() again then. expect_title: as in click, and always a real click."""
+        return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
@@ -228,6 +251,9 @@ def build_server(desktop: Desktop) -> MCPServer:
         Disabled unless the server was started with --allow-launch."""
         return desktop.launch(command)
 
+    # Private to the SDK: if it moves, the server still works, with the longer schemas.
+    for registered in getattr(getattr(server, "_tool_manager", None), "_tools", {}).values():
+        registered.parameters = slim_schema(registered.parameters)
     return server
 
 

@@ -31,6 +31,47 @@ there; ask before working around that. Your clipboard is separate from theirs.
    an app restart). Offer that fix to the user before you go pixel-only: without a tree every
    check costs a screenshot. Don't run it yourself; it changes their session.
 
+## API before pixels
+
+When the task is data in a web app (fill a timesheet, fix ten records, read a report), the
+GUI is the slowest and least reliable way in. Go down this list and stop at the first that
+works:
+
+1. **An official API or CLI with a token, off-screen.** Best: no shared keyboard, no tab to
+   lose. Needs credentials the user gives you; don't go looking for them.
+2. **A browser tool that reads and clicks inside the page**: `firefox-devtools` tools
+   (`take_snapshot`, then act on its uids) for Firefox, `claude-in-chrome` for Chrome. Text,
+   not pixels, and the user keeps the mouse. Usually firefox-devtools opens Claude's own
+   Firefox: if a site needs a login there, ask the user to sign in in that window, never type
+   it yourself. If it was installed with `--firefox mine`, it attaches to the user's Firefox
+   started with `ccdesk firefox`; restarting their browser is their call, so ask, and remind
+   them of `ccdesk firefox --off` when you're done.
+3. **The page's own API, from the devtools console of the tab where the user is signed
+   in.** The session stays inside the browser. **Never take cookies or tokens out of the
+   browser** (no reading the profile's `cookies.sqlite`, no copying a token into the chat or
+   a shell): using the session in the page is fine, exporting it is not.
+4. **`ui_tree()` + `click_element()`** when there is no usable API.
+5. **Screenshots** last, with `scale=` and `region=`.
+
+The console route (3):
+
+- `activate_window()` the browser, check with a screenshot that the right tab is in front,
+  then pass `expect_title="<that tab's title>"` on **every** key and `type_text` call that
+  follows. The window guard can't see a tab switch; this can.
+- Open the console: `press_key("ctrl+shift+k")` in Firefox, `ctrl+shift+j` in Chromium.
+- Type the script with `type_text`, one line, submit=true. Pasting into the console is
+  blocked until someone types "allow pasting", so don't use the clipboard. Firefox closes
+  brackets and quotes as you type; a single line typed in one go comes out right.
+- **Read before you write.** Start with a GET that changes nothing, to learn whether the API
+  takes the session. Not all do: some want a CSRF header (from a `<meta>` tag or a readable
+  cookie), some a bearer token the page keeps in `localStorage`. Use it in the request; don't
+  print it.
+- **Writes skip the app's validation.** Before any POST, PATCH or DELETE, show the user
+  exactly what will change and get an OK in this conversation.
+- Make the script `console.log` one tagged line per result, e.g. `PATCH 2026-10-26 200 | ...`,
+  then read it with a `region` screenshot of just the console strip (a few hundred tokens).
+- Close devtools afterwards (`F12`).
+
 ## Look with text first: ui_tree
 
 `ui_tree()` reads the screen from the accessibility tree, the same data screen readers use.
@@ -142,6 +183,8 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 - `press_key("Return")`, `press_key("ctrl+l")`, `press_key("t", modifiers=["ctrl","shift"])`.
   Names: `Return`, `Escape`, `Tab`, `BackSpace`, `Delete`, `Up/Down/Left/Right`,
   `Page_Up/Page_Down`, `Home`, `End`, `F1`-`F12`.
+- If `type_text` returns `warning`, read it: on Wayland, Chromium corrupts typed emoji. Check the
+  field, and fix it with `clipboard(action="set", text=...)` and `ctrl+v`.
 - `type_text` types into whatever has keyboard focus. Click the field first and verify the
   cursor is there.
 - To submit, pass `submit=true` (it presses Return after a short pause) instead of a
@@ -185,8 +228,10 @@ On their own screen the user may switch windows or desktops between your actions
 you in the terminal, say). After `activate_window()`, input that would land in another window
 is refused with an error naming both windows. Then `list_windows()` (it marks the `active`
 window and the `current_desktop`), `activate_window()` the target again, and take a
-screenshot before you retry: they may also have switched tabs. Pass `force=true` only when
-you mean to type into that other window. Every input result names the `window` it reached.
+screenshot before you retry. The window check can't see a tab switch inside a browser:
+pass `expect_title="<tab title>"` on input to a specific tab, and it refuses if the window's
+title (which names the active tab) no longer contains it. Pass `force=true` only when you mean
+to type into that other window; it doesn't skip `expect_title`. Every input result names the `window` it reached.
 If the server runs with `--yield-ms`, input waits while the user is typing or moving the
 mouse, and is refused if they keep going; then wait and retry, or ask them.
 

@@ -148,6 +148,10 @@ class Backend:
     def type_text(self, text: str) -> None:
         self._unsupported("type_text")
 
+    def typing_warning(self, text: str) -> str | None:
+        """What the model should know because this text may not arrive as sent."""
+        return None
+
     def press_key(self, combo: KeyCombo) -> None:
         self._unsupported("press_key")
 

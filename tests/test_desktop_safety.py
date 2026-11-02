@@ -44,7 +44,8 @@ def test_every_action_is_audited(make_desk, read_audit, fake):
         "activate_window", "clipboard", "clipboard", "wait", "doctor",
     ]
     assert all(e["status"] == "ok" and "ts" in e for e in log)
-    assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1, "force": False}
+    assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1, "force": False,
+                           "expect_title": None}
     # Clipboard contents never reach the log, only their length.
     assert "secret-ish" not in json.dumps(log)
     assert log[9]["args"] == {"action": "set", "text_len": 10}
@@ -418,6 +419,48 @@ def test_wait_allows_five_minutes(make_desk, fake):
     assert make_desk().wait(0)["waited"] == 0
     with pytest.raises(ValidationError, match="between 0 and 300"):
         make_desk().wait(301)
+
+
+TAB_GUARDED = [
+    lambda d, **kw: d.click(5, 5, **kw),
+    lambda d, **kw: d.type_text("rm -rf ~", **kw),
+    lambda d, **kw: d.press_key("Return", **kw),
+    lambda d, **kw: d.click_element("e4", **kw),
+]
+
+
+@pytest.mark.parametrize("call", TAB_GUARDED)
+def test_expect_title_guards_the_tab(make_desk, fake, read_audit, call):
+    """Firefox is one window with many tabs: the user switched to Gmail, the window id stayed."""
+    d = make_desk()
+    d.ui_tree()
+    d.activate_window(FIREFOX)
+    fake.under = FIREFOX
+    fake.windows[0] = Window(id=FIREFOX, title="Inbox - Gmail — Mozilla Firefox", wm_class="Navigator.firefox",
+                             x=0, y=0, width=1920, height=1080)
+    with pytest.raises(PolicyError, match=r"'Inbox - Gmail — Mozilla Firefox'.*does not contain 'kimai'"):
+        call(d, expect_title="kimai")
+    assert [c for c in fake.calls if c[0] != "activate"] == []
+    assert read_audit()[-1]["status"] == "denied"
+    with pytest.raises(PolicyError, match="does not contain"):
+        call(d, expect_title="kimai", force=True)  # force skips the window guard, not a title you asked for
+    assert call(d, expect_title="GMAIL")["window"]["id"] == FIREFOX  # case-insensitive
+
+
+def test_expect_title_needs_a_known_window(make_desk, fake):
+    d = make_desk()
+    with pytest.raises(PolicyError, match="cannot tell which window"):
+        d.type_text("x", expect_title="Kimai")
+    assert not [c for c in fake.calls if c[0] == "type_text"]
+    with pytest.raises(ValidationError, match="expect_title"):
+        d.press_key("a", expect_title="  ")
+
+
+def test_type_text_passes_on_the_backend_warning(make_desk, fake, monkeypatch):
+    monkeypatch.setattr(fake, "typing_warning", lambda text: "check it" if "🙂" in text else None, raising=False)
+    d = make_desk()
+    assert d.type_text("hi 🙂")["warning"] == "check it"
+    assert "warning" not in d.type_text("hi")
 
 
 def test_closed_target_is_reported(make_desk, fake):

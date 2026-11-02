@@ -254,6 +254,18 @@ def test_other_clicks_keep_the_pointer(make_desk, helper, fake, no_settle, args)
     assert "clicked" in d.click_element("e4", **args)
 
 
+def test_expect_title_is_not_skipped_by_the_native_action(make_desk, helper, fake, no_settle):
+    """A native action never reaches _guard, and only _guard knows the window's current title."""
+    helper.actions["3.0.29.5"] = "click"
+    d = make_desk()
+    d.ui_tree()
+    fake.active = fake.under = "0x01e00003"
+    with pytest.raises(PolicyError, match="does not contain"):
+        d.click_element("e4", expect_title="Some other tab")
+    assert not [c for c in fake.calls if c[0] == "click"]
+    assert "clicked" in d.click_element("e4", expect_title="Mozilla Firefox")
+
+
 def test_fields_and_elements_without_an_action_use_the_pointer(make_desk, helper, fake, no_settle):
     helper.actions["3.0.29.2"] = "click"  # an entry: a click there is for focus
     d = make_desk()

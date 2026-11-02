@@ -13,6 +13,12 @@ from dataclasses import dataclass, field
 from importlib import resources
 from pathlib import Path
 
+from ccdesk.firefox import AUTOMATION_WARNING
+from ccdesk.firefox import prepare_profile as prepare_firefox_profile
+from ccdesk.firefox import profile_dir as firefox_profile
+from ccdesk.firefox import SERVER_NAME as FIREFOX_NAME
+from ccdesk.firefox import server_command as firefox_command
+
 SERVER_NAME = "ccdesk"
 SKILL_NAME = "computer-use"
 
@@ -58,12 +64,19 @@ class Plan:
                 note = "   # ignored if not registered yet" if "remove" in argv else ""
                 lines.append(f"[{i}] {verb} run: {shlex.join(argv)}{note}")
         else:
-            lines.append("[2] `claude` is not on PATH; register the server yourself with:")
-            lines.append(f"    {shlex.join(self.commands[-1])}")
+            lines.append("[2] `claude` is not on PATH; register the server(s) yourself with:")
+            lines += [f"    {shlex.join(argv)}" for argv in self.commands if "remove" not in argv]
+        firefox = next((argv for argv in self.commands if FIREFOX_NAME in argv and "add" in argv), None)
+        if firefox and "--connect-existing" in firefox:
+            lines += ["", f"firefox-devtools attaches to a Firefox started with `ccdesk firefox`. {AUTOMATION_WARNING}"]
+        elif firefox:
+            lines += ["", f"firefox-devtools starts Claude's own Firefox on first use, with its profile in "
+                          f"{firefox_profile()}. Sign in there to the sites Claude should use; your own "
+                          f"Firefox is not touched."]
         return "\n".join(lines)
 
 
-def make_plan(flags: list[str], always_load: bool = False) -> Plan:
+def make_plan(flags: list[str], always_load: bool = False, firefox: str | None = None) -> Plan:
     src = skill_source()
     claude = shutil.which("claude")
     cmd = server_command(flags)
@@ -80,26 +93,33 @@ def make_plan(flags: list[str], always_load: bool = False) -> Plan:
         commands=[
             ["claude", "mcp", "remove", "--scope", "user", SERVER_NAME],
             add,
+            *([["claude", "mcp", "remove", "--scope", "user", FIREFOX_NAME],
+               ["claude", "mcp", "add", "--scope", "user", FIREFOX_NAME, "--", *firefox_command(firefox)]]
+              if firefox else []),
         ],
     )
 
 
-def install(flags: list[str], dry_run: bool = False, out=print, always_load: bool = False) -> int:
-    plan = make_plan(flags, always_load)
+def install(flags: list[str], dry_run: bool = False, out=print, always_load: bool = False,
+            firefox: str | None = None) -> int:
+    plan = make_plan(flags, always_load, firefox)
     out(plan.describe(dry_run))
     if dry_run:
         return 0
     plan.skill_dst.parent.mkdir(parents=True, exist_ok=True)
     plan.skill_dst.write_bytes(plan.skill_bytes)
     out(f"\nwrote {plan.skill_dst}")
+    if firefox == "agent":
+        out(f"prepared {prepare_firefox_profile()} (orange, so you can tell Claude's Firefox from yours)")
     if not plan.claude:
         out("skill installed; MCP server NOT registered because the claude CLI was not found")
         return 1
-    remove, add = plan.commands
-    subprocess.run(remove, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    proc = subprocess.run(add, capture_output=True, text=True)
-    if proc.returncode != 0:
-        out(f"claude mcp add failed: {(proc.stderr or proc.stdout).strip()}")
-        return proc.returncode
-    out(f"registered MCP server '{SERVER_NAME}' at user scope; restart Claude Code and run /mcp to check")
+    for remove, add in zip(plan.commands[::2], plan.commands[1::2]):
+        subprocess.run(remove, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        proc = subprocess.run(add, capture_output=True, text=True)
+        if proc.returncode != 0:
+            out(f"claude mcp add failed: {(proc.stderr or proc.stdout).strip()}")
+            return proc.returncode
+        out(f"registered MCP server '{remove[-1]}' at user scope")
+    out("restart Claude Code and run /mcp to check")
     return 0

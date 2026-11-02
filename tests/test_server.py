@@ -13,12 +13,32 @@ import pytest
 pytest.importorskip("mcp")
 
 from ccdesk.safety import INPUT_TOOLS  # noqa: E402
-from ccdesk.server import TOOL_NAMES, build_server  # noqa: E402
+from ccdesk.server import TOOL_NAMES, build_server, slim_schema  # noqa: E402
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
               "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element", "set_value",
               "wait_for_change", "manage_window", "list_monitors"}
+
+
+def test_slim_schema_keeps_what_the_model_needs():
+    schema = {"title": "clickArguments", "type": "object", "required": ["x"], "properties": {
+        "x": {"title": "X", "type": "integer"},
+        "window": {"anyOf": [{"type": "string"}, {"type": "null"}], "default": None, "title": "Window"},
+        "button": {"default": "left", "enum": ["left", "right"], "title": "Button", "type": "string"},
+        "mods": {"anyOf": [{"items": {"type": "string", "title": "M"}, "type": "array"}, {"type": "null"}],
+                 "default": None},
+        "either": {"anyOf": [{"type": "string"}, {"type": "integer"}], "title": "Either"},
+        "title": {"title": "A field that has this name", "type": "string"},
+    }}
+    assert slim_schema(schema) == {"type": "object", "required": ["x"], "properties": {
+        "x": {"type": "integer"},
+        "window": {"type": "string"},
+        "button": {"default": "left", "enum": ["left", "right"], "type": "string"},
+        "mods": {"items": {"type": "string"}, "type": "array"},
+        "either": {"anyOf": [{"type": "string"}, {"type": "integer"}]},
+        "title": {"type": "string"},
+    }}
 
 
 def test_registered_tools(make_desk):
@@ -33,15 +53,15 @@ def test_registered_tools(make_desk):
     assert props["screenshot"] == {"region", "path", "scale", "window"}
     assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
     assert props["list_monitors"] == set()
-    assert props["click"] == {"x", "y", "button", "count", "force"}
+    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title"}
     assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
     assert props["scroll"] == {"x", "y", "dx", "dy", "force"}
-    assert props["type_text"] == {"text", "submit", "replace", "force"}
-    assert props["press_key"] == {"key", "modifiers", "confirm", "force"}
+    assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title"}
+    assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
-    assert props["click_element"] == {"ref", "button", "count", "force"}
+    assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
     assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
