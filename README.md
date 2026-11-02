@@ -96,15 +96,17 @@ Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
 
 ## Using it with opencode
 
-ccdesk is a standard MCP server, so opencode can run it too. Let opencode write the entry, because
-the config format changes between versions (v2 reads `mcp.servers.<name>`, and silently ignores a
-server placed directly under `mcp`):
+ccdesk is a standard MCP server, so opencode can run it too. Let opencode write the entry, with
+ccdesk's full path. This stops if ccdesk is not on your PATH:
 
 ```sh
-command -v ccdesk                                       # prints the full path to use below
-opencode mcp add --global ccdesk -- /full/path/to/ccdesk mcp   # add --headless for a private screen
-opencode mcp list                                # ccdesk should say connected
+bin=$(command -v ccdesk) && opencode mcp add --global ccdesk -- "$bin" mcp   # add --headless for a private screen
+opencode mcp list                                                            # ccdesk should say connected
 ```
+
+The first `mcp list` from a folder can say `No MCP servers configured` while the server starts. Wait
+a few seconds and run it again. If opencode was already running when you added it, run
+`opencode service restart` first.
 
 Then keep its tools as ordinary tools, in `~/.config/opencode/opencode.json`. Running `mcp add` again
 removes this setting. Keep the command it wrote, with its full path:
