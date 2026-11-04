@@ -301,13 +301,12 @@ def test_typing_ignores_wtype_because_plasma_has_no_virtual_keyboard():
 
 
 def test_pointer_goes_through_ydotool():
-    b, r = make()
-    b.click(10, 20, 1, 1)
+    r = PointerRecorder(start=(0, 0))
+    pointer_backend(r).click(10, 20, 1, 1)
     ydotool = [a for a in r.argvs() if a[0] == "ydotool"]
-    # no kdotool in this test's output, so there is nothing to measure and it takes the one
-    # absolute shot ydotool offers
-    assert ydotool[0] == ["ydotool", "mousemove", "--absolute", "-x", "10", "-y", "20"]
-    assert ydotool[1] == ["ydotool", "click", "--repeat", "1", "--next-delay", "80", "0xc0"]
+    assert ydotool[-1] == ["ydotool", "click", "--repeat", "1", "--next-delay", "80", "0xc0"]
+    assert all("--absolute" not in a for a in ydotool)  # relative steps, corrected against KWin
+    assert r.pos == [10, 20]
 
 
 def pointer_backend(recorder):
@@ -328,10 +327,40 @@ def test_move_corrects_for_pointer_acceleration():
     assert moves and all("--absolute" not in a for a in moves)
 
 
-def test_move_without_kdotool_falls_back_to_absolute():
+def test_move_without_kdotool_refuses_instead_of_clicking_blind():
+    # ydotool --absolute lands in a corner under KWin, and without kdotool there is no position to
+    # correct against: refusing beats a click somewhere else.
     b, r = make(installed=KDE_ALL - {"kdotool"})
-    b.move(10, 20)
-    assert r.argvs() == [["ydotool", "mousemove", "--absolute", "-x", "10", "-y", "20"]]
+    with pytest.raises(CommandError, match="needs kdotool"):
+        b.move(10, 20)
+    assert not [a for a in r.argvs() if a[0] == "ydotool"]
+
+
+def test_move_refuses_when_kdotool_cannot_report_the_position():
+    r = Recorder()  # kdotool is installed but every call answers nothing
+    b = pointer_backend(r)
+    with pytest.raises(CommandError, match="could not report the pointer position"):
+        b.move(10, 20)
+    assert not [a for a in r.argvs() if a[0] == "ydotool"]
+
+
+class SlowPointer(PointerRecorder):
+    """Moves one pixel per step: eight tries cannot reach a far target."""
+
+    def __call__(self, argv, input=None, timeout=None, detach=False):
+        if argv[0] == "ydotool" and argv[1] == "mousemove" and "--wheel" not in argv:
+            self.calls.append((list(argv), input, detach))
+            dx, dy = int(argv[argv.index("-x") + 1]), int(argv[argv.index("-y") + 1])
+            self.pos[0] += (dx > 0) - (dx < 0)
+            self.pos[1] += (dy > 0) - (dy < 0)
+            return ""
+        return super().__call__(argv, input, timeout, detach)
+
+
+def test_a_miss_beyond_the_limit_is_refused_not_clicked():
+    b = pointer_backend(SlowPointer(start=(0, 0)))
+    with pytest.raises(CommandError, match="could not place the pointer"):
+        b.move(200, 200)
 
 
 def test_move_refuses_a_point_it_cannot_reach():
@@ -364,6 +393,15 @@ def test_drag_moves_relatively_and_releases():
     buttons = [a[0][2] for a in r.calls if a[0][0] == "ydotool" and a[0][1] == "click"]
     assert buttons == ["0x40", "0x80"]  # pressed once, released once
     assert abs(r.pos[0] - 300) <= 2 and abs(r.pos[1] - 260) <= 2
+
+
+def test_a_drag_that_cannot_reach_its_end_point_is_refused_and_released():
+    r = SlowPointer(start=(0, 0))
+    b = pointer_backend(r)
+    with pytest.raises(CommandError, match="the drag ended away"):
+        b.drag(0, 0, 200, 200, 48)
+    buttons = [a[0][2] for a in r.calls if a[0][0] == "ydotool" and a[0][1] == "click"]
+    assert buttons == ["0x40", "0x80"]  # the button is released on the way out
 
 
 @pytest.mark.parametrize("combo,expected", [

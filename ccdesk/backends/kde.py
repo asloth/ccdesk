@@ -79,7 +79,7 @@ SCREENS_SCRIPT = (
 )
 POINTER_TOLERANCE = 2   # pixels: close enough that the click lands on what was aimed at
 POINTER_TRIES = 8       # each is one relative step plus a position read (about 40 ms together)
-POINTER_FAIL = 8        # further than this and the click would land somewhere else: say so
+POINTER_FAIL = 4        # further than this and the click could land on another widget: say so
 POINTER_GAIN = 1.6      # ydotool's relative step comes out larger while pointer acceleration is on
 POINTER_GAIN_MAX = 4.0
 POINTER_BOOST_MAX = 4   # a screen edge in the way: repeat the step up to this much larger
@@ -311,8 +311,9 @@ class KdeBackend(WaylandBackend):
         if not self.which("kdotool"):
             return None
         out = self.try_run(["kdotool", "getmouselocation"]) or ""
-        x, y = re.search(r"(?:^|\s)x:(-?\d+)", out), re.search(r"(?:^|\s)y:(-?\d+)", out)
-        return (int(x.group(1)), int(y.group(1))) if x and y else None
+        x = re.search(r"(?:^|\s)x:(-?\d+(?:\.\d+)?)", out)
+        y = re.search(r"(?:^|\s)y:(-?\d+(?:\.\d+)?)", out)
+        return (round(float(x.group(1))), round(float(y.group(1)))) if x and y else None
 
     @staticmethod
     def _pointer_step(delta: int, gain: float) -> int:
@@ -333,11 +334,12 @@ class KdeBackend(WaylandBackend):
         here = self.pointer_position()
         if here is None:
             return None
-        gain_x = gain_y = POINTER_GAIN
+        gain_x, gain_y = getattr(self, "_gain", (POINTER_GAIN, POINTER_GAIN))
         boost = 1  # KDE's edge barrier between monitors swallows small steps: push harder
         for _ in range(POINTER_TRIES):
             dx, dy = x - here[0], y - here[1]
             if abs(dx) <= POINTER_TOLERANCE and abs(dy) <= POINTER_TOLERANCE:
+                self._gain = (gain_x, gain_y)  # a drag right after this one starts from what it learnt
                 return here
             step_x = self._pointer_step(dx, gain_x) * boost
             step_y = self._pointer_step(dy, gain_y) * boost
@@ -354,6 +356,7 @@ class KdeBackend(WaylandBackend):
                 gain_x = self._pointer_gain(step_x, moved[0], gain_x)
                 gain_y = self._pointer_gain(step_y, moved[1], gain_y)
             here = now
+        self._gain = (gain_x, gain_y)
         return here
 
     def move(self, x: int, y: int) -> None:
@@ -362,12 +365,21 @@ class KdeBackend(WaylandBackend):
         ydotool's --absolute lands in a corner under KWin (every value clamps to the minimum of
         the axis), so the pointer is driven with relative steps and corrected against the position
         KWin reports. Relative steps come out larger while pointer acceleration is on, which is why
-        the gain is measured rather than assumed."""
+        the gain is measured rather than assumed.
+
+        kdotool is what makes the correction possible, so it is required here even though the
+        movement itself is ydotool's: without a position to read the click would land anywhere."""
         self.need("pointer input on KDE", "ydotool")
+        if not self.which("kdotool"):
+            raise CommandError(
+                "clicking on KDE needs kdotool 0.3 or newer: ydotool cannot place the pointer under "
+                "KWin by itself (--absolute lands in a corner), so without kdotool there is no way to "
+                "know where a click would land (install it and run `ccdesk doctor`)")
         here = self._settle(x, y)
-        if here is None:  # no kdotool: nothing to measure, so take the one absolute shot
-            self._ydotool("mousemove", "--absolute", "-x", str(x), "-y", str(y))
-            return
+        if here is None:
+            raise CommandError(
+                f"kdotool could not report the pointer position, so the move to {x},{y} cannot be "
+                "checked; the click was not sent")
         if max(abs(x - here[0]), abs(y - here[1])) > POINTER_FAIL:
             raise CommandError(f"could not place the pointer on {x},{y}: KWin reports it at "
                                f"{here[0]},{here[1]}; the click would land somewhere else")
@@ -378,19 +390,26 @@ class KdeBackend(WaylandBackend):
         self.move(x0, y0)
         steps = self.drag_steps(duration_ms)
         pause = duration_ms / 1000 / steps
+        gain_x, gain_y = getattr(self, "_gain", (POINTER_GAIN, POINTER_GAIN))
         here = self.pointer_position() or (x0, y0)
         self._press(1, True)
         try:
             for x, y in interpolate(x0, y0, x1, y1, steps):
                 dx, dy = x - here[0], y - here[1]
                 if dx or dy:
-                    self._ydotool("mousemove", "-x", str(self._pointer_step(dx, POINTER_GAIN)),
-                                  "-y", str(self._pointer_step(dy, POINTER_GAIN)))
+                    self._ydotool("mousemove", "-x", str(self._pointer_step(dx, gain_x)),
+                                  "-y", str(self._pointer_step(dy, gain_y)))
                 here = (x, y)
                 self.sleep(pause)
-            self._settle(x1, y1)
+            end = self._settle(x1, y1)
         finally:
             self._press(1, False)
+        if end is None:
+            raise CommandError(f"the drag ended away from {x1},{y1}: kdotool could not report the "
+                               "pointer position")
+        if max(abs(x1 - end[0]), abs(y1 - end[1])) > POINTER_FAIL:
+            raise CommandError(f"the drag ended away from {x1},{y1}: KWin reports the pointer at "
+                               f"{end[0]},{end[1]}")
 
     def type_text(self, text: str) -> None:
         # Not wtype: Plasma has no virtual-keyboard protocol, so wtype would fail on every call.

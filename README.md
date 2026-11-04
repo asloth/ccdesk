@@ -503,8 +503,9 @@ systemctl --user enable --now ydotool # the input daemon, as you, not root
 - **Windows** come from `kdotool`, which loads a script into KWin over D-Bus and reads its answer
   back. One script answers for every window, with its frame box, desktop and state, so
   `list_windows`, `activate_window`, `manage_window` and the window-under-the-pointer check all
-  work. Without `kdotool`, screenshots and input still work and the window tools say what is
-  missing, but nothing checks where input lands, and coordinates are wrong on a scaled display.
+  work. Without `kdotool`, screenshots and typing still work, but clicks and drags are refused
+  because there is no way to place the pointer, the window tools say what is missing, and
+  coordinates are wrong on a scaled display.
   Panels, the desktop and other shell surfaces are left out of `list_windows`, but the focus
   guard still sees them: a click on a panel, or typing into the open launcher, is refused like
   any other window that is not the one you activated.

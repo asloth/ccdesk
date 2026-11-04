@@ -92,8 +92,9 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         )
         if not tools.get("windows", {}).get("kdotool"):
             warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "
-                            "`cargo install kdotool`). Screenshots and input work without it, but with no "
-                            "focus guard, and on a scaled display their coordinates will be wrong")
+                            "`cargo install kdotool`). Without it clicks and drags are refused, because "
+                            "there is no way to place the pointer; screenshots and typing still work, there "
+                            "is no focus guard, and on a scaled display coordinates will be wrong")
         if not backend.first_tool("magick", "convert"):
             warnings.append("region screenshots and scaled displays on KDE need ImageMagick (magick or convert)")
         try:
