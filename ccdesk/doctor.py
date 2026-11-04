@@ -87,9 +87,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("XWayland is available: set CCDESK_BACKEND=x11 to drive X11 apps only")
     elif backend.name == "kde":
         warnings.append(
-            "KDE Plasma: input goes through ydotool (/dev/uinput): absolute clicks depend on the "
-            "pointer acceleration curve, so verify them with a screenshot, and keys and text assume "
-            "a US layout and ASCII"
+            "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
+            "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
         )
         if not tools.get("windows", {}).get("kdotool"):
             warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "

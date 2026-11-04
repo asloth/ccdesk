@@ -510,10 +510,13 @@ systemctl --user enable --now ydotool # the input daemon, as you, not root
   any other window that is not the one you activated.
 - **Input** is `ydotool`, through `/dev/uinput`, with `ydotoold` running as your user (the Arch
   package ships that user unit). Plasma offers neither the virtual-pointer nor the
-  virtual-keyboard protocol, so there is no unprivileged path, and absolute clicks depend on the
-  pointer acceleration curve: verify them with a screenshot. `press_key` needs no `wtype`:
-  ccdesk turns key names into the keycodes `ydotool key` takes. Keys and `type_text` assume a US
-  layout, and `ydotool` only types ASCII, so paste anything else through the clipboard.
+  virtual-keyboard protocol, so there is no unprivileged path. `ydotool --absolute` does not place
+  the pointer under KWin (every value lands in a corner), so ccdesk moves the pointer in relative
+  steps and corrects against the position KWin reports, which also absorbs the pointer
+  acceleration curve. A click that cannot be placed within a few pixels is refused rather than
+  sent somewhere else. `press_key` needs no `wtype`: ccdesk turns key names into the keycodes
+  `ydotool key` takes. Keys and `type_text` assume a US layout, and `ydotool` only types ASCII, so
+  paste anything else through the clipboard.
 - `ui_tree` works as everywhere else, once the accessibility bus is on (see above). With `kdotool`,
   its boxes are moved to screen coordinates; without it, `ui_tree` says they may be relative to
   the window.

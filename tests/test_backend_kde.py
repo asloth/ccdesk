@@ -69,6 +69,26 @@ def win(**kw):
     return {**raw, **kw}
 
 
+class PointerRecorder(Recorder):
+    """A runner that keeps a pointer position, so move() has something to correct against."""
+
+    def __init__(self, start=(0, 0), gain=1.0, stuck=False):
+        super().__init__()
+        self.pos = list(start)
+        self.gain = gain
+        self.stuck = stuck
+
+    def __call__(self, argv, input=None, timeout=None, detach=False):
+        self.calls.append((list(argv), input, detach))
+        if argv[:2] == ["kdotool", "getmouselocation"]:
+            return f"x:{self.pos[0]} y:{self.pos[1]} screen:0 window:{{}}"
+        if argv[:2] == ["ydotool", "mousemove"] and "--absolute" not in argv and "--wheel" not in argv:
+            if not self.stuck:
+                self.pos[0] += round(int(argv[argv.index("-x") + 1]) * self.gain)
+                self.pos[1] += round(int(argv[argv.index("-y") + 1]) * self.gain)
+        return ""
+
+
 # -- detection -----------------------------------------------------------
 
 
@@ -283,8 +303,67 @@ def test_typing_ignores_wtype_because_plasma_has_no_virtual_keyboard():
 def test_pointer_goes_through_ydotool():
     b, r = make()
     b.click(10, 20, 1, 1)
-    assert r.argvs()[0] == ["ydotool", "mousemove", "--absolute", "-x", "10", "-y", "20"]
-    assert r.argvs()[1] == ["ydotool", "click", "--repeat", "1", "--next-delay", "80", "0xc0"]
+    ydotool = [a for a in r.argvs() if a[0] == "ydotool"]
+    # no kdotool in this test's output, so there is nothing to measure and it takes the one
+    # absolute shot ydotool offers
+    assert ydotool[0] == ["ydotool", "mousemove", "--absolute", "-x", "10", "-y", "20"]
+    assert ydotool[1] == ["ydotool", "click", "--repeat", "1", "--next-delay", "80", "0xc0"]
+
+
+def pointer_backend(recorder):
+    b = KdeBackend(env=KDE_ENV, runner=recorder,
+                   which=lambda n: f"/usr/bin/{n}" if n in KDE_ALL else None)
+    b.sleep = lambda s: None
+    return b
+
+
+def test_move_corrects_for_pointer_acceleration():
+    # ydotool's absolute mode lands in a corner under KWin, so move() goes relatively and
+    # corrects: here every requested step comes out twice as large.
+    r = PointerRecorder(start=(100, 100), gain=2.0)
+    b = pointer_backend(r)
+    b.move(500, 400)
+    assert abs(r.pos[0] - 500) <= 2 and abs(r.pos[1] - 400) <= 2
+    moves = [a for a in r.argvs() if a[0] == "ydotool"]
+    assert moves and all("--absolute" not in a for a in moves)
+
+
+def test_move_without_kdotool_falls_back_to_absolute():
+    b, r = make(installed=KDE_ALL - {"kdotool"})
+    b.move(10, 20)
+    assert r.argvs() == [["ydotool", "mousemove", "--absolute", "-x", "10", "-y", "20"]]
+
+
+def test_move_refuses_a_point_it_cannot_reach():
+    b = pointer_backend(PointerRecorder(start=(0, 0), stuck=True))
+    with pytest.raises(CommandError, match="could not place the pointer"):
+        b.move(500, 400)
+
+
+def test_a_pointer_that_already_sits_there_is_not_moved():
+    r = PointerRecorder(start=(500, 400))
+    pointer_backend(r).move(500, 400)
+    assert not [a for a in r.argvs() if a[0] == "ydotool"]
+
+
+def test_pointer_step_and_gain():
+    step, gain_ = KdeBackend._pointer_step, KdeBackend._pointer_gain
+    assert step(0, 2) == 0 and step(100, 2) == 50 and step(-100, 2) == -50
+    assert step(3, 1.0) == 3 and step(1, 4.0) == 1  # never rounds a step away
+    assert gain_(10, 20, 1.6) == 2.0     # learned from what the step did
+    assert gain_(0, 5, 1.6) == 1.6       # nothing to learn from
+    assert gain_(10, 0, 1.6) == 1.6      # the pointer did not move: the edge barrier
+    assert gain_(1, 100, 1.6) == 4.0     # clamped
+    assert gain_(100, 1, 1.6) == 1.0     # clamped the other way
+
+
+def test_drag_moves_relatively_and_releases():
+    r = PointerRecorder(start=(0, 0), gain=1.0)
+    b = pointer_backend(r)
+    b.drag(100, 100, 300, 260, 48)
+    buttons = [a[0][2] for a in r.calls if a[0][0] == "ydotool" and a[0][1] == "click"]
+    assert buttons == ["0x40", "0x80"]  # pressed once, released once
+    assert abs(r.pos[0] - 300) <= 2 and abs(r.pos[1] - 260) <= 2
 
 
 @pytest.mark.parametrize("combo,expected", [

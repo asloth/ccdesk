@@ -22,8 +22,9 @@ import re
 import tempfile
 from dataclasses import replace
 
+from ccdesk.backends.base import interpolate
 from ccdesk.backends.keycodes import ydotool_key_sequence
-from ccdesk.backends.wayland import WaylandBackend
+from ccdesk.backends.wayland import POINTER_SETTLE, WaylandBackend
 from ccdesk.errors import CcdeskError, CommandError, UnsupportedError
 from ccdesk.parsing import KeyCombo, Region, Window, png_size
 
@@ -76,6 +77,12 @@ SCREENS_SCRIPT = (
     "o.push({name:s[i].name,x:g.x,y:g.y,width:g.width,height:g.height,scale:s[i].devicePixelRatio||1});}"
     "output_result(JSON.stringify(o));"
 )
+POINTER_TOLERANCE = 2   # pixels: close enough that the click lands on what was aimed at
+POINTER_TRIES = 8       # each is one relative step plus a position read (about 40 ms together)
+POINTER_FAIL = 8        # further than this and the click would land somewhere else: say so
+POINTER_GAIN = 1.6      # ydotool's relative step comes out larger while pointer acceleration is on
+POINTER_GAIN_MAX = 4.0
+POINTER_BOOST_MAX = 4   # a screen edge in the way: repeat the step up to this much larger
 # The ids kdotool prints look like {xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx}. They go into a command
 # line, so refuse anything else instead of letting it read as an option.
 KDOTOOL_ID = re.compile(r"^\{[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\}$")
@@ -298,6 +305,92 @@ class KdeBackend(WaylandBackend):
 
     def _pointer(self):
         return None  # KWin offers no virtual-pointer protocol: ydotool has to do it
+
+    def pointer_position(self) -> tuple[int, int] | None:
+        """Where KWin has the pointer, or None when kdotool cannot say. One client call, ~5 ms."""
+        if not self.which("kdotool"):
+            return None
+        out = self.try_run(["kdotool", "getmouselocation"]) or ""
+        x, y = re.search(r"(?:^|\s)x:(-?\d+)", out), re.search(r"(?:^|\s)y:(-?\d+)", out)
+        return (int(x.group(1)), int(y.group(1))) if x and y else None
+
+    @staticmethod
+    def _pointer_step(delta: int, gain: float) -> int:
+        """How far to move the pointer so a gain of `gain` leaves `delta` of it."""
+        if not delta:
+            return 0
+        return max(1, round(abs(delta) / max(1.0, gain))) * (1 if delta > 0 else -1)
+
+    @staticmethod
+    def _pointer_gain(step: int, moved: int, gain: float) -> float:
+        """Learn this machine's acceleration from what the last step actually did."""
+        if not step or not moved:
+            return gain
+        return min(POINTER_GAIN_MAX, max(1.0, abs(moved / step)))
+
+    def _settle(self, x: int, y: int) -> tuple[int, int] | None:
+        """Drive the pointer onto (x, y), correcting against what the compositor reports."""
+        here = self.pointer_position()
+        if here is None:
+            return None
+        gain_x = gain_y = POINTER_GAIN
+        boost = 1  # KDE's edge barrier between monitors swallows small steps: push harder
+        for _ in range(POINTER_TRIES):
+            dx, dy = x - here[0], y - here[1]
+            if abs(dx) <= POINTER_TOLERANCE and abs(dy) <= POINTER_TOLERANCE:
+                return here
+            step_x = self._pointer_step(dx, gain_x) * boost
+            step_y = self._pointer_step(dy, gain_y) * boost
+            self._ydotool("mousemove", "-x", str(step_x), "-y", str(step_y))
+            self.sleep(POINTER_SETTLE)
+            now = self.pointer_position()
+            if now is None:
+                return None
+            moved = (now[0] - here[0], now[1] - here[1])
+            if moved == (0, 0):
+                boost = min(POINTER_BOOST_MAX, boost * 2)
+            else:
+                boost = 1
+                gain_x = self._pointer_gain(step_x, moved[0], gain_x)
+                gain_y = self._pointer_gain(step_y, moved[1], gain_y)
+            here = now
+        return here
+
+    def move(self, x: int, y: int) -> None:
+        """Put the pointer on (x, y).
+
+        ydotool's --absolute lands in a corner under KWin (every value clamps to the minimum of
+        the axis), so the pointer is driven with relative steps and corrected against the position
+        KWin reports. Relative steps come out larger while pointer acceleration is on, which is why
+        the gain is measured rather than assumed."""
+        self.need("pointer input on KDE", "ydotool")
+        here = self._settle(x, y)
+        if here is None:  # no kdotool: nothing to measure, so take the one absolute shot
+            self._ydotool("mousemove", "--absolute", "-x", str(x), "-y", str(y))
+            return
+        if max(abs(x - here[0]), abs(y - here[1])) > POINTER_FAIL:
+            raise CommandError(f"could not place the pointer on {x},{y}: KWin reports it at "
+                               f"{here[0]},{here[1]}; the click would land somewhere else")
+        self.sleep(POINTER_SETTLE)  # let the last motion event arrive before the button
+
+    def drag(self, x0: int, y0: int, x1: int, y1: int, duration_ms: int) -> None:
+        """Drag with relative steps, then correct the end point with the button still down."""
+        self.move(x0, y0)
+        steps = self.drag_steps(duration_ms)
+        pause = duration_ms / 1000 / steps
+        here = self.pointer_position() or (x0, y0)
+        self._press(1, True)
+        try:
+            for x, y in interpolate(x0, y0, x1, y1, steps):
+                dx, dy = x - here[0], y - here[1]
+                if dx or dy:
+                    self._ydotool("mousemove", "-x", str(self._pointer_step(dx, POINTER_GAIN)),
+                                  "-y", str(self._pointer_step(dy, POINTER_GAIN)))
+                here = (x, y)
+                self.sleep(pause)
+            self._settle(x1, y1)
+        finally:
+            self._press(1, False)
 
     def type_text(self, text: str) -> None:
         # Not wtype: Plasma has no virtual-keyboard protocol, so wtype would fail on every call.
