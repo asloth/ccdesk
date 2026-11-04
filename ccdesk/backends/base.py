@@ -193,6 +193,11 @@ class Backend:
         """Id of the window a dialog belongs to, or None."""
         return None
 
+    def shell_window(self, window_id: str) -> Window | None:
+        """A desktop surface list_windows leaves out but that takes input itself (a panel, the desktop,
+        a launcher popup), as a Window to name in a refusal; None if window_id is not one, or unknown."""
+        return None
+
     def current_desktop(self) -> int | None:
         """The workspace on show (as Window.desktop numbers them), or None if unknown."""
         return None

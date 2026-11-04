@@ -34,6 +34,7 @@ class FakeBackend(Backend):
         self.active: str | None = None  # id of the focused window; None: the backend cannot tell
         self.under: str | None = None  # id of the window under the pointer, for window_at
         self.transients: dict[str, str] = {}  # dialog id -> the window it belongs to
+        self.shells: dict[str, Window] = {}  # panels and other unlisted surfaces, for shell_window
         self.responses: dict[str, str] = {}  # command line -> output for run(); anything else fails
         self.ran: list[list[str]] = []
         self.slept: list[float] = []
@@ -172,6 +173,9 @@ class FakeBackend(Backend):
 
     def transient_for(self, wid):
         return self.transients.get(wid)
+
+    def shell_window(self, wid):
+        return self.shells.get(wid)
 
     def clipboard_get(self):
         return self.clip
