@@ -115,14 +115,32 @@ def test_a_dead_helper_never_replays_an_action(tmp_path, monkeypatch):
         "sys.stdin.readline()\n"  # takes the request, dies without answering it
     )
     monkeypatch.setattr("ccdesk.a11y.HELPER", script)
-    a = A11y(pythons=(sys.executable,))
+    # Two candidates: an action must not be replayed on the second one either.
+    a = A11y(pythons=(sys.executable, sys.executable))
     try:
         with pytest.raises(CcdeskError, match="may have run"):
             a.call({"op": "action", "path": "3.0.1", "names": ["click"]})
         assert starts.read_text() == "x"  # no second process for an action
         with pytest.raises(CcdeskError, match="stopped before answering"):
-            a.apps()  # retried once, on a fresh helper (x -> xxx)
-        assert starts.read_text() == "xxx"
+            a.apps()  # retried on each candidate (two tries each), then it gives up
+        assert starts.read_text() == "xxxxx"  # 1 action + 2 tries on each of 2 candidates
+    finally:
+        a.close()
+
+
+def test_a_broken_interpreter_does_not_stop_a_read(tmp_path, monkeypatch):
+    """An interpreter that exits before answering (no PyGObject at all) is skipped for a read."""
+    script = tmp_path / "helper.py"
+    script.write_text("import json, sys\n"
+                      "for line in sys.stdin:\n"
+                      "    print(json.dumps({'apps': []}), flush=True)\n")
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    broken = tmp_path / "broken-python"
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    a = A11y(pythons=(str(broken), sys.executable))
+    try:
+        assert a.apps() == []
     finally:
         a.close()
 

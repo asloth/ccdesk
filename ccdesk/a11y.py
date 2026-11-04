@@ -161,7 +161,9 @@ class A11y:
         one; a click or a write is never replayed, because it may have run before the crash."""
         errors = []
         payload = json.dumps(request)
-        for py in ([self._python] if self._python else self._pythons):
+        retryable = request.get("op") in RETRY_OPS
+        candidates = [self._python] if self._python else list(self._pythons)
+        for index, py in enumerate(candidates):
             exe = py if os.path.isabs(py) else shutil.which(py)
             if not exe or not os.path.exists(exe):
                 continue
@@ -174,7 +176,12 @@ class A11y:
                 errors.append(f"{exe}: {exc}")
                 continue
             except EOFError:
-                what = ("" if request.get("op") in RETRY_OPS else
+                # An interpreter without PyGObject prints its error and exits, sometimes before it
+                # even reads the request: a read is safe on the next candidate, an action is not.
+                if retryable and index < len(candidates) - 1:
+                    errors.append(f"{exe}: stopped before answering")
+                    continue
+                what = ("" if retryable else
                         ": the action may have run; check with ui_tree() or a screenshot, don't repeat it")
                 raise CcdeskError(f"the accessibility helper stopped before answering{what}") from None
             try:
@@ -204,15 +211,20 @@ class A11y:
             return self._runner([exe, "-I", str(HELPER), payload], timeout)
         with self._io:
             for attempt in (0, 1):
+                if self._proc is None or self._proc_python != exe:
+                    # An OSError here means it could not start: nothing was sent, so call() may
+                    # try the next interpreter. One raised by the request below is different.
+                    self._start(exe)
                 try:
-                    if self._proc is None or self._proc_python != exe:
-                        self._start(exe)
                     return self._proc.request(payload, timeout)
                 except subprocess.TimeoutExpired:
                     # A late answer would arrive in the middle of the next request: drop the process.
                     self._died(kill=True)
                     raise
-                except (EOFError, OSError):
+                except OSError as exc:  # died while handling it: never replay the payload
+                    self._died()
+                    raise EOFError(str(exc)) from None
+                except EOFError:
                     self._died()
                     if attempt or op not in RETRY_OPS:
                         raise

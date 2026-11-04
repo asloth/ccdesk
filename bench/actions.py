@@ -12,6 +12,7 @@ CCDESK_SRC is the checkout whose tests/gtk_app.py is used (default: this one). P
 the ccdesk under test. Numbers are medians of five runs, printed in milliseconds.
 """
 
+import itertools
 import json
 import os
 import re
@@ -68,7 +69,11 @@ def main():
         timed("ui_tree", lambda: desk.ui_tree(window="ccdesk-gtk"))
         timed("click_element", lambda: desk.click_element(button))
         timed("type_text", lambda: desk.type_text("abc"))
-        timed("set_value", lambda: desk.set_value(field, "Sara"))
+        # Alternate the value, so every repetition is a write that changes the field.
+        values = itertools.cycle(("Sara", "Ana"))
+        timed("set_value changes", lambda: desk.set_value(field, next(values)))
+        desk.set_value(field, "Same")
+        timed("set_value same", lambda: desk.set_value(field, "Same"), n=3)
         if hasattr(desk.a11y, "close"):  # older checkouts have no persistent helper
             desk.a11y.close()
     finally:

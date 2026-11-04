@@ -216,9 +216,9 @@ def read_tree(req):
     title = req.get("window")
     return {"window": frame.get_name(), "app": app.get_name(), "pid": app.get_process_id(),
             "nodes": out, "truncated": truncated,
-            # Only needed to warn about an ambiguous title; enumerating the desktop on every poll
-            # would make the settle expensive.
-            "matches": matching_windows(title) if title else 0,
+            # Only needed to warn about an ambiguous title. A settle poll skips it: enumerating
+            # the desktop on every poll would make the settle expensive.
+            "matches": matching_windows(title) if title and not req.get("settle_ms") else 0,
             "frame_box": frame_node.get("box")}
 
 
