@@ -1,10 +1,12 @@
 """Accessibility tree tools against a fake helper (no AT-SPI bus needed)."""
 
 import json
+import subprocess
+import sys
 
 import pytest
 
-from ccdesk.a11y import A11y, format_node
+from ccdesk.a11y import A11y, HelperProcess, format_node
 from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError
 
 
@@ -84,6 +86,89 @@ def test_helper_python_fallback(tmp_path):
         bad.apps()
 
 
+def test_persistent_helper_starts_once(tmp_path, monkeypatch):
+    """One system Python for the session, not one per read: its start costs ~100 ms."""
+    starts = tmp_path / "starts"
+    script = tmp_path / "helper.py"
+    script.write_text(
+        "import json, sys\n"
+        f"open({str(starts)!r}, 'a').write('x')\n"
+        "for line in sys.stdin:\n"
+        "    print(json.dumps({'apps': [], 'op': json.loads(line)['op']}), flush=True)\n"
+    )
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    a = A11y(pythons=(sys.executable,))
+    try:
+        assert a.apps() == [] and a.apps() == []
+        assert starts.read_text() == "x"
+    finally:
+        a.close()
+
+
+def test_a_dead_helper_never_replays_an_action(tmp_path, monkeypatch):
+    """A crash after a click may have run it: say so and stop. A read is safe to repeat."""
+    starts = tmp_path / "starts"
+    script = tmp_path / "helper.py"
+    script.write_text(
+        "import sys\n"
+        f"open({str(starts)!r}, 'a').write('x')\n"
+        "sys.stdin.readline()\n"  # takes the request, dies without answering it
+    )
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    # Two candidates: an action must not be replayed on the second one either.
+    a = A11y(pythons=(sys.executable, sys.executable))
+    try:
+        with pytest.raises(CcdeskError, match="may have run"):
+            a.call({"op": "action", "path": "3.0.1", "names": ["click"]})
+        assert starts.read_text() == "x"  # no second process for an action
+        with pytest.raises(CcdeskError, match="stopped before answering"):
+            a.apps()  # retried on each candidate (two tries each), then it gives up
+        assert starts.read_text() == "xxxxx"  # 1 action + 2 tries on each of 2 candidates
+    finally:
+        a.close()
+
+
+def test_a_broken_interpreter_does_not_stop_a_read(tmp_path, monkeypatch):
+    """An interpreter that exits before answering (no PyGObject at all) is skipped for a read."""
+    script = tmp_path / "helper.py"
+    script.write_text("import json, sys\n"
+                      "for line in sys.stdin:\n"
+                      "    print(json.dumps({'apps': []}), flush=True)\n")
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    broken = tmp_path / "broken-python"
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    a = A11y(pythons=(str(broken), sys.executable))
+    try:
+        assert a.apps() == []
+    finally:
+        a.close()
+
+
+def test_helper_process_speaks_one_line_per_request():
+    proc = HelperProcess([sys.executable, "-c",
+                          "import sys, time\n"
+                          "for line in sys.stdin:\n"
+                          "    if 'slow' in line:\n"
+                          "        time.sleep(5)\n"
+                          "    print(line.strip(), flush=True)\n"])
+    try:
+        assert proc.request('{"op":"apps"}', 5) == '{"op":"apps"}'
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.request("slow", 0.05)  # a late answer must not land in the next request
+    finally:
+        proc.close(kill=True)
+
+
+def test_helper_process_reports_eof_when_it_dies():
+    proc = HelperProcess([sys.executable, "-c", "pass"])
+    try:
+        with pytest.raises(EOFError):
+            proc.request("{}", 5)
+    finally:
+        proc.close()
+
+
 def test_format_node_escapes():
     line = format_node("e9", {"role": "text", "name": 'say "hi"', "value": "a\nb"}, 1)
     assert line == '  e9 text "say \\"hi\\"" ="a\\nb"'
@@ -125,6 +210,15 @@ def test_actions_report_changes_after_ui_tree(make_desk, helper, no_settle):
     assert d.press_key("Tab")["changes"].startswith("no change")
     del helper.nodes["3.0.29.2"]
     assert d.type_text("y")["changes"] == "gone: e2"
+
+
+def test_changes_asks_the_helper_to_watch_the_window(make_desk, helper):
+    """The settle window is spent in the helper, polling, not in a blind sleep in the client."""
+    d = make_desk()
+    d.ui_tree()
+    helper.nodes["3.0.29.2"]["value"] = "ana@example.org"
+    assert d.click_element("e2")["changes"]
+    assert helper.requests[-1]["op"] == "tree" and helper.requests[-1]["settle_ms"] == 300
 
 
 def test_many_changes_ask_for_a_new_tree(make_desk, helper, no_settle):

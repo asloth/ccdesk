@@ -341,12 +341,17 @@ what is on the bus, and this fix, so Claude can ask you to apply it.
 The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python with PyGObject
 (`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
 no compiled dependencies. `CCDESK_A11Y_PYTHON` picks another interpreter. `ccdesk doctor`
-lists the apps that publish a tree.
+lists the apps that publish a tree. The helper stays alive for the session (one JSON request
+per line on stdin), so a read does not pay for a Python start and an AT-SPI handshake every
+time; it exits when ccdesk does.
 
 After the first `ui_tree()`, actions (`click`, `click_element`, `type_text`, `press_key`)
 return `changes`: only the lines of that window that changed, such as
 `e5 check box "I accept the terms" [checked]`. The model verifies from that instead of
-reading the tree or the screen again. Refs stay stable across calls.
+reading the tree or the screen again. Refs stay stable across calls. The helper watches the
+window for up to 0.3 s and answers the moment a line changes, so a fast app reports its effect
+at once instead of after a fixed pause: on the bench's GTK form a click went from 605 ms to
+22 ms (`bench/RESULTS.md`).
 
 Measured end to end (`bench/`, same form task, Claude Code's own usage numbers, 3 runs each):
 no ccdesk 89k input tokens, ccdesk with screenshots 118k, ccdesk with `ui_tree` and `changes`

@@ -92,3 +92,31 @@ merged in PR #3; `after` adds the slimmer schemas and the tab guard.
 - Deferred, the 1.2% is inside the noise: the ranges overlap, and only the tools the model loads count.
 
 Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<older ccdesk> python bench/run.py --arms base-loaded,loaded,base,tree --reps 5`
+
+## One helper per session, and a settle that watches (2026-11-03)
+
+The accessibility helper used to start a system Python and import PyGObject for every request
+(~106 ms here), and the client slept a fixed 0.3 s before every `changes` read. The helper now
+stays alive for the session (one JSON request per line on stdin) and the settle window is
+spent polling inside it, answering the moment a line changes.
+
+Same GTK form (`tests/gtk_app.py`) under `xvfb-run`, 5 repetitions per action, medians:
+
+| Action | HEAD (a process per read) | this build |
+|---|---|---|
+| `ui_tree` | 114.7 ms | **20.8 ms** |
+| `click_element` | 605.3 ms | **21.8 ms** |
+| `type_text` | 472.5 ms | **75.5 ms** |
+| `set_value`, value changes | 609.7 ms | **22 ms** |
+| `set_value`, value already held | 609.7 ms | 322 ms |
+
+- On the live session (KDE, bus on) `apps` is 11 ms against 106 ms one-shot; a 159-node
+  Dolphin tree is 251 → 163 ms, because there the walk, not the start, dominates.
+- "No change" still spends the whole 0.3 s settle: nothing moved, so the helper has to watch
+  for it. The old build spent it too, plus a process start.
+- `set_value` is the odd row: it verifies the field itself, then the tree only changes when the
+  text actually differs. A write that changes nothing waits out the settle.
+- Not measured: a slow web page, where the tree walk grows and the early exit may not help.
+
+Reproduce: `xvfb-run -a python bench/actions.py`; for two checkouts set `CCDESK_SRC` and
+`PYTHONPATH` to the older one (see the script's docstring).
