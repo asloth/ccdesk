@@ -41,9 +41,9 @@ desktop through MCP, plus a skill that teaches the correct workflow.
 6. **CLI**: `ccdesk doctor`, `ccdesk install` (registers the MCP server with Claude Code
    at user scope and copies the skill to `~/.claude/skills/computer-use/`),
    `ccdesk mcp`, `ccdesk version`.
-7. **Skill** at `skills/computer-use/SKILL.md`: screenshot-first loop, one action then
-   verify, coordinate rules, Firefox recipe, what not to do (never type passwords,
-   never dismiss dialogs blindly).
+7. **Skill** at `skills/computer-use/SKILL.md`: look-act-verify loop, `ui_tree` first and
+   screenshots as verification and fallback, one action then verify, coordinate rules,
+   Firefox recipe, what not to do (never type passwords, never dismiss dialogs blindly).
 8. **Tests.** Pure unit tests for parsing/validation, plus an integration test that
    runs under `xvfb-run`: spawn a Tk window with a button and an entry, screenshot it,
    click the button by computed coordinates, assert the label changed, type into the

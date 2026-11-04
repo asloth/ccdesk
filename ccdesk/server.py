@@ -22,16 +22,16 @@ from ccdesk.desktop import Desktop
 from ccdesk.errors import CcdeskError
 
 INSTRUCTIONS = """\
-ccdesk drives the local Linux desktop. Work in a loop: screenshot() (the picture is in its answer),
-do ONE action, then screenshot() again to verify before the next action. Coordinates are
-screen pixels in the screenshot's space (origin top-left). For region screenshots add the
-returned origin. Save tokens: try ui_tree() first (text, no pixels), click_element(ref) and
-set_value(ref, text).
-After a ui_tree(), actions return `changes` (the lines that changed in that window): use it to
-verify instead of another ui_tree() or screenshot. Refs stay valid across ui_tree() calls.
+ccdesk drives the local Linux desktop. Work in a loop: look, do ONE action, verify, repeat.
+Look with ui_tree() first (text, no pixels) and act on a line with click_element(ref) or
+set_value(ref, text). After a ui_tree(), actions return `changes` (the lines that changed in
+that window): verify with it instead of another look. Refs stay valid across ui_tree() calls.
+Fall back to screenshot() when there is no tree (canvas, images, video, apps that publish none),
+to read layout, or to double-check something visual: the picture is in its answer. Coordinates
+are screen pixels in the image (origin top-left); for a region add the returned origin.
+screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
 Without a tree, actions return screen_changed (and changed_area): if false, the action did
 nothing yet. wait_for_change() waits for a page or dialog instead of wait() + screenshot.
-Use screenshot(scale=0.5) to orient and small regions to verify.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
 HEADLESS = """

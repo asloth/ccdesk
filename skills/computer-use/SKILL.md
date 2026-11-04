@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Drive the Linux desktop through the ccdesk MCP server - take screenshots, click, type, press keys, manage windows and the clipboard. Use when the user asks to open, look at, or operate a graphical app (Firefox, a GUI dialog, a desktop setting) instead of a shell command.
+description: Drive the Linux desktop through the ccdesk MCP server - read a window's accessibility tree or take a screenshot, click, type, press keys, manage windows and the clipboard. Use when the user asks to open, look at, or operate a graphical app (Firefox, a GUI dialog, a desktop setting) instead of a shell command.
 ---
 
 # Computer use with ccdesk
@@ -110,17 +110,22 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
 ## The loop: look, act once, verify
 
 ```
-ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  ...
+ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
 ```
 
-- **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,
-  pages scroll, and popups appear.
+- **Look before you click, and look with the tree first.** `ui_tree()` gives you the exact
+  target, so act on a ref (`click_element`, `set_value`) instead of coordinates. A raw
+  `click(x, y)` needs a screenshot you have just seen: windows move, pages scroll, and popups
+  appear.
+- **Screenshots are for verification and fallback**, not the default look: canvas, images,
+  video, games, apps that publish no tree, layout questions, or confirming that something
+  visual is right.
 - **The picture is in the answer.** `screenshot()` shows it to you directly, with `path`,
   `width` and `height`. Don't Read the path as well: that pays for it twice. Only when it says
   it is too big to show, or you passed `path=`, is the file all you have.
-- **One action, then verify.** After each click, keypress or typed string, take a new
-  screenshot and confirm the expected change happened before you continue. If it didn't,
-  work out why. Don't repeat the action blindly.
+- **One action, then verify.** After each click, keypress or typed string, read its
+  `changes` (with a tree) or take a new screenshot, and confirm the expected change happened
+  before you continue. If it didn't, work out why. Don't repeat the action blindly.
 - **Without a tree, read `screen_changed`.** Actions then report whether the receiving
   window's pixels changed, and `changed_area` if they did. `false` after a click means it
   did nothing yet: don't screenshot to find that out, and don't repeat the click blindly.
