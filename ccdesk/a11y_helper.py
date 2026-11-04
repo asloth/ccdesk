@@ -5,11 +5,15 @@ ccdesk itself stays standard-library only: it starts this file with `python3 -I 
 
 Requests:
   {"op": "apps"}
-  {"op": "tree", "window": str|None, "query": str|None, "page": bool, "max_nodes": int}
+  {"op": "tree", "window": str|None, "query": str|None, "page": bool, "max_nodes": int,
+   "settle_ms": int}: settle_ms > 0 watches for a change before answering (see tree()).
   {"op": "resolve", "path": "3.0.1.4"}
   {"op": "action", "path": "3.0.1.4", "names": ["click", ...]}
   {"op": "set", "path": "3.0.1.4", "text": str}: pass "-" as the argument and the request on stdin,
   so the text stays out of the process list.
+
+Started with no argument it serves requests as JSON lines on stdin/stdout until stdin closes, so
+ccdesk pays for one Python start and one AT-SPI handshake per session instead of per read.
 """
 
 import json
@@ -174,7 +178,7 @@ def interesting(node):
     return bool(name or node.get("value") or role in ACTIONABLE)
 
 
-def tree(req):
+def read_tree(req):
     picked, err = pick_window(req.get("window"))
     if err:
         return {"error": err, "no_window": True}
@@ -209,9 +213,47 @@ def tree(req):
 
     walk(frame, path, 0, False)
     frame_node = describe(frame, path, 0) or {}
+    title = req.get("window")
     return {"window": frame.get_name(), "app": app.get_name(), "pid": app.get_process_id(),
-            "nodes": out, "truncated": truncated, "matches": matching_windows(req.get("window")),
+            "nodes": out, "truncated": truncated,
+            # Only needed to warn about an ambiguous title; enumerating the desktop on every poll
+            # would make the settle expensive.
+            "matches": matching_windows(title) if title else 0,
             "frame_box": frame_node.get("box")}
+
+
+# The latest read: what a poll compares against, without serializing the tree again.
+LAST: dict = {"key": None, "marks": None}
+
+
+def mark(node):
+    """Everything a tree line shows, so two reads can be compared cheaply."""
+    return (node["role"], node["name"], node.get("value"), tuple(node.get("states") or ()),
+            tuple(node.get("box") or ()))
+
+
+def tree(req):
+    """The tree, after watching it for `settle_ms` for a change.
+
+    Re-reading costs a walk, not a process: while the window is still, poll; as soon as a mark
+    differs, answer. A slow app still gets the whole settle window, a fast one answers at once."""
+    key = (req.get("window"), req.get("query"), bool(req.get("page")), int(req.get("max_nodes") or 300))
+    deadline = time.monotonic() + max(0.0, float(req.get("settle_ms") or 0) / 1000)
+    previous = LAST["marks"] if LAST["key"] == key else None
+    while True:
+        started = time.monotonic()
+        result = read_tree(req)
+        if "error" in result:
+            return result  # no window to watch
+        marks = {"#window": (result.get("window"), result.get("app"), result.get("pid"))}
+        marks.update((n["path"], mark(n)) for n in result["nodes"])
+        LAST.update(key=key, marks=marks)
+        if previous is None or marks != previous:
+            return result  # first read of this request, or something changed
+        if time.monotonic() >= deadline:
+            return result
+        walk = time.monotonic() - started
+        time.sleep(min(0.03 if walk < 0.08 else 0.15, max(0.0, deadline - time.monotonic())))
 
 
 def find(path):
@@ -293,14 +335,33 @@ def apps(_req):
                      for _, app in children(desktop())]}
 
 
-def main():
-    req = json.loads(sys.stdin.read() if sys.argv[1] == "-" else sys.argv[1])
+def handle(req):
     ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value}
     try:
-        result = ops[req["op"]](req)
+        return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing
-        result = {"error": f"{type(exc).__name__}: {exc}"}
-    print(json.dumps(result, ensure_ascii=False))
+        return {"error": f"{type(exc).__name__}: {exc}"}
+
+
+def main():
+    # One-shot form, kept for scripts: `a11y_helper.py '<json>'` (or "-" and the request on stdin).
+    if len(sys.argv) > 1:
+        req = json.loads(sys.stdin.read() if sys.argv[1] == "-" else sys.argv[1])
+        print(json.dumps(handle(req), ensure_ascii=False))
+        return
+    # Persistent form: one JSON request per line, one answer per line, on stdin/stdout. The MCP
+    # server keeps this alive so a read does not pay for a Python start and an AT-SPI handshake.
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        try:
+            req = json.loads(line)
+        except ValueError as exc:
+            print(json.dumps({"error": f"bad request: {exc}"}), flush=True)
+            continue
+        if req.get("op") == "shutdown":
+            break
+        print(json.dumps(handle(req), ensure_ascii=False), flush=True)
 
 
 if __name__ == "__main__":

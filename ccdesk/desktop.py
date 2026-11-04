@@ -43,7 +43,7 @@ POLL = 0.2  # seconds between captures in wait_for_change
 MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) before it is refused
 OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
-SETTLE = 0.3  # seconds an app gets to react before an action reports its changes
+SETTLE = 0.3  # seconds the helper watches for a change before an action reports "no change"
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
@@ -147,9 +147,8 @@ class Desktop:
                     if box:
                         result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
             return result
-        time.sleep(SETTLE)
         try:
-            changes = self.a11y.changes()
+            changes = self.a11y.changes(settle=SETTLE)
         except CcdeskError as exc:
             changes = f"could not re-read the window: {exc}"
         if changes is not None:
