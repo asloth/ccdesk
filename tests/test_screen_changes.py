@@ -136,3 +136,57 @@ def test_wait_for_change_validation(make_desk, fake):
 def test_wait_for_change_is_allowed_read_only(make_desk, fake):
     fake.later = [[2, (0, 0, 64, 64, WHITE)]]
     assert make_desk(screen_diff=True, read_only=True).wait_for_change(timeout=5, settle_ms=0)["changed"]
+
+
+def test_show_change_attaches_a_capture_of_the_changed_area(make_desk, fake):
+    """So checking an action needs no screenshot of its own."""
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    r = d.click(250, 320, show_change=True)
+    shot = r["change_shot"]
+    # changed_area 200,304 120x40, plus SHOT_PAD on each side.
+    assert shot["origin"] == {"x": 176, "y": 280}
+    assert (shot["width"], shot["height"]) == (168, 88)
+    assert shot["approx_tokens"] == round(168 * 88 / 750) and "scale" not in shot
+    assert read_png(shot["path"]).pixel(24, 24) == WHITE  # the dialog's corner, inside the pad
+
+
+def test_a_big_change_shot_is_scaled_down(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(0, 0, 800, 600, WHITE)]  # a new page
+    shot = d.click(5, 5, show_change=True)["change_shot"]
+    assert shot["scale"] < 1
+    assert shot["approx_tokens"] <= 610
+
+
+def test_show_change_adds_nothing_when_nothing_changed(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    r = d.press_key("Tab", show_change=True)
+    assert r["screen_changed"] is False and "change_shot" not in r and "note" not in r
+    fake.magick = False
+    r = make_desk(screen_diff=True).click(5, 5, show_change=True)
+    assert "change_shot" not in r and "ImageMagick" in r["note"]
+
+
+def test_a_wide_screenshot_after_a_small_change_says_what_the_crop_costs(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    d.click(250, 320)
+    hint = d.screenshot()["hint"]
+    assert 'region="176,280,168,88"' in hint and "show_change=true" in hint
+    assert "hint" not in d.screenshot()  # once per action
+    fake.effects = [(200, 300, 120, 40, (0, 0, 0))]
+    d.click(250, 320)
+    assert "hint" not in d.screenshot(region="150,250,300,200")  # already a crop
+
+
+def test_a_fixed_wait_after_an_action_points_to_wait_for_change(make_desk, fake, monkeypatch):
+    monkeypatch.setattr("ccdesk.desktop.time.sleep", lambda s: None)
+    d = make_desk(screen_diff=True)
+    assert "hint" not in d.wait(2)  # nothing happened before it
+    d.click(5, 5)
+    assert "wait_for_change" in d.wait(2)["hint"]
+    d.click(5, 5)
+    assert "hint" not in d.wait(0.5)  # a short pause is fine
+    d.activate_window("Terminal")
+    assert "hint" not in d.wait(2)  # after a window change there is nothing to compare

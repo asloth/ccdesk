@@ -51,6 +51,10 @@ RETURN = KeyCombo("Return")
 WINDOW_ACTIONS = ("move", "resize", "minimize", "maximize", "restore")
 MAX_WINDOW_COORD = 65_535
 WINDOW_POLLS = 8  # reads, POLL apart, for a window manager to finish before calling a request ignored
+SHOT_PAD = 24  # screen pixels around changed_area in a change_shot
+SHOT_MAX_TOKENS = 600  # a bigger change_shot is scaled down to about this
+HINT_MIN_TOKENS = 400  # a screenshot cheaper than this gets no "crop it" hint
+DIFF_TOOLS = frozenset({"click", "drag", "scroll", "type_text", "press_key"})  # report screen_changed
 
 
 class Desktop:
@@ -73,6 +77,10 @@ class Desktop:
         self.screen_diff = screen_diff
         self._pending: tuple[Region | None, Grid] | None = None
         self._after: tuple[Region | None, Grid] | None = None
+        # What the latest action changed, for the "screenshot just this" hint; and the tool before
+        # this one, for the "wait_for_change instead of wait" hint.
+        self._last_area: Region | None = None
+        self._prev_tool: str | None = None
         self.clock = time.monotonic
         self._own_input: float | None = None  # clock() when ccdesk's latest input action finished
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
@@ -97,6 +105,7 @@ class Desktop:
                               duration_ms=(time.monotonic() - start) * 1000)
             raise
         self._input_done(tool)
+        self._prev_tool = tool
         self.audit.record(tool, args, "ok", result=loggable(result) if loggable else result,
                           duration_ms=(time.monotonic() - start) * 1000)
         return result
@@ -131,9 +140,11 @@ class Desktop:
             self.backend.sleep(pause)
             waited += pause
 
-    def _changes(self, result: dict) -> dict:
+    def _changes(self, result: dict, show_change: bool = False) -> dict:
         """After ui_tree() has been used, add what the action changed in that window. Without a
-        tree, say whether the receiving window's pixels changed (see _guard and screendiff)."""
+        tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
+        with show_change, attach a small capture of that area so no screenshot is needed to see it."""
+        self._last_area = None
         if self.a11y._last is None:
             before, self._pending = self._pending, None
             if before is not None:
@@ -146,6 +157,11 @@ class Desktop:
                     result["screen_changed"] = box is not None
                     if box:
                         result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
+                        self._last_area = Region(*box)
+                        if show_change:
+                            result["change_shot"] = self._change_shot(Region(*box))
+            if show_change and "change_shot" not in result and "screen_changed" not in result:
+                result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
             return result
         try:
             changes = self.a11y.changes(settle=SETTLE)
@@ -154,6 +170,34 @@ class Desktop:
         if changes is not None:
             result["changes"] = changes
         return result
+
+    def _padded(self, box: Region) -> Region:
+        """box with SHOT_PAD around it, clipped to the screen."""
+        x0, y0 = max(0, box.x - SHOT_PAD), max(0, box.y - SHOT_PAD)
+        x1, y1 = box.x + box.width + SHOT_PAD, box.y + box.height + SHOT_PAD
+        size = self.screen_size()
+        if size:
+            x1, y1 = min(x1, size[0]), min(y1, size[1])
+        return Region(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
+    def _change_shot(self, box: Region) -> dict:
+        """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS."""
+        reg = self._padded(box)
+        out = self._shot_path(None)
+        try:
+            self.backend.screenshot(str(out), reg)
+            width, height = png_size(out)
+            factor = min(1.0, (SHOT_MAX_TOKENS * 750 / (width * height)) ** 0.5)
+            if factor < 1:
+                self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
+                width, height = png_size(out)
+        except (CcdeskError, OSError, ValueError) as exc:
+            return {"error": f"could not capture the change: {exc}"}
+        shot = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
+                "origin": {"x": reg.x, "y": reg.y}}
+        if factor < 1:
+            shot["scale"] = round(factor, 3)
+        return shot
 
     def screen_size(self) -> tuple[int, int] | None:
         """Cached screen size, or None if it cannot be determined."""
@@ -333,9 +377,31 @@ class Desktop:
             if unchecked:
                 result["warning"] = ("could not check that this window is on show (on X11, install xwininfo); "
                                      "if the image shows something else, activate_window() it first")
+            hint = self._crop_hint(reg, result["approx_tokens"])
+            if hint:
+                result["hint"] = hint
             return result
 
         return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
+
+    def _crop_hint(self, reg: Region | None, tokens: int) -> str | None:
+        """Taken right after an action that changed a small area, a wide screenshot mostly pays
+        for pixels that did not change: say what the crop would cost. Once per action."""
+        area, self._last_area = self._last_area, None
+        if area is None or tokens < HINT_MIN_TOKENS:
+            return None
+        crop = self._padded(area)
+        if reg is None:
+            size = self.screen_size()
+            if not size:
+                return None
+            reg = Region(0, 0, *size)
+        if crop.width * crop.height * 4 > reg.width * reg.height:
+            return None
+        cost = round(crop.width * crop.height / 750)
+        return (f"the last action changed only {area.x},{area.y},{area.width},{area.height}: "
+                f'region="{crop.x},{crop.y},{crop.width},{crop.height}" shows it for ~{cost} tokens '
+                f"(this one: ~{tokens}), and show_change=true on the action shows it with no screenshot at all")
 
     def _shot_path(self, path: str | None) -> Path:
         if path:
@@ -358,7 +424,7 @@ class Desktop:
                 pass
 
     def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False,
-              expect_title: str | None = None) -> dict:
+              expect_title: str | None = None, show_change: bool = False) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -367,10 +433,10 @@ class Desktop:
             window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
-                                                   window))
+                                                   window), show_change)
 
         return self._act("click", {"x": x, "y": y, "button": button, "count": count, "force": force,
-                                     "expect_title": expect_title}, do)
+                                     "expect_title": expect_title, "show_change": show_change}, do)
 
     def move(self, x: int, y: int) -> dict:
         def do():
@@ -383,7 +449,7 @@ class Desktop:
         return self._act("move", {"x": x, "y": y}, do)
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
-             force: bool = False) -> dict:
+             force: bool = False, show_change: bool = False) -> dict:
         def do():
             self._ready()
             x0, y0 = self._point(from_x, from_y)
@@ -392,13 +458,13 @@ class Desktop:
             window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
-                                                    "duration_ms": ms}, window))
+                                                    "duration_ms": ms}, window), show_change)
 
         args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
-                "force": force}
+                "force": force, "show_change": show_change}
         return self._act("drag", args, do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -408,12 +474,12 @@ class Desktop:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
-            return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window))
+            return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), show_change)
 
-        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force}, do)
+        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}, do)
 
     def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None) -> dict:
+                  expect_title: str | None = None, show_change: bool = False) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
@@ -443,13 +509,13 @@ class Desktop:
                 result["replaced"] = True
             if enter:
                 result["submitted"] = True
-            return self._changes(self._with_window(result, window))
+            return self._changes(self._with_window(result, window), show_change)
 
         return self._act("type_text", {"text": text, "submit": submit, "replace": replace, "force": force,
-                                         "expect_title": expect_title}, do)
+                                         "expect_title": expect_title, "show_change": show_change}, do)
 
     def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
-                  force: bool = False, expect_title: str | None = None) -> dict:
+                  force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
         def do():
             combo = parse_key_combo(key, modifiers or [])
             self.policy.check_key(combo, bool(confirm))
@@ -458,10 +524,10 @@ class Desktop:
             self.backend.press_key(combo)
             if moves_focus(combo):
                 self.backend.sleep(FOCUS_SETTLE)  # so a type_text right after lands in the new place
-            return self._changes(self._with_window({"pressed": str(combo)}, window))
+            return self._changes(self._with_window({"pressed": str(combo)}, window), show_change)
 
         args = {"key": key, "modifiers": modifiers or [], "confirm": confirm, "force": force,
-                "expect_title": expect_title}
+                "expect_title": expect_title, "show_change": show_change}
         return self._act("press_key", args, do)
 
     def list_windows(self) -> dict:
@@ -710,8 +776,13 @@ class Desktop:
                 raise ValidationError("seconds must be a number") from None
             if not 0 <= s <= MAX_WAIT:
                 raise ValidationError(f"seconds must be between 0 and {MAX_WAIT:g}")
+            prev = self._prev_tool
             time.sleep(s)
-            return {"waited": s}
+            result = {"waited": s}
+            if s >= 1 and prev in DIFF_TOOLS and self.screen_diff and self.a11y._last is None:
+                result["hint"] = ("after an action, wait_for_change() returns as soon as the screen has "
+                                  "settled, at once if it already has, instead of guessing a delay")
+            return result
 
         return self._act("wait", {"seconds": seconds}, do)
 
@@ -754,6 +825,7 @@ class Desktop:
                 return {"changed": False, "waited_ms": waited,
                         "note": f"nothing changed in {limit:g}s; take a screenshot to see why"}
             settled = self.clock() - last_motion >= settle
+            self._last_area = Region(*area)
             return {"changed": True, "settled": settled, "waited_ms": waited,
                     "changed_area": dict(zip(("x", "y", "width", "height"), area))}
 

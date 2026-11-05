@@ -31,7 +31,9 @@ to read layout, or to double-check something visual: the picture is in its answe
 are screen pixels in the image (origin top-left); for a region add the returned origin.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
 Without a tree, actions return screen_changed (and changed_area): if false, the action did
-nothing yet. wait_for_change() waits for a page or dialog instead of wait() + screenshot.
+nothing yet. Pass show_change=true to see the changed area in the answer, with no screenshot after.
+wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
+regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
 HEADLESS = """
@@ -75,6 +77,14 @@ def with_picture(result: dict) -> dict:
         result["_picture"] = result["path"]
     else:
         result["note"] = "too big to show here: pass scale=0.5 or a region, or Read the path"
+    return result
+
+
+def with_change_shot(result: dict) -> dict:
+    """Show the change_shot capture in the answer, as screenshot() does; it is small by construction."""
+    shot = result.get("change_shot")
+    if isinstance(shot, dict) and shot.get("path") and os.path.getsize(shot["path"]) <= MAX_PICTURE_BYTES:
+        result["_picture"] = shot["path"]
     return result
 
 
@@ -136,11 +146,13 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-              force: bool = False, expect_title: str | None = None) -> dict:
+              force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
         After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
-        expect_title: refuse unless the receiving window's title contains it (a browser tab)."""
-        return desktop.click(x, y, button=button, count=count, force=force, expect_title=expect_title)
+        expect_title: refuse unless the receiving window's title contains it (a browser tab).
+        show_change=true: without a ui_tree, also show a small capture of what changed (~600 tokens at most)."""
+        return with_change_shot(desktop.click(x, y, button=button, count=count, force=force,
+                                       expect_title=expect_title, show_change=show_change))
 
     @tool
     def move(x: int, y: int) -> dict:
@@ -148,33 +160,39 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.move(x, y)
 
     @tool
-    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False) -> dict:
-        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release."""
-        return desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force)
+    def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False,
+             show_change: bool = False) -> dict:
+        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release. show_change: as in click."""
+        return with_change_shot(desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force, show_change=show_change))
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False) -> dict:
-        """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks."""
-        return desktop.scroll(x, y, dx=dx, dy=dy, force=force)
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
+        """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks.
+        show_change: as in click."""
+        return with_change_shot(desktop.scroll(x, y, dx=dx, dy=dy, force=force, show_change=show_change))
 
     @tool
     def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None) -> dict:
+                  expect_title: str | None = None, show_change: bool = False) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
         replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
         submit=true presses Return afterwards (a trailing newline does the same).
         After activate_window(), refuses if focus moved to another window; force=true types anyway.
         expect_title: refuse unless the focused window's title contains it (case-insensitive). A
-        browser window's title names its active tab, so this catches a tab switch; force does not skip it."""
-        return desktop.type_text(text, submit=submit, replace=replace, force=force, expect_title=expect_title)
+        browser window's title names its active tab, so this catches a tab switch; force does not skip it.
+        show_change: as in click."""
+        return with_change_shot(desktop.type_text(text, submit=submit, replace=replace, force=force,
+                                           expect_title=expect_title, show_change=show_change))
 
     @tool
     def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False,
-                  expect_title: str | None = None) -> dict:
+                  expect_title: str | None = None, show_change: bool = False) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
         Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
-        refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text."""
-        return desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force, expect_title=expect_title)
+        refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text.
+        show_change: as in click."""
+        return with_change_shot(desktop.press_key(key, modifiers=modifiers, confirm=confirm, force=force,
+                                           expect_title=expect_title, show_change=show_change))
 
     @tool
     def list_windows() -> dict:

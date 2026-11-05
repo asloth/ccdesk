@@ -45,7 +45,7 @@ def test_every_action_is_audited(make_desk, read_audit, fake):
     ]
     assert all(e["status"] == "ok" and "ts" in e for e in log)
     assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1, "force": False,
-                           "expect_title": None}
+                           "expect_title": None, "show_change": False}
     # Clipboard contents never reach the log, only their length.
     assert "secret-ish" not in json.dumps(log)
     assert log[9]["args"] == {"action": "set", "text_len": 10}
