@@ -76,11 +76,11 @@ def test_registered_tools(make_desk):
     assert props["screenshot"] == {"region", "path", "scale", "window"}
     assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
     assert props["list_monitors"] == set()
-    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title"}
-    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force"}
-    assert props["scroll"] == {"x", "y", "dx", "dy", "force"}
-    assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title"}
-    assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title"}
+    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title", "show_change"}
+    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "show_change"}
+    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "show_change"}
+    assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title", "show_change"}
+    assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title", "show_change"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
@@ -121,6 +121,18 @@ def test_screenshot_answers_with_the_picture(tmp_path, monkeypatch):
     monkeypatch.setattr(server, "MAX_PICTURE_BYTES", 1)  # would be rejected, and break the session
     blocks = server.compact(server.with_picture({"path": str(png)}))
     assert [b.type for b in blocks] == ["text"] and "too big" in blocks[0].text
+
+
+def test_change_shot_answers_with_its_picture(tmp_path):
+    from ccdesk import server
+    from tests.pngutil import write_png
+
+    png = tmp_path / "c.png"
+    write_png(png, 4, 4)
+    blocks = server.compact(server.with_change_shot({"screen_changed": True, "change_shot": {"path": str(png)}}))
+    assert [b.type for b in blocks] == ["text", "image"]
+    blocks = server.compact(server.with_change_shot({"screen_changed": False}))
+    assert [b.type for b in blocks] == ["text"]
 
 
 def test_headless_adds_instructions(make_desk):
