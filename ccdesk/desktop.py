@@ -48,6 +48,8 @@ KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
 RETURN = KeyCombo("Return")
+DELETE = KeyCombo("Delete")
+TYPED_POLLS = 5  # reads, POLL apart, for a typed value to reach the accessibility tree
 WINDOW_ACTIONS = ("move", "resize", "minimize", "maximize", "restore")
 MAX_WINDOW_COORD = 65_535
 WINDOW_POLLS = 8  # reads, POLL apart, for a window manager to finish before calling a request ignored
@@ -55,6 +57,12 @@ SHOT_PAD = 24  # screen pixels around changed_area in a change_shot
 SHOT_MAX_TOKENS = 600  # a bigger change_shot is scaled down to about this
 HINT_MIN_TOKENS = 400  # a screenshot cheaper than this gets no "crop it" hint
 DIFF_TOOLS = frozenset({"click", "drag", "scroll", "type_text", "press_key"})  # report screen_changed
+
+
+def shown(value) -> str:
+    """A field's text as a tree read shows it: whitespace collapsed, cut at 200 characters."""
+    text = " ".join(str(value or "").split())
+    return text[:200].removesuffix("…")
 
 
 class Desktop:
@@ -737,12 +745,40 @@ class Desktop:
                                   f"activate_window(); call ui_tree() on that window, or pass force=true")
             self._before_native()
             answer = self.a11y.set_value(key, text)
+            if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
+                # The write was ignored, not changed: web pages (Firefox, Chromium) take the call
+                # and keep the old value. Type it the way a person would instead.
+                return self._type_into(key, node, label, text, force)
             if not answer["verified"]:
                 raise CcdeskError(f"{key} ({label}) holds {answer.get('value')!r} after writing: the app changed or "
                                   f"rejected it. Check the field; don't repeat this blindly")
             return self._changes(self._in_tree_window({"set": label, "verified": True, "chars": len(text)}))
 
         return self._act("set_value", {"ref": ref, "text": text, "force": force}, do)
+
+    def _type_into(self, key: str, node: dict, label: str, text: str, force: bool) -> dict:
+        """set_value's fallback: click the field, select all, type, and read the value back."""
+        x, y, w, h = node["box"]
+        px, py = self._point(x + w // 2, y + h // 2)
+        window = self._guard(force, (px, py))
+        self.backend.click(px, py, 1, 1)
+        self.backend.sleep(KEY_SETTLE)
+        self.backend.press_key(SELECT_ALL)
+        self.backend.sleep(KEY_SETTLE)
+        if text:
+            self.backend.type_text(text)
+        else:
+            self.backend.press_key(DELETE)
+        got = None
+        for _ in range(TYPED_POLLS):
+            self.backend.sleep(POLL)
+            got = self.a11y.resolve(key).get("value")
+            if shown(got) == shown(text) or (not got and shown(text) == shown(node["name"])):
+                result = {"set": label, "verified": True, "chars": len(text), "typed": True,
+                          "note": "the app ignored the direct write, so ccdesk clicked the field and typed it"}
+                return self._changes(self._with_window(result, window))
+        raise CcdeskError(f"{key} ({label}) ignored the direct write, and after clicking it and typing it holds "
+                          f"{got!r}. Check the field with a screenshot; don't repeat this blindly")
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()

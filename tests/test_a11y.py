@@ -434,3 +434,40 @@ def test_set_value_is_refused_by_read_only_and_for_another_window(make_desk, hel
     with pytest.raises(PolicyError, match="Terminal"):
         d.set_value("e2", "x")
     assert d.set_value("e2", "x", force=True)["verified"]
+
+
+def test_set_value_types_when_a_web_page_ignores_the_write(make_desk, helper, fake, no_settle, monkeypatch):
+    """Firefox takes set_text_contents on an <input> and keeps the old value."""
+    path = "3.0.29.2"
+    helper.values[path] = {"verified": False, "value": "me@x.org"}  # unchanged: ignored
+    typed = []
+
+    def type_text(text):
+        typed.append(text)
+        helper.nodes[path]["value"] = text
+
+    monkeypatch.setattr(fake, "type_text", type_text)
+    d = make_desk()
+    d.ui_tree()
+    r = d.set_value("e2", "Ana Torres")
+    assert r["verified"] is True and r["typed"] is True and "typed it" in r["note"]
+    assert ("click", 135 + 74, 179 + 10, 1, 1) in fake.calls  # the centre of the field
+    assert typed == ["Ana Torres"]
+
+
+def test_set_value_says_so_when_typing_does_not_take_either(make_desk, helper, fake, no_settle, monkeypatch):
+    helper.values["3.0.29.2"] = {"verified": False, "value": "me@x.org"}
+    monkeypatch.setattr(fake, "type_text", lambda text: None)
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(CcdeskError, match="ignored the direct write.*holds 'me@x.org'"):
+        d.set_value("e2", "Ana Torres")
+
+
+def test_set_value_does_not_type_over_a_value_the_app_changed(make_desk, helper, fake, no_settle):
+    helper.values["3.0.29.2"] = {"verified": False, "value": "ANA"}
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(CcdeskError, match="holds 'ANA'"):
+        d.set_value("e2", "ana")
+    assert not any(c[0] == "click" for c in fake.calls)

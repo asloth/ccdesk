@@ -325,8 +325,12 @@ def set_value(req):
         if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
             return {"error": "this field is read-only"}
         if not Atspi.EditableText.set_text_contents(obj, text):
-            return {"error": "the app refused the new text"}
+            # Refused: say what it holds, so ccdesk can type it instead (web pages do this).
+            return {"verified": False, "value": full_text(obj)[:MAX_TEXT], "refused": True}
         read, same = lambda: full_text(obj), lambda got: got == text
+    elif role in EDITABLE:
+        # A text field with no way to write it directly (Chromium's web entries): ccdesk types it.
+        return {"verified": False, "value": text_of(obj, role) or "", "refused": True}
     else:
         return {"error": f"{role} has no settable value: use click_element, then type_text"}
     got = read()

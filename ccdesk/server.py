@@ -244,9 +244,9 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
-        """Replace the value of a field, slider or spin button of a native app from ui_tree(), in one
-        call, and read it back: an answer means the app holds it. Refuses password fields. Web pages
-        don't take it: in a browser, use click_element, then type_text."""
+        """Replace the value of a field, slider or spin button from ui_tree() in one call, and read it
+        back: an answer means the app holds it. Refuses password fields. If the app ignores the write
+        (web pages do), it clicks the field, selects all and types the text instead (typed: true)."""
         return desktop.set_value(ref, text, force=force)
 
     @tool
