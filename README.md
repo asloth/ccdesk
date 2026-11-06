@@ -249,7 +249,7 @@ while it is on.
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
-| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. For native apps: Firefox and Chromium web forms refuse or ignore it (it says so), so there use `click_element`, then `type_text`. |
+| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. When the app ignores or refuses the write and keeps its old value, as Firefox and Chromium web forms do, it clicks the field, selects all and types the text, then reads it back (`typed: true`). |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a

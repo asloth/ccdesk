@@ -98,10 +98,11 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   one (`activated` in the result; the pointer does not move), else a click at its centre. A ref
   keeps pointing at the same element across `ui_tree()` calls; if it is gone or changed, the
   call says so.
-- **In a native app, fill a field with `set_value("e2", "text")`**: one call instead of a click
-  and a `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web
-  pages don't take it (tested on Firefox and Chromium): in a browser, use `click_element`, then
-  `type_text`.
+- **Fill a field with `set_value("e2", "text")`**: one call instead of a click and a
+  `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web pages
+  ignore the direct write, so there it clicks the field, selects all and types (`typed: true`
+  in the answer); either way a success means the field holds the text. Don't fall back to
+  clicking fields by coordinates in a browser when you have their refs.
 - **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
   `type_text` and `press_key` return `changes`: the lines of that window that changed
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
