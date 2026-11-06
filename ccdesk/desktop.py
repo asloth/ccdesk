@@ -391,14 +391,9 @@ class Desktop:
         if area is None or tokens < HINT_MIN_TOKENS:
             return None
         crop = self._padded(area)
-        if reg is None:
-            size = self.screen_size()
-            if not size:
-                return None
-            reg = Region(0, 0, *size)
-        if crop.width * crop.height * 4 > reg.width * reg.height:
-            return None
         cost = round(crop.width * crop.height / 750)
+        if cost * 2 > tokens:  # a saving worth a sentence, at the scale actually paid
+            return None
         return (f"the last action changed only {area.x},{area.y},{area.width},{area.height}: "
                 f'region="{crop.x},{crop.y},{crop.width},{crop.height}" shows it for ~{cost} tokens '
                 f"(this one: ~{tokens}), and show_change=true on the action shows it with no screenshot at all")

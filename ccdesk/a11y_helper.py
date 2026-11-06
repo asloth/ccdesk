@@ -47,6 +47,9 @@ STATES = {
 EDITABLE = {"entry", "text", "password text", "document text"}
 NUMERIC = {"slider", "spin button", "scroll bar", "dial"}
 MAX_VISIT = 20000
+# Shown on a node whose children are not walked: it says it manages its descendants, AT-SPI's mark
+# for huge or virtual containers (a spreadsheet's cells). Walking them took past the timeout.
+UNLISTED = "children not listed"
 MAX_TEXT = 200
 
 
@@ -118,6 +121,8 @@ def describe(obj, path, depth):
     except Exception:
         pass
     flags = [k for k, v in STATES.items() if states.contains(v)]
+    if states.contains(Atspi.StateType.MANAGES_DESCENDANTS):
+        flags.append(UNLISTED)
     if not states.contains(Atspi.StateType.ENABLED) and role in ACTIONABLE:
         flags.append("disabled")
     if flags:
@@ -172,6 +177,8 @@ def is_active(frame):
 
 
 def interesting(node):
+    if UNLISTED in node.get("states", ()):
+        return True  # the only sign of what is inside
     role, name = node["role"], node["name"]
     if role in NOISE and not name:
         return False
@@ -208,6 +215,8 @@ def read_tree(req):
                 truncated = True
                 return
             out.append(node)
+        if UNLISTED in node.get("states", ()):
+            return
         for i, child in children(obj):
             walk(child, f"{p}.{i}", depth + 1, here)
 

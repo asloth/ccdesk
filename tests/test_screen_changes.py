@@ -190,3 +190,12 @@ def test_a_fixed_wait_after_an_action_points_to_wait_for_change(make_desk, fake,
     assert "hint" not in d.wait(0.5)  # a short pause is fine
     d.activate_window("Terminal")
     assert "hint" not in d.wait(2)  # after a window change there is nothing to compare
+
+
+def test_no_crop_hint_when_the_crop_saves_little(make_desk, fake):
+    """A half-scale shot of a monitor costs about what a full-scale crop of a big change does."""
+    fake.size = (1920, 1080)
+    d = make_desk(screen_diff=True)
+    fake.effects = [(100, 50, 600, 500, WHITE)]  # ~470 tokens to crop; the half-scale shot is ~690
+    d.click(250, 320)
+    assert "hint" not in d.screenshot(scale=0.5)
