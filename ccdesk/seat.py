@@ -44,8 +44,15 @@ def default_timeout() -> float:
         return DEFAULT_TIMEOUT
 
 
-def seat_key(backend_name: str, env: dict) -> str:
-    """The screen this backend drives: its X display, or its Wayland socket."""
+def seat_key(backend_name: str, env: dict, agent: str | None = None) -> str:
+    """The screen this backend drives: its X display, or its Wayland socket. With `agent`, one
+    seat per agent on that screen: an own-pointer agent does not share the user's pointer or
+    keyboard, so it only has to serialize its own threads."""
+    key = _screen_key(backend_name, env)
+    return f"{key}-agent-{re.sub(r'[^A-Za-z0-9_.-]', '_', agent)}" if agent else key
+
+
+def _screen_key(backend_name: str, env: dict) -> str:
     if backend_name == "x11":
         raw = env.get("DISPLAY")
     else:
