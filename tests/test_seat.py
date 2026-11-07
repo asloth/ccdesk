@@ -286,3 +286,35 @@ def test_the_drawn_cursor_moves_after_the_observation(make_desk, fake):
     d.click(10, 20)
     assert order[-1] == ("cursor", False)
     assert ("shot", False) in order[:-1]
+
+
+def test_one_servers_own_calls_do_not_overlap_an_observation(make_desk, fake):
+    """MCP runs each tool call on a worker thread: a second call of the same agent must not send
+    input (and reset the before-capture) while the first one is still observing outside the seat."""
+    import threading
+    d = make_desk(screen_diff=True)
+    observing = threading.Event()
+    release = threading.Event()
+    events = []
+    real_observe = d._observe
+
+    def slow_observe(result, show_change=False):
+        observing.set()
+        release.wait(5)
+        events.append("observed")
+        return real_observe(result, show_change)
+
+    d._observe = slow_observe
+    real_click = fake.click
+    fake.click = lambda *a: (events.append("click"), real_click(*a))[1]
+    first = threading.Thread(target=d.click, args=(10, 20))
+    first.start()
+    assert observing.wait(5)
+    second = threading.Thread(target=d.click, args=(30, 40))
+    second.start()
+    second.join(0.3)
+    assert events == ["click"]  # the second click waits for the first observation
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert events == ["click", "observed", "click", "observed"]

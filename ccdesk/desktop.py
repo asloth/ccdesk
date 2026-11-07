@@ -11,6 +11,7 @@ import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -104,6 +105,7 @@ class Desktop:
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
         self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
         self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
+        self._busy = threading.RLock()  # one input action of this server at a time, observation included
         self._deferring = False  # inside an input action: _changes() leaves the observing to _act
         self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
 
@@ -116,33 +118,10 @@ class Desktop:
             if (policy_tool or tool) in INPUT_TOOLS:
                 # Wait for the user before taking the seat: a human at the mouse must not stall the
                 # other agents too. The action's own _yield_to_user() calls then return this result.
-                try:
-                    if tool in YIELDING_TOOLS:
-                        self._yield_done = self._yield_to_user()
-                    outer = self._deferring
-                    self._deferring = True
-                    try:
-                        with self.seat:  # the focus check and the input itself, with no other agent in between
-                            try:
-                                if self._yield_done is not None:
-                                    self._still_idle()  # the user may have come back while we queued
-                                result = fn()
-                            finally:
-                                if tool in YIELDING_TOOLS:
-                                    self.seat.note_input(self.clock())
-                    finally:
-                        self._deferring = outer
-                        deferred, self._deferred = self._deferred, None
-                    if deferred is not None and not outer:
-                        # Out of the seat: settling and re-reading the window only reads the screen,
-                        # so the other agents can send their input meanwhile.
-                        result = self._observe(*deferred)
-                    elif deferred is not None:
-                        self._deferred = deferred  # a nested action: the outermost one observes
-                finally:
-                    self._yield_done = None
-                    if not self._deferring:
-                        self._flush_cursor()
+                # _busy keeps this server's own calls (MCP runs each on a worker thread) from sharing
+                # the state below while one of them observes outside the seat.
+                with self._busy:
+                    result = self._seated(tool, fn)
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -230,6 +209,38 @@ class Desktop:
             pause = min(max((need - idle) / 1000, 0.1), MAX_YIELD - waited)
             self.backend.sleep(pause)
             waited += pause
+
+    def _seated(self, tool: str, fn):
+        """Run an input action: its input under the seat lock, then what it changed, observed once
+        the seat is free so the other agents' input can go meanwhile."""
+        try:
+            if tool in YIELDING_TOOLS:
+                self._yield_done = self._yield_to_user()
+            outer = self._deferring
+            self._deferring = True
+            try:
+                with self.seat:  # the focus check and the input itself, with no other agent in between
+                    try:
+                        if self._yield_done is not None:
+                            self._still_idle()  # the user may have come back while we queued
+                        result = fn()
+                    finally:
+                        if tool in YIELDING_TOOLS:
+                            self.seat.note_input(self.clock())
+            finally:
+                self._deferring = outer
+                deferred, self._deferred = self._deferred, None
+            if deferred is not None and not outer:
+                # Out of the seat: settling and re-reading the window only reads the screen,
+                # so the other agents can send their input meanwhile.
+                result = self._observe(*deferred)
+            elif deferred is not None:
+                self._deferred = deferred  # a nested action: the outermost one observes
+        finally:
+            self._yield_done = None
+            if not self._deferring:
+                self._flush_cursor()
+        return result
 
     def _changes(self, result: dict, show_change: bool = False) -> dict:
         """What an action changed, filled in by _observe(). Inside an input action it runs after
