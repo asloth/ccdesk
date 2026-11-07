@@ -104,7 +104,9 @@ class Desktop:
         self.backend = backend or get_backend()
         # With several agents on one screen: this one's name, and the lock they all share.
         self.agent = agent
-        self.seat = seat or SeatLock(seat_key(self.backend.name, self.backend.env))
+        # An own-pointer agent does not use the user's pointer or keyboard: its seat is its own.
+        own = self.backend.own_pointer and bool(agent)
+        self.seat = seat or SeatLock(seat_key(self.backend.name, self.backend.env, agent if own else None))
         # The agent's drawn cursor (X11 only, and only with an agent name): a visual, moved after each input.
         self.cursor = cursor if self.agent and self.backend.name == "x11" else None
         self.a11y = a11y or A11y()
@@ -729,7 +731,11 @@ class Desktop:
             self._yielded = self._yield_to_user()
             self.backend.activate_window(window)
             self._target = window  # input tools now refuse to go anywhere else (see _guard)
-            return self._with_window({"activated": window.to_dict()}, None)
+            result = self._with_window({"activated": window.to_dict()}, None)
+            note = self.backend.take_note()
+            if note:
+                result["note"] = note
+            return result
 
         return self._act("activate_window", {"title_or_id": title_or_id}, do)
 

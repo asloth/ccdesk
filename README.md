@@ -233,6 +233,28 @@ action holds it from 0.48 s to 0.13 s, and both finished in 7.4 s instead of 14.
 Because another agent may act while this one compares, a `screen_changed` can now include that
 agent's drawn cursor or its window moving over this one.
 
+#### An own pointer and keyboard for each agent (X11)
+
+`ccdesk mcp --agent bot-1 --own-pointer` gives the agent its own pointer and keyboard focus, so it
+does not use yours and does not wait for the other agents. At startup it runs
+`xinput create-master ccdesk-bot-1`, which adds a master pointer and keyboard (with their XTEST
+devices) that only this agent drives. Moves, clicks, drags, scrolling, typing and key presses go
+through them; your pointer stays where it is and your keyboard focus does not change. It
+needs `xinput`, libX11, libXi and libXtst, and it is X11 only. It is refused without `--agent` and
+on other backends. Use a different name for each agent: the devices are named after it, and a pair
+with the same name left behind by a crash is removed at startup. They are removed again when the
+server exits.
+
+`activate_window` sets the agent's keyboard focus and leaves your window manager alone. Only a
+window that is not on screen (minimized, or on another desktop) goes through the normal
+activation, which does move your focus once; the answer says so in `note`. A window another
+window covers still receives no clicks: the click is refused, as before. The focus check
+compares against the agent's own focus and the click check against the window under the agent's
+pointer. Each own-pointer agent has its own input lock, so two of them type at the same time.
+`--yield-ms` still works but is not needed. The drawn cursor follows the agent's pointer.
+Characters that have no key in your keymap are typed through a spare keycode that is remapped
+for a moment, as xdotool does. `doctor` shows the device ids, or why they are unavailable.
+
 #### A named private screen for several agents
 
 Each `--headless` server starts its own private screen, so two of them never see each other's

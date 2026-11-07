@@ -20,7 +20,8 @@ def _policy_flags(p: argparse.ArgumentParser) -> None:
                    help='extra key combos that need confirm=true, e.g. "super+x,ctrl+alt+super+p"')
     p.add_argument("--yield-ms", metavar="MS", type=_yield_ms, default=0,
                    help="on your own screen: hold input until you have left mouse and keyboard alone this "
-                        "long (e.g. 3000; needs xprintidle). Default 0, never wait")
+                        "long (e.g. 3000; needs xprintidle). Default 0, never wait. Not needed with "
+                        "--own-pointer, which never touches your pointer or keyboard")
 
 
 def _size_flags(p: argparse.ArgumentParser) -> None:
@@ -88,6 +89,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cursor-color", metavar="#RRGGBB",
                    help="with --agent on X11: the colour of this agent's drawn cursor (default: one picked from its name)")
     p.add_argument("--no-cursor", action="store_true", help="with --agent: do not draw a cursor for this agent")
+    p.add_argument("--own-pointer", action="store_true",
+                   help="with --agent, X11 only: give this agent its own pointer and keyboard focus "
+                        "(an XInput2 master pair made with xinput), so it never moves yours and "
+                        "agents do not take turns; removed when the server exits")
     _headless_flags(p)
 
     p = sub.add_parser("firefox", help="start your Firefox with automation on (for install --firefox mine)")
@@ -199,6 +204,12 @@ def _mcp(args) -> int:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     else:
         backend = get_backend(args.backend)
+    own = None
+    if args.own_pointer:
+        own = _own_pointer(args, backend)
+        if own is None:
+            return 1
+        backend = own.backend
     cursor = None
     if args.agent and not args.no_cursor and backend.name == "x11":
         if args.cursor_color and not valid_color(args.cursor_color):
@@ -223,9 +234,39 @@ def _mcp(args) -> int:
                                               "headless": headless.info() if headless else None}, "ok")
         serve(desktop)
     finally:
+        if own:
+            own.mpx.close()
         if headless:
             headless.stop()  # a joined screen's stop does nothing
     return 0
+
+
+def _own_pointer(args, backend):
+    """The agent's own pointer and keyboard: a small object with .mpx and .backend, or None after
+    printing why it cannot be had. Its devices are removed when the process exits, however it ends."""
+    from types import SimpleNamespace
+
+    from ccdesk.backends.mpx import Mpx, unavailable_reason
+    from ccdesk.backends.x11_own import OwnPointerBackend
+    from ccdesk.errors import CcdeskError
+
+    if not args.agent:
+        print("ccdesk mcp: --own-pointer needs --agent NAME (the name its devices are made with)", file=sys.stderr)
+        return None
+    reason = unavailable_reason(backend.name, backend.which)
+    if reason:
+        print(f"ccdesk mcp --own-pointer: {reason}", file=sys.stderr)
+        return None
+    mpx = Mpx(args.agent, backend.env)
+    try:
+        mpx.create()
+    except CcdeskError as exc:
+        print(f"ccdesk mcp --own-pointer: {exc}", file=sys.stderr)
+        return None
+    # Exit through the finally block and atexit, so the devices go even when the client closes us.
+    for sig in (signal.SIGTERM, signal.SIGHUP):
+        signal.signal(sig, lambda *_: sys.exit(0))
+    return SimpleNamespace(mpx=mpx, backend=OwnPointerBackend(mpx, env=backend.env))
 
 
 def _screen(args) -> int:
