@@ -37,7 +37,10 @@ wait_for_change() waits for a page or dialog instead of wait() + screenshot. Ver
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true.
-To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each."""
+To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each.
+Coordinates are checked against the layout of the screenshot you measured them on: if a window moved,
+opened, closed or restacked since then, the input is refused with code=gui_frame_stale and a fresh
+screenshot comes back in the message. Read that one and plan again; force=true sends it anyway."""
 HEADLESS = """
 This server works on its own invisible screen, not the user's: it starts empty, so launch()
 the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
