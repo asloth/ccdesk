@@ -140,3 +140,12 @@ def test_audit_has_the_batch_and_its_steps(make_desk, fake, read_audit):
     batch = read_audit()[-1]
     assert batch["status"] == "ok" and len(batch["args"]["steps"]) == 2
     assert batch["result"] == {"done": 2}
+
+
+def test_batch_caps_the_text_of_all_steps(make_desk, fake):
+    from ccdesk.desktop import MAX_TEXT
+    from ccdesk.errors import ValidationError
+    d = make_desk()
+    half = "x" * (MAX_TEXT // 2 + 1)
+    with pytest.raises(ValidationError, match="at most"):
+        d.batch([{"tool": "type_text", "text": half}, {"tool": "type_text", "text": half}])

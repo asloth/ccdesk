@@ -964,6 +964,10 @@ class Desktop:
                 if not ok:
                     raise ValidationError(f"step {i}: wait in a batch takes 0 to {MAX_BATCH_WAIT:g} seconds")
             checked.append((name, args))
+        typed = sum(len(a["text"]) for _, a in checked if isinstance(a.get("text"), str))
+        if typed > MAX_TEXT:
+            # Every other agent on the screen waits while a batch holds the seat.
+            raise ValidationError(f"a batch types at most {MAX_TEXT} characters in all, got {typed}")
         return checked
 
     def batch(self, steps: list[dict], show_change: bool = False) -> dict:
