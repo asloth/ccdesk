@@ -26,7 +26,8 @@ ccdesk drives the local Linux desktop. Work in a loop: look, do ONE action, veri
 Look with ui_tree() first (text, no pixels) and act on a line with click_element(ref) or
 set_value(ref, text). After a ui_tree(), actions return `changes` (the lines that changed in
 that window): verify with it instead of another look. Refs stay valid across ui_tree() calls.
-Fall back to screenshot() when there is no tree (canvas, images, video, apps that publish none),
+When a window has no useful tree, ui_tree() attaches a small picture of it (fallback_shot).
+Fall back to screenshot() for canvas, images, video, apps that publish none,
 to read layout, or to double-check something visual: the picture is in its answer. Coordinates
 are screen pixels in the image (origin top-left); for a region add the returned origin.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
@@ -78,6 +79,14 @@ def with_picture(result: dict) -> dict:
         result["_picture"] = result["path"]
     else:
         result["note"] = "too big to show here: pass scale=0.5 or a region, or Read the path"
+    return result
+
+
+def with_tree_shot(result: dict) -> dict:
+    """Show ui_tree's fallback_shot in the answer, as screenshot() does."""
+    shot = result.get("fallback_shot")
+    if isinstance(shot, dict) and shot.get("path") and os.path.getsize(shot["path"]) <= MAX_PICTURE_BYTES:
+        result["_picture"] = shot["path"]
     return result
 
 
@@ -226,13 +235,15 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
         """The on-screen elements of a window as text, from the accessibility tree: one line per
         button, field, checkbox, link, heading or text, with its value, states and screen box.
         Usually 5-20x cheaper than a screenshot. window: title substring (default: the active
         window). page=true: only the web page in a browser. query: only elements containing it.
-        Act on a line with click_element(ref)."""
-        return desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes)
+        Act on a line with click_element(ref). With no useful tree (window not on the accessibility
+        bus, or almost empty) it attaches a small picture of the window; shot_fallback=false: never."""
+        return with_tree_shot(desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes,
+                                              shot_fallback=shot_fallback))
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,

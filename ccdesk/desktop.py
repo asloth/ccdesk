@@ -65,6 +65,7 @@ MAX_WINDOW_COORD = 65_535
 WINDOW_POLLS = 8  # reads, POLL apart, for a window manager to finish before calling a request ignored
 SHOT_PAD = 24  # screen pixels around changed_area in a change_shot
 SHOT_MAX_TOKENS = 600  # a bigger change_shot is scaled down to about this
+TREE_SHOT_MAX_TOKENS = 1500  # the picture ui_tree attaches when the window has no useful tree
 HINT_MIN_TOKENS = 400  # a screenshot cheaper than this gets no "crop it" hint
 DIFF_TOOLS = frozenset({"click", "drag", "scroll", "type_text", "press_key"})  # report screen_changed
 
@@ -73,6 +74,26 @@ def shown(value) -> str:
     """A field's text as a tree read shows it: whitespace collapsed, cut at 200 characters."""
     text = " ".join(str(value or "").split())
     return text[:200].removesuffix("…")
+
+
+TREE_SHOT_NOTE = ("A picture of the window is attached: work from it. Screen pixel = "
+                  "origin + pixel/scale")
+# Roles that count as something to act on (the same idea as ACTIONABLE in a11y_helper.py).
+ACTIONABLE_ROLES = frozenset({
+    "push button", "toggle button", "button", "entry", "password text", "text", "check box",
+    "radio button", "combo box", "link", "menu item", "check menu item", "radio menu item",
+    "page tab", "spin button", "slider", "list item", "tree item", "switch",
+})
+
+
+def tree_is_empty(text: str) -> bool:
+    """A tree too thin to work from: fewer than 3 lines and none with a role to act on. An
+    Electron or canvas window gives just its frame and title (0-2 lines, no button or field),
+    while the smallest real dialog has a message and an OK (2 lines, one a button)."""
+    lines = [ln.split(None, 1)[1] for ln in text.splitlines() if ln.strip() and len(ln.split(None, 1)) == 2]
+    if len(lines) >= 3:
+        return False
+    return not any(ln.startswith(role + " ") or ln == role for ln in lines for role in ACTIONABLE_ROLES)
 
 
 class Desktop:
@@ -298,20 +319,38 @@ class Desktop:
     def _change_shot(self, box: Region) -> dict:
         """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS."""
         reg = self._padded(box)
-        out = self._shot_path(None)
         try:
-            self.backend.screenshot(str(out), reg)
-            width, height = png_size(out)
-            factor = min(1.0, (SHOT_MAX_TOKENS * 750 / (width * height)) ** 0.5)
-            if factor < 1:
-                self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
-                width, height = png_size(out)
+            shot, factor = self._scaled_capture(reg, SHOT_MAX_TOKENS)
         except (CcdeskError, OSError, ValueError) as exc:
             return {"error": f"could not capture the change: {exc}"}
-        shot = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
-                "origin": {"x": reg.x, "y": reg.y}}
         if factor < 1:
             shot["scale"] = round(factor, 3)
+        return shot
+
+    def _scaled_capture(self, reg: Region, max_tokens: int) -> tuple[dict, float]:
+        """Capture reg, scaled down to about max_tokens (tokens ~ width*height/750).
+        Returns the shot (path, width, height, approx_tokens, origin) and the scale factor used."""
+        out = self._shot_path(None)
+        self.backend.screenshot(str(out), reg)
+        width, height = png_size(out)
+        factor = min(1.0, (max_tokens * 750 / (width * height)) ** 0.5)
+        if factor < 1:
+            self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
+            width, height = png_size(out)
+        return ({"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
+                 "origin": {"x": reg.x, "y": reg.y}}, factor)
+
+    def _tree_fallback_shot(self, title: str | None) -> dict:
+        """A picture of one window for ui_tree() when it has no useful tree. Raises CcdeskError if
+        the window cannot be found or captured."""
+        if title is None:
+            wid = self.backend.active_window()
+            if wid is None:
+                raise CcdeskError("no active window to capture")
+            title = wid
+        _, reg, _ = self._shown_window_region(title)
+        shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
+        shot["scale"] = round(factor, 3) if factor < 1 else 1.0
         return shot
 
     def screen_size(self) -> tuple[int, int] | None:
@@ -762,14 +801,24 @@ class Desktop:
         return self._act("list_monitors", {}, do)
 
     def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
         def do():
             limit = check_int("max_nodes", max_nodes, 1, 2000)
+            q = (query or "").strip() or None
             try:
-                result = self.a11y.tree(window or None, (query or "").strip() or None, bool(page), limit)
+                result = self.a11y.tree(window or None, q, bool(page), limit)
             except WindowNotFound as exc:
                 why = self._a11y_diagnosis(window or None)
-                raise CcdeskError(f"{exc}. {why}" if why else str(exc)) from None
+                message = f"{exc}. {why}" if why else str(exc)
+                if shot_fallback and not q and why:
+                    # On screen but not on the bus: the window exists, so show it.
+                    try:
+                        shot = self._tree_fallback_shot(window or None)
+                    except (CcdeskError, OSError, ValueError):
+                        shot = None
+                    if shot:
+                        return {"fallback_shot": shot, "note": f"{message}. {TREE_SHOT_NOTE}"}
+                raise CcdeskError(message) from None
             text = result["tree"]
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
@@ -777,9 +826,18 @@ class Desktop:
             if self.backend.name in ("wayland", "kde") and "origin" not in result:
                 result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
                                   "not say where it is); verify with a screenshot")
+            if shot_fallback and not q and tree_is_empty(text):
+                try:
+                    result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
+                except (CcdeskError, OSError, ValueError):
+                    pass  # keep the (thin) tree; the model can still call screenshot()
+                else:
+                    result["note"] = " ".join(filter(None, [result.get("note"),
+                                                            f"the tree is nearly empty. {TREE_SHOT_NOTE}"]))
             return result
 
-        args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes}
+        args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
+                "shot_fallback": shot_fallback}
         return self._act("ui_tree", args, do,
                          loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
 
