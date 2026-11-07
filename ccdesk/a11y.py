@@ -327,6 +327,21 @@ class A11y:
             changed.append("gone: " + " ".join(gone))
         return "\n".join(changed)
 
+    def refresh_secret(self) -> None:
+        """Re-read whether a password field is focused, keeping the lines changes() compares with:
+        a batch types after its own clicks, with no observation in between to learn it."""
+        with self._lock:
+            if self._last is None:
+                return
+            _, nodes = self._read(dict(self._last["request"], settle_ms=0))
+            self._last["secret"] = secret_focused(nodes)
+
+    def forget(self) -> None:
+        """Stop comparing with the latest tree: it was too thin to work from (or of another window),
+        so actions report pixel changes instead."""
+        with self._lock:
+            self._last = None
+
     def on_secret_field(self) -> bool:
         """Whether the latest read of the tree had a password field focused. Costs no extra read,
         so it knows nothing without a tree, or if focus moved by other means since."""

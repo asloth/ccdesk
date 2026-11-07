@@ -263,11 +263,9 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def batch(steps: list[dict], show_change: bool = False) -> dict:
-        """Run 1-20 input steps in one call, e.g. fill a form from one ui_tree(): steps=[{"tool":"set_value",
-        "ref":"e3","text":"Ana"},{"tool":"click_element","ref":"e7"}]. Tools: click_element, set_value, type_text,
-        press_key, click, scroll, move, drag, activate_window, wait (max 5 s). Same arguments as each tool, no
-        show_change. Stops at the first failure; returns done, steps, failed and the changes after the last step.
-        Refs are those of the latest ui_tree(); a step that changes the page can invalidate later refs."""
+        """Several input steps in one call, e.g. a form from one ui_tree(): steps=[{"tool":"set_value","ref":"e3",
+        "text":"Ana"},{"tool":"click_element","ref":"e7"}]. Each step takes that tool's arguments. Stops at the
+        first failure; returns the changes after the last step. Other agents wait while it runs."""
         return with_change_shot(desktop.batch(steps, show_change=show_change))
 
     @tool

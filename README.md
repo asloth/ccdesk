@@ -199,8 +199,10 @@ servers only at startup.
 ### Several agents on one screen
 
 A screen has one pointer and one keyboard focus. Every input action takes a lock on the display
-for its whole run (the focus check, the clicks or keys), so two ccdesk servers on the same
-display take turns one action at a time and never interleave inside an action. Give each server
+for the focus check and the clicks or keys, so two ccdesk servers on the same display take turns
+one action at a time and never interleave inside an action. Waiting for the app to settle and
+comparing the window afterwards only reads the screen, so it runs after the lock is released.
+A `batch` call holds the lock for all of its steps. Give each server
 a name with `--agent`:
 
 ```sh
@@ -226,6 +228,10 @@ itself off and `doctor` says so. The colour is picked from the name; set it with
 
 In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
 in 4.1 s. With no lock, both windows came out with letters from both agents.
+With two agents typing 15 words each and no `ui_tree`, comparing outside the lock cut the time an
+action holds it from 0.48 s to 0.13 s, and both finished in 7.4 s instead of 14.4 s (2026-11-07).
+Because another agent may act while this one compares, a `screen_changed` can now include that
+agent's drawn cursor or its window moving over this one.
 
 #### A named private screen for several agents
 

@@ -132,6 +132,7 @@ class Desktop:
         self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
         self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
         self._busy = threading.RLock()  # one input action of this server at a time, observation included
+        self._batching = False  # inside batch(): steps keep the first baseline and re-check password focus
         self._deferring = False  # inside an input action: _changes() leaves the observing to _act
         self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
 
@@ -441,6 +442,8 @@ class Desktop:
                 raise PolicyError(f"{window.title!r} ({window.id}) does not contain {expect_title.strip()!r}: "
                                   f"the user may have switched tabs. Take a screenshot, switch back, then retry")
         self._after = None  # wait_for_change() compares with the screen after this action, not before
+        if self._batching and self._pending is not None:
+            return window  # a batch is compared with the screen before its first step
         self._pending = None
         if self.a11y._last is None:
             region = self._window_region(window)
@@ -648,6 +651,8 @@ class Desktop:
             # A typed trailing newline did not submit Firefox's address bar: send a real Return instead.
             body = text[:-1] if text.endswith("\n") else text
             enter = bool(submit) or body != text
+            if self._batching:
+                self.a11y.refresh_secret()  # an earlier step may have clicked into a password field
             if self.a11y.on_secret_field():
                 raise PolicyError("the focused field is a password field: ccdesk does not type into those. "
                                   "Ask the user to type it themselves")
@@ -817,6 +822,7 @@ class Desktop:
                     except (CcdeskError, OSError, ValueError):
                         shot = None
                     if shot:
+                        self.a11y.forget()  # a tree of another window: actions compare pixels now
                         return {"fallback_shot": shot, "note": f"{message}. {TREE_SHOT_NOTE}"}
                 raise CcdeskError(message) from None
             text = result["tree"]
@@ -832,6 +838,7 @@ class Desktop:
                 except (CcdeskError, OSError, ValueError):
                     pass  # keep the (thin) tree; the model can still call screenshot()
                 else:
+                    self.a11y.forget()  # nothing to compare: actions report pixel changes instead
                     result["note"] = " ".join(filter(None, [result.get("note"),
                                                             f"the tree is nearly empty. {TREE_SHOT_NOTE}"]))
             return result
@@ -897,7 +904,9 @@ class Desktop:
 
     def _before_native(self) -> None:
         self._yielded = self._yield_to_user()
-        self._after = self._pending = None
+        self._after = None
+        if not self._batching:
+            self._pending = None
 
     def _in_tree_window(self, result: dict) -> dict:
         if self._yielded:
@@ -1037,21 +1046,28 @@ class Desktop:
         def do():
             done: list[dict] = []
             result: dict = {"done": 0, "steps": done}
-            for i, (name, args) in enumerate(checked):
-                try:
-                    out = getattr(self, name)(**args)
-                except Exception as exc:  # the steps before it were sent: report, then observe them
-                    msg = str(exc) if isinstance(exc, CcdeskError) else f"{type(exc).__name__}: {exc}"
-                    result["failed"] = {"index": i, "tool": name, "error": msg}
-                    break
-                done.append({"tool": name, **{k: v for k, v in out.items() if k not in ("window", "hint")}})
-                result["done"] = i + 1
+            self._batching, self._pending = True, None
+            try:
+                self._run_steps(checked, result, done)
+            finally:
+                self._batching = False
             if self._deferred is not None:  # one observation for the whole batch, into this result
                 self._deferred = (result, show_change)
             return result
 
         return self._act("batch", {"steps": logged}, do,
                          loggable=lambda r: {k: r[k] for k in ("done", "failed") if k in r})
+
+    def _run_steps(self, checked, result: dict, done: list) -> None:
+        for i, (name, args) in enumerate(checked):
+            try:
+                out = getattr(self, name)(**args)
+            except Exception as exc:  # the steps before it were sent: report, then observe them
+                msg = str(exc) if isinstance(exc, CcdeskError) else f"{type(exc).__name__}: {exc}"
+                result["failed"] = {"index": i, "tool": name, "error": msg}
+                break
+            done.append({"tool": name, **{k: v for k, v in out.items() if k not in ("window", "hint")}})
+            result["done"] = i + 1
 
     def wait_for_change(self, region=None, timeout: float = 10, settle_ms: int = 500) -> dict:
         """Wait until the screen differs from how it looked right after the latest action (or, with
