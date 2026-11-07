@@ -233,6 +233,39 @@ action holds it from 0.48 s to 0.13 s, and both finished in 7.4 s instead of 14.
 Because another agent may act while this one compares, a `screen_changed` can now include that
 agent's drawn cursor or its window moving over this one.
 
+#### An own pointer and keyboard for each agent (X11)
+
+`ccdesk mcp --agent bot-1 --own-pointer` gives the agent its own pointer and keyboard focus, so it
+does not use yours and does not wait for the other agents. At startup it runs
+`xinput create-master ccdesk-bot-1`, which adds a master pointer and keyboard (with their XTEST
+devices) that only this agent drives. Moves, clicks, drags, scrolling, typing and key presses go
+through them; your pointer stays where it is and your keyboard focus does not change. It
+needs `xinput`, libX11, libXi and libXtst, and it is X11 only. It is refused without `--agent` and
+on other backends. Names must be unique on a screen: a second server with the name of a running
+one refuses to start ("use another --agent name"). The devices are removed when the server exits,
+also on SIGTERM and SIGINT. After a `kill -9` or a crash, the leftovers of dead agents (the ones
+whose name is not in use) are removed at the next own-pointer start or by `ccdesk doctor`, which
+lists what it removed.
+
+Window managers that grab clicks can move your keyboard focus when the agent clicks. bspwm does
+this on every unfocused window, so with bspwm each agent button press runs with
+`click_to_focus` set to `none` for a moment (under a lock shared by all agents on the screen) and
+the saved value is put back right after; `doctor` or the next start restores it if a process died
+in between. Other window managers are not handled, and `doctor` says so: an agent click there may
+move your keyboard focus.
+
+`activate_window` sets the agent's keyboard focus and leaves your window manager alone. Only a
+window that is not on screen (minimized, or on another desktop) goes through the normal
+activation, which does move your focus once; the answer says so in `note`. A window another
+window covers still receives no clicks: the click is refused, as before. The focus check
+compares against the agent's own focus and the click check against the window under the agent's
+pointer. Each own-pointer agent has its own input lock, so two of them type at the same time.
+`--yield-ms` is ignored: X counts every agent's input, own-pointer input included, as activity
+(it also resets screensavers and the idle timer other agents' `--yield-ms` reads), so own-pointer
+agents would wait on each other. The drawn cursor follows the agent's pointer.
+Characters that have no key in your keymap are typed through a spare keycode that is remapped
+for a moment, as xdotool does. `doctor` shows the device ids, or why they are unavailable.
+
 #### A named private screen for several agents
 
 Each `--headless` server starts its own private screen, so two of them never see each other's
