@@ -131,6 +131,12 @@ class HelperProcess:
                 pass
 
 
+def helper_pythons() -> tuple[str, ...]:
+    """The interpreters that may have PyGObject: CCDESK_A11Y_PYTHON if set, else the usual ones."""
+    override = os.environ.get("CCDESK_A11Y_PYTHON")
+    return (override,) if override else PYTHONS
+
+
 class A11y:
     def __init__(self, runner=None, pythons: tuple[str, ...] | None = None):
         # The helper talks to the accessibility bus of this env (a headless screen has its own).
@@ -141,8 +147,7 @@ class A11y:
         self._proc: HelperProcess | None = None
         self._proc_python: str | None = None
         self._io = threading.Lock()
-        override = os.environ.get("CCDESK_A11Y_PYTHON")
-        self._pythons = pythons or ((override,) if override else PYTHONS)
+        self._pythons = pythons or helper_pythons()
         self._python: str | None = None
         self.refs: dict[str, Ref] = {}
         self._by_path: dict[str, str] = {}

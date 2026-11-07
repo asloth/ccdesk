@@ -212,6 +212,14 @@ With `--agent`, when another agent has moved focus away from the window this age
 ccdesk activates that window again and sends the input. Without it, ccdesk refuses, because the
 one who moved focus is probably you. Audit entries carry the agent's name.
 
+On X11, each named agent also gets a drawn cursor: an arrow in the agent's colour with a small
+label holding its name. It moves to the point of each click, move, drag, scroll and click_element,
+and to the field set_value writes to. It is only a picture: the real pointer still does the
+clicking, and the overlay window takes no input and is left out of `list_windows`. It needs a
+system Python with PyGObject (the same one `ui_tree` uses); if that is missing the cursor turns
+itself off and `doctor` says so. The colour is picked from the name; set it with
+`--cursor-color '#RRGGBB'`, or turn the cursor off with `--no-cursor`.
+
 In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
 in 4.1 s. With no lock, both windows came out with letters from both agents.
 

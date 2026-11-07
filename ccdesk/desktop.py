@@ -70,11 +70,13 @@ class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
                  a11y: A11y | None = None, headless=None, screen_diff: bool = True,
-                 agent: str | None = None, seat: SeatLock | None = None):
+                 agent: str | None = None, seat: SeatLock | None = None, cursor=None):
         self.backend = backend or get_backend()
         # With several agents on one screen: this one's name, and the lock they all share.
         self.agent = agent
         self.seat = seat or SeatLock(seat_key(self.backend.name, self.backend.env))
+        # The agent's drawn cursor (X11 only, and only with an agent name): a visual, moved after each input.
+        self.cursor = cursor if self.agent and self.backend.name == "x11" else None
         self.a11y = a11y or A11y()
         self.a11y.locate = self.backend.window_origin
         self.headless = headless  # ccdesk.headless.Headless when the agent has its own screen
@@ -126,6 +128,15 @@ class Desktop:
         self.audit.record(tool, args, "ok", result=loggable(result) if loggable else result,
                           duration_ms=(time.monotonic() - start) * 1000)
         return result
+
+    def _show_cursor(self, x: int, y: int) -> None:
+        if self.cursor is not None:
+            self.cursor.move(x, y)
+
+    def _cursor_to_node(self, node: dict | None) -> None:
+        if self.cursor is not None and node and node.get("box"):
+            x, y, w, h = node["box"]
+            self._show_cursor(*self._point(x + w // 2, y + h // 2))
 
     def _input_done(self, tool: str) -> None:
         if tool in INPUT_TOOLS:
@@ -450,6 +461,7 @@ class Desktop:
             n = check_int("count", count, 1, 10)
             window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
                                                    window), show_change)
 
@@ -462,6 +474,7 @@ class Desktop:
             px, py = self._point(x, y)
             self._yielded = self._yield_to_user()
             self.backend.move(px, py)
+            self._show_cursor(px, py)
             return self._with_window({"moved": {"x": px, "y": py}}, None)
 
         return self._act("move", {"x": x, "y": y}, do)
@@ -475,6 +488,7 @@ class Desktop:
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
             window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
+            self._show_cursor(x1, y1)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
                                                     "duration_ms": ms}, window), show_change)
 
@@ -492,6 +506,7 @@ class Desktop:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), show_change)
 
         return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}, do)
@@ -717,11 +732,13 @@ class Desktop:
                 self._before_native()
                 action = self.a11y.activate(str(ref).strip())
                 if action:
+                    self._cursor_to_node(node)
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
                                                     "button": button, "count": n}, window))
 
@@ -760,6 +777,7 @@ class Desktop:
                                   f"activate_window(); call ui_tree() on that window, or pass force=true")
             self._before_native()
             answer = self.a11y.set_value(key, text)
+            self._cursor_to_node(node)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
                 # The write was ignored, not changed: web pages (Firefox, Chromium) take the call
                 # and keep the old value. Type it the way a person would instead.
@@ -777,6 +795,7 @@ class Desktop:
         px, py = self._point(x + w // 2, y + h // 2)
         window = self._guard(force, (px, py))
         self.backend.click(px, py, 1, 1)
+        self._show_cursor(px, py)
         self.backend.sleep(KEY_SETTLE)
         self.backend.press_key(SELECT_ALL)
         self.backend.sleep(KEY_SETTLE)
@@ -902,5 +921,5 @@ class Desktop:
         from ccdesk.doctor import build_report
 
         return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y,
-                                                     self.headless),
+                                                     self.headless, self.cursor),
                          loggable=lambda r: {"backend": r["backend"], "ready": r["ready"], "missing": r["missing"]})
