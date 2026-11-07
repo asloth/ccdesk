@@ -164,3 +164,18 @@ def test_registry_survives_garbage(tmp_path):
     reg = tmp_path / "cursors.json"
     reg.write_text("not json")
     assert claim_color("bot-1", reg) == pick_color("bot-1")
+
+
+def test_a_helper_that_never_reads_cannot_block_the_caller(tmp_path):
+    helper = tmp_path / "stuck.py"
+    helper.write_text("import time\ntime.sleep(30)\n")
+    cur = AgentCursor("bot", python=sys.executable, helper=helper)
+    try:
+        start = time.monotonic()
+        for i in range(10000):
+            cur.move(i, i)
+        assert time.monotonic() - start < 2
+        assert cur.enabled
+    finally:
+        cur._proc and cur._proc.kill()
+        cur.close()

@@ -114,6 +114,7 @@ class AgentCursor:
         self._err = tempfile.TemporaryFile()
         self._proc = subprocess.Popen([exe, "-I", self.helper, self.name, self.color], stdin=subprocess.PIPE,
                                       stdout=subprocess.DEVNULL, stderr=self._err, env=self.env)
+        os.set_blocking(self._proc.stdin.fileno(), False)  # a stuck helper must never block the caller
         atexit.register(self.close)
 
     def _send(self, line: str) -> None:
@@ -125,8 +126,10 @@ class AgentCursor:
                     self._start()
                 if self._proc.poll() is not None:
                     raise BrokenPipeError("the helper exited")
-                self._proc.stdin.write((line + "\n").encode())
-                self._proc.stdin.flush()
+                # Straight to the fd: a short line (under PIPE_BUF) is written whole or not at all.
+                os.write(self._proc.stdin.fileno(), (line + "\n").encode())
+            except BlockingIOError:
+                pass  # the pipe is full: drop this position, the next move supersedes it
             except (OSError, ValueError) as exc:
                 self._fail(exc)
 
