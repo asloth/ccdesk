@@ -6,6 +6,7 @@ import re
 from dataclasses import replace
 
 from ccdesk.backends.base import Backend, interpolate
+from ccdesk.cursor import TITLE_PREFIX
 from ccdesk.errors import CommandError
 from ccdesk.parsing import (
     KeyCombo,
@@ -133,6 +134,10 @@ class X11Backend(Backend):
     # -- windows ------------------------------------------------------------
 
     def list_windows(self) -> list[Window]:
+        # The agents' drawn cursors are windows too; they are not something to work with.
+        return [w for w in self._all_windows() if not w.title.startswith(TITLE_PREFIX)]
+
+    def _all_windows(self) -> list[Window]:
         if self.which("wmctrl"):
             out = self.try_run(["wmctrl", "-lGx"])
             if out is not None:

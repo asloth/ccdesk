@@ -23,7 +23,7 @@ def _mcp_version() -> str | None:
 
 
 def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None,
-                 headless=None) -> dict:
+                 headless=None, cursor=None) -> dict:
     env = backend.env
     problem = backend.available()
     tools = backend.tools_report()
@@ -54,6 +54,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     warnings = report["warnings"]
     if headless:
         warnings.extend(headless.notes)
+    if cursor is not None and cursor.status():
+        warnings.append(cursor.status())
     if problem:
         warnings.append(problem)
     else:

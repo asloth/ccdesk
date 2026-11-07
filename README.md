@@ -196,6 +196,57 @@ does, like a web console or a chat you're signed in to. Keep your hands off the 
 Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
 servers only at startup.
 
+### Several agents on one screen
+
+A screen has one pointer and one keyboard focus. Every input action takes a lock on the display
+for its whole run (the focus check, the clicks or keys), so two ccdesk servers on the same
+display take turns one action at a time and never interleave inside an action. Give each server
+a name with `--agent`:
+
+```sh
+ccdesk mcp --agent bot-1
+ccdesk mcp --agent bot-2
+```
+
+With `--agent`, when another agent has moved focus away from the window this agent activated,
+ccdesk activates that window again and sends the input. Without it, ccdesk refuses, because the
+one who moved focus is probably you. Audit entries carry the agent's name.
+
+Screenshots show the drawn cursors of every agent on the screen, this one's included. With
+`--yield-ms`, input that comes right after any agent's counts as that agent's, and an agent that
+waited in line for the screen checks once more that you are still away before it sends anything.
+
+On X11, each named agent also gets a drawn cursor: an arrow in the agent's colour with a small
+label holding its name. It moves to the point of each click, move, drag, scroll and click_element,
+and to the field set_value writes to. It is only a picture: the real pointer still does the
+clicking, and the overlay window takes no input and is left out of `list_windows`. It needs a
+system Python with PyGObject (the same one `ui_tree` uses); if that is missing the cursor turns
+itself off and `doctor` says so. The colour is picked from the name; set it with
+`--cursor-color '#RRGGBB'`, or turn the cursor off with `--no-cursor`.
+
+In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
+in 4.1 s. With no lock, both windows came out with letters from both agents.
+
+#### A named private screen for several agents
+
+Each `--headless` server starts its own private screen, so two of them never see each other's
+windows. To share one private screen, start it on its own and have the servers join it:
+
+```sh
+ccdesk screen start work [--size 1600x900] [--wm CMD]   # foreground; Ctrl-C or `screen stop` ends it
+ccdesk mcp --screen work --agent bot-1
+ccdesk mcp --screen work --agent bot-2
+ccdesk screen list
+ccdesk screen stop work
+```
+
+`screen start` prints how to watch it (`x11vnc -display :N -localhost`); `ccdesk peek` also
+lists named screens. `--screen` turns on `launch` like `--headless` and cannot be combined with
+it. A server that exits leaves the screen running. `ccdesk install --screen work` registers the
+server with that flag. The state file is `$XDG_RUNTIME_DIR/ccdesk/screens/NAME.json` (mode 0600,
+in a 0700 directory) and holds the display, size, window manager, pid and only the variables a
+joining server needs.
+
 ### Firefox for Claude, without the mouse (opt-in)
 
 For web pages, ccdesk can hand off to Mozilla's

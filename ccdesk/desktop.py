@@ -34,6 +34,10 @@ from ccdesk.parsing import (
 )
 from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
 from ccdesk.screendiff import Grid, changed_box
+from ccdesk.seat import SeatLock, seat_key
+
+# Input tools that wait for the user with --yield-ms (launch and clipboard never did).
+YIELDING_TOOLS = INPUT_TOOLS - {"launch", "clipboard_set"}
 
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
@@ -68,8 +72,14 @@ def shown(value) -> str:
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
-                 a11y: A11y | None = None, headless=None, screen_diff: bool = True):
+                 a11y: A11y | None = None, headless=None, screen_diff: bool = True,
+                 agent: str | None = None, seat: SeatLock | None = None, cursor=None):
         self.backend = backend or get_backend()
+        # With several agents on one screen: this one's name, and the lock they all share.
+        self.agent = agent
+        self.seat = seat or SeatLock(seat_key(self.backend.name, self.backend.env))
+        # The agent's drawn cursor (X11 only, and only with an agent name): a visual, moved after each input.
+        self.cursor = cursor if self.agent and self.backend.name == "x11" else None
         self.a11y = a11y or A11y()
         self.a11y.locate = self.backend.window_origin
         self.headless = headless  # ccdesk.headless.Headless when the agent has its own screen
@@ -92,6 +102,8 @@ class Desktop:
         self.clock = time.monotonic
         self._own_input: float | None = None  # clock() when ccdesk's latest input action finished
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
+        self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
+        self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
 
     # -- plumbing -------------------------------------------------------------
 
@@ -99,7 +111,25 @@ class Desktop:
         start = time.monotonic()
         try:
             self.policy.check(policy_tool or tool)
-            result = fn()
+            if (policy_tool or tool) in INPUT_TOOLS:
+                # Wait for the user before taking the seat: a human at the mouse must not stall the
+                # other agents too. The action's own _yield_to_user() calls then return this result.
+                try:
+                    if tool in YIELDING_TOOLS:
+                        self._yield_done = self._yield_to_user()
+                    with self.seat:  # the focus check and the input itself, with no other agent in between
+                        try:
+                            if self._yield_done is not None:
+                                self._still_idle()  # the user may have come back while we queued
+                            result = fn()
+                        finally:
+                            self._flush_cursor()
+                            if tool in YIELDING_TOOLS:
+                                self.seat.note_input(self.clock())
+                finally:
+                    self._yield_done = None
+            else:
+                result = fn()
         except PolicyError as exc:  # refused before any input was sent
             self.audit.record(tool, args, "denied", error=str(exc))
             raise
@@ -118,6 +148,49 @@ class Desktop:
                           duration_ms=(time.monotonic() - start) * 1000)
         return result
 
+    def _show_cursor(self, x: int, y: int) -> None:
+        """Move the drawn cursor once the action is over: after _changes() has compared the window,
+        so its own arrow never counts as the app changing."""
+        if self.cursor is not None:
+            self._cursor_next = (x, y)
+
+    def _flush_cursor(self) -> None:
+        self._yield_done = None
+        point, self._cursor_next = self._cursor_next, None
+        if point is not None and self.cursor is not None:
+            self.cursor.move(*point)
+
+    def _cursor_to_node(self, node: dict | None) -> None:
+        if self.cursor is not None and node and node.get("box"):
+            x, y, w, h = node["box"]
+            self._show_cursor(*self._point(x + w // 2, y + h // 2))
+
+    def _user_idle_ms(self) -> float | None:
+        """How long the user has left mouse and keyboard alone, or None when it can't be told.
+        X's idle counter is reset by every agent's xdotool events too, so input that came right
+        after an agent's (this one's or another's on the same screen) counts as theirs."""
+        try:
+            idle = self.backend.idle_ms()
+        except CcdeskError:
+            return None
+        if idle is None:
+            return None
+        agents = [t for t in (self._own_input, self.seat.last_input()) if t is not None and t == t]
+        if agents:
+            since_agents = (self.clock() - max(agents)) * 1000
+            if idle >= since_agents - OWN_INPUT_SLACK_MS:
+                return float("inf")  # nothing since the agents' input: the user is away
+        return idle
+
+    def _still_idle(self) -> None:
+        """One look, no waiting: _act waited for the user before queueing for the seat, and the
+        wait for another agent can be long."""
+        need = self.policy.yield_ms
+        idle = self._user_idle_ms() if need else None
+        if idle is not None and idle < need:
+            raise PolicyError(f"the user started using the mouse or keyboard ({idle:.0f} ms ago) while this "
+                              f"agent waited for another one; nothing was sent. wait() and retry")
+
     def _input_done(self, tool: str) -> None:
         if tool in INPUT_TOOLS:
             self._own_input = self.clock()
@@ -125,21 +198,16 @@ class Desktop:
     def _yield_to_user(self) -> int:
         """With --yield-ms, hold input while the user is using the mouse or keyboard: wait until
         they have been idle that long, up to MAX_YIELD. Returns how long it waited, in ms."""
+        if self._yield_done is not None:
+            return self._yield_done  # _act already waited, before taking the seat
         need = self.policy.yield_ms
         if not need:
             return 0
         waited = 0.0
         while True:
-            try:
-                idle = self.backend.idle_ms()
-            except CcdeskError:
-                idle = None
-            if idle is None:
-                return round(waited * 1000)  # cannot tell: don't block
-            # Our own xdotool events reset the counter too: only input after ours is the user's.
-            since_ours = (self.clock() - self._own_input) * 1000 if self._own_input is not None else float("inf")
-            if idle >= need or idle >= since_ours - OWN_INPUT_SLACK_MS:
-                return round(waited * 1000)
+            idle = self._user_idle_ms()
+            if idle is None or idle >= need:
+                return round(waited * 1000)  # idle long enough, or cannot tell: don't block
             if waited >= MAX_YIELD:
                 raise PolicyError(f"the user is using the mouse or keyboard (last input {idle} ms ago; "
                                   f"waited {waited:.0f}s for a {need} ms pause). Don't race them: wait() "
@@ -271,6 +339,12 @@ class Desktop:
             windows = {}
         window = self._receiver(windows, point) if windows else None
         target = self._target
+        if (self.agent and target and not force and window is not None and target.id in windows
+                and not self._belongs_to_target(window)):
+            # Another agent on this screen moved focus or raised its window over ours. We hold the
+            # seat lock, so take our window back and check again.
+            self.backend.activate_window(target)
+            window = self._receiver(windows, point)
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
             if target.id not in windows:
@@ -435,6 +509,7 @@ class Desktop:
             n = check_int("count", count, 1, 10)
             window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
                                                    window), show_change)
 
@@ -447,6 +522,7 @@ class Desktop:
             px, py = self._point(x, y)
             self._yielded = self._yield_to_user()
             self.backend.move(px, py)
+            self._show_cursor(px, py)
             return self._with_window({"moved": {"x": px, "y": py}}, None)
 
         return self._act("move", {"x": x, "y": y}, do)
@@ -460,6 +536,7 @@ class Desktop:
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
             window = self._guard(force, (x0, y0))
             self.backend.drag(x0, y0, x1, y1, ms)
+            self._show_cursor(x1, y1)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
                                                     "duration_ms": ms}, window), show_change)
 
@@ -477,6 +554,7 @@ class Desktop:
                 raise ValidationError("dx and dy are both 0; nothing to scroll")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), show_change)
 
         return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}, do)
@@ -702,11 +780,13 @@ class Desktop:
                 self._before_native()
                 action = self.a11y.activate(str(ref).strip())
                 if action:
+                    self._cursor_to_node(node)
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             window = self._guard(force, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
+            self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
                                                     "button": button, "count": n}, window))
 
@@ -745,6 +825,7 @@ class Desktop:
                                   f"activate_window(); call ui_tree() on that window, or pass force=true")
             self._before_native()
             answer = self.a11y.set_value(key, text)
+            self._cursor_to_node(node)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
                 # The write was ignored, not changed: web pages (Firefox, Chromium) take the call
                 # and keep the old value. Type it the way a person would instead.
@@ -762,6 +843,7 @@ class Desktop:
         px, py = self._point(x + w // 2, y + h // 2)
         window = self._guard(force, (px, py))
         self.backend.click(px, py, 1, 1)
+        self._show_cursor(px, py)
         self.backend.sleep(KEY_SETTLE)
         self.backend.press_key(SELECT_ALL)
         self.backend.sleep(KEY_SETTLE)
@@ -886,6 +968,11 @@ class Desktop:
     def doctor(self) -> dict:
         from ccdesk.doctor import build_report
 
-        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y,
-                                                     self.headless),
+        def report():
+            r = build_report(self.backend, self.policy, self.audit.path, self.a11y, self.headless, self.cursor)
+            if self.seat.unavailable:
+                r["warnings"].append(self.seat.unavailable)
+            return r
+
+        return self._act("doctor", {}, report,
                          loggable=lambda r: {"backend": r["backend"], "ready": r["ready"], "missing": r["missing"]})
