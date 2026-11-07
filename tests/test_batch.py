@@ -149,3 +149,35 @@ def test_batch_caps_the_text_of_all_steps(make_desk, fake):
     half = "x" * (MAX_TEXT // 2 + 1)
     with pytest.raises(ValidationError, match="at most"):
         d.batch([{"tool": "type_text", "text": half}, {"tool": "type_text", "text": half}])
+
+
+def test_batch_will_not_type_into_a_password_field_a_step_focused(make_desk, helper, fake):
+    """Single calls learn about the focused password field from the click's re-read; a batch has
+    no re-read between steps, so it checks again before typing (blast-radius finding, 2026-11-07)."""
+    d = make_desk()
+    d.ui_tree()
+    real_click = fake.click
+
+    def click_focuses_password(*a):
+        helper.nodes["3.0.29.2"].update(role="password text", states=["focused"])
+        return real_click(*a)
+
+    fake.click = click_focuses_password
+    r = d.batch([{"tool": "click", "x": 50, "y": 60}, {"tool": "type_text", "text": "hunter2"}])
+    assert r["done"] == 1 and "password field" in r["failed"]["error"]
+    assert not [c for c in fake.calls if c[0] == "type_text"]
+
+
+def test_batch_pixel_diff_covers_every_step(make_desk, fake):
+    """screen_changed compares with the screen before the first step, not the last one."""
+    from tests.test_screen_changes import WHITE
+    d = make_desk(screen_diff=True)
+    real_click = fake.click
+
+    def click_opens_dialog(*a):
+        fake.effects = [(200, 300, 120, 40, WHITE)]
+        return real_click(*a)
+
+    fake.click = click_opens_dialog
+    r = d.batch([{"tool": "click", "x": 250, "y": 320}, {"tool": "press_key", "key": "Tab"}])
+    assert r["done"] == 2 and r["screen_changed"] is True

@@ -674,3 +674,13 @@ def test_tree_shot_unknown_window_still_raises(make_desk, helper):
     helper.tree_error = "no window matches"
     with pytest.raises(CcdeskError):
         make_desk().ui_tree(window="Nonexistent")
+
+
+def test_after_a_thin_tree_actions_report_pixel_changes(make_desk, fake, helper):
+    """The picture says to work from pixels, so actions must say whether the pixels changed, not
+    compare with a tree that has nothing in it (blast-radius finding, 2026-11-07)."""
+    _thin_tree(helper, fake)
+    d = make_desk(screen_diff=True)
+    assert d.ui_tree()["fallback_shot"]
+    r = d.click(5, 5)
+    assert "screen_changed" in r and "changes" not in r
