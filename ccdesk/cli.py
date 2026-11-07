@@ -9,6 +9,7 @@ import signal
 import sys
 
 from ccdesk import __version__
+from ccdesk.cursor import AgentCursor, valid_color
 
 
 def _policy_flags(p: argparse.ArgumentParser) -> None:
@@ -83,6 +84,9 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--agent", metavar="NAME",
                    help="this server is one of several agents on the same screen: tag its audit entries "
                         "with NAME and take its window back when another agent moved focus")
+    p.add_argument("--cursor-color", metavar="#RRGGBB",
+                   help="with --agent on X11: the colour of this agent's drawn cursor (default: one picked from its name)")
+    p.add_argument("--no-cursor", action="store_true", help="with --agent: do not draw a cursor for this agent")
     _headless_flags(p)
 
     p = sub.add_parser("firefox", help="start your Firefox with automation on (for install --firefox mine)")
@@ -194,6 +198,12 @@ def _mcp(args) -> int:
         signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
     else:
         backend = get_backend(args.backend)
+    cursor = None
+    if args.agent and not args.no_cursor and backend.name == "x11":
+        if args.cursor_color and not valid_color(args.cursor_color):
+            print("ccdesk mcp: --cursor-color must look like '#RRGGBB'", file=sys.stderr)
+            return 1
+        cursor = AgentCursor(args.agent, args.cursor_color, env=backend.env)
     try:
         desktop = Desktop(
             backend=backend,
@@ -202,6 +212,7 @@ def _mcp(args) -> int:
             audit=AuditLog(args.audit_log, agent=args.agent),
             headless=headless,
             agent=args.agent,
+            cursor=cursor,
         )
         desktop.audit.record("server_start", {"read_only": args.read_only, "allow_launch": args.allow_launch,
                                               "confirm_keys": args.confirm_keys, "yield_ms": args.yield_ms,
