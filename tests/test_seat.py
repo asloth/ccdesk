@@ -254,3 +254,35 @@ def test_a_seat_timeout_does_not_leave_the_yield_cached(make_desk, fake):
     with pytest.raises(CcdeskError):
         d.click(10, 20)
     assert d._yield_done is None
+
+
+def test_observing_the_change_runs_after_the_seat_is_free(make_desk, fake):
+    """The settle wait and the after-capture only read the screen: other agents may send input
+    meanwhile. The before-capture and the click stay under the lock."""
+    d = make_desk(screen_diff=True)
+    seat = d.seat = RecordingSeat()
+    shots, sleeps = [], []
+    real_shot, real_sleep = fake.screenshot, fake.sleep
+    fake.screenshot = lambda *a, **k: (shots.append(seat.held), real_shot(*a, **k))[1]
+    fake.sleep = lambda s: (sleeps.append(seat.held), real_sleep(s))[1]
+    result = d.click(10, 20)
+    assert "screen_changed" in result
+    assert shots[0] is True and shots[-1] is False
+    assert sleeps and sleeps[-1] is False
+
+
+def test_the_drawn_cursor_moves_after_the_observation(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    seat = d.seat = RecordingSeat()
+    order = []
+
+    class Cursor:
+        def move(self, x, y):
+            order.append(("cursor", seat.held))
+
+    d.cursor = Cursor()
+    real_shot = fake.screenshot
+    fake.screenshot = lambda *a, **k: (order.append(("shot", seat.held)), real_shot(*a, **k))[1]
+    d.click(10, 20)
+    assert order[-1] == ("cursor", False)
+    assert ("shot", False) in order[:-1]

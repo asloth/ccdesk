@@ -104,6 +104,8 @@ class Desktop:
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
         self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
         self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
+        self._deferring = False  # inside an input action: _changes() leaves the observing to _act
+        self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
 
     # -- plumbing -------------------------------------------------------------
 
@@ -117,17 +119,30 @@ class Desktop:
                 try:
                     if tool in YIELDING_TOOLS:
                         self._yield_done = self._yield_to_user()
-                    with self.seat:  # the focus check and the input itself, with no other agent in between
-                        try:
-                            if self._yield_done is not None:
-                                self._still_idle()  # the user may have come back while we queued
-                            result = fn()
-                        finally:
-                            self._flush_cursor()
-                            if tool in YIELDING_TOOLS:
-                                self.seat.note_input(self.clock())
+                    outer = self._deferring
+                    self._deferring = True
+                    try:
+                        with self.seat:  # the focus check and the input itself, with no other agent in between
+                            try:
+                                if self._yield_done is not None:
+                                    self._still_idle()  # the user may have come back while we queued
+                                result = fn()
+                            finally:
+                                if tool in YIELDING_TOOLS:
+                                    self.seat.note_input(self.clock())
+                    finally:
+                        self._deferring = outer
+                        deferred, self._deferred = self._deferred, None
+                    if deferred is not None and not outer:
+                        # Out of the seat: settling and re-reading the window only reads the screen,
+                        # so the other agents can send their input meanwhile.
+                        result = self._observe(*deferred)
+                    elif deferred is not None:
+                        self._deferred = deferred  # a nested action: the outermost one observes
                 finally:
                     self._yield_done = None
+                    if not self._deferring:
+                        self._flush_cursor()
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -149,7 +164,7 @@ class Desktop:
         return result
 
     def _show_cursor(self, x: int, y: int) -> None:
-        """Move the drawn cursor once the action is over: after _changes() has compared the window,
+        """Move the drawn cursor once the action is over: after _observe() has compared the window,
         so its own arrow never counts as the app changing."""
         if self.cursor is not None:
             self._cursor_next = (x, y)
@@ -217,6 +232,14 @@ class Desktop:
             waited += pause
 
     def _changes(self, result: dict, show_change: bool = False) -> dict:
+        """What an action changed, filled in by _observe(). Inside an input action it runs after
+        _act has released the seat lock; the result dict is filled in place then."""
+        if self._deferring:
+            self._deferred = (result, show_change)
+            return result
+        return self._observe(result, show_change)
+
+    def _observe(self, result: dict, show_change: bool = False) -> dict:
         """After ui_tree() has been used, add what the action changed in that window. Without a
         tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
         with show_change, attach a small capture of that area so no screenshot is needed to see it."""
