@@ -27,11 +27,12 @@ there; ask before working around that. Your clipboard is separate from theirs.
 2. Call `doctor()` once per session. Check `ready`, the backend (`x11` or `wayland`), the
    screen size, and `warnings`. If it isn't ready, stop and tell the user what is missing.
 3. On the user's own screen (not headless), call `ui_tree()` once on the app you will use.
-   If it fails, the error names the missing window and the fix (often a `busctl` command and
-   an app restart). Offer that fix to the user before you go pixel-only: without a tree every
+   If the window has no useful tree, the answer carries a small picture of it (`fallback_shot`)
+   and a `note` naming the missing window and the fix (often a `busctl` command and an app
+   restart). Offer that fix to the user before you go pixel-only: without a tree every
    check costs a screenshot. Don't run it yourself; it changes their session.
 4. **No tree and a web app: stop and ask before the pixel loop.** If the task is a web form
-   or page and step 3 failed, ask the user one question before your first click: attach a
+   or page and step 3 found no tree, ask the user one question before your first click: attach a
    browser tool (`ccdesk firefox` for firefox-devtools, see below), switch the accessibility
    bus on, or go ahead with pixels. Going straight to pixels is the expensive mistake: three
    web forms of the same shape once took 117 screenshots, 103 clicks and 86 fixed waits,
@@ -103,6 +104,10 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   ignore the direct write, so there it clicks the field, selects all and types (`typed: true`
   in the answer); either way a success means the field holds the text. Don't fall back to
   clicking fields by coordinates in a browser when you have their refs.
+- **Fill a whole form with one `batch` call**: `batch(steps=[{"tool":"set_value","ref":"e2",
+  "text":"Ana"}, {"tool":"click_element","ref":"e9"}])`. One request instead of one per field,
+  no other agent's input in between, and one `changes` at the end. It stops at the first
+  failing step and says which one; refs from a page that a step changed may be stale.
 - **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
   `type_text` and `press_key` return `changes`: the lines of that window that changed
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).

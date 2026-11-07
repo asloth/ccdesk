@@ -26,7 +26,8 @@ ccdesk drives the local Linux desktop. Work in a loop: look, do ONE action, veri
 Look with ui_tree() first (text, no pixels) and act on a line with click_element(ref) or
 set_value(ref, text). After a ui_tree(), actions return `changes` (the lines that changed in
 that window): verify with it instead of another look. Refs stay valid across ui_tree() calls.
-Fall back to screenshot() when there is no tree (canvas, images, video, apps that publish none),
+When a window has no useful tree, ui_tree() attaches a small picture of it (fallback_shot).
+Fall back to screenshot() for canvas, images, video, apps that publish none,
 to read layout, or to double-check something visual: the picture is in its answer. Coordinates
 are screen pixels in the image (origin top-left); for a region add the returned origin.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
@@ -35,7 +36,8 @@ nothing yet. Pass show_change=true to see the changed area in the answer, with n
 wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
-Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
+Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true.
+To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each."""
 HEADLESS = """
 This server works on its own invisible screen, not the user's: it starts empty, so launch()
 the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
@@ -44,7 +46,7 @@ or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR fir
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
-    "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors",
+    "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors", "batch",
 )
 
 MAX_PICTURE_BYTES = 3_500_000
@@ -59,7 +61,7 @@ ANNOTATIONS = {
     "wait": OBSERVE, "wait_for_change": OBSERVE, "doctor": OBSERVE,
     "move": ARRANGE, "scroll": ARRANGE, "activate_window": ARRANGE, "manage_window": ARRANGE,
     "clipboard": ARRANGE,
-    "click": ACT, "click_element": ACT, "set_value": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT,
+    "click": ACT, "click_element": ACT, "set_value": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT, "batch": ACT,
 }
 
 
@@ -77,6 +79,14 @@ def with_picture(result: dict) -> dict:
         result["_picture"] = result["path"]
     else:
         result["note"] = "too big to show here: pass scale=0.5 or a region, or Read the path"
+    return result
+
+
+def with_tree_shot(result: dict) -> dict:
+    """Show ui_tree's fallback_shot in the answer, as screenshot() does."""
+    shot = result.get("fallback_shot")
+    if isinstance(shot, dict) and shot.get("path") and os.path.getsize(shot["path"]) <= MAX_PICTURE_BYTES:
+        result["_picture"] = shot["path"]
     return result
 
 
@@ -225,13 +235,15 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
         """The on-screen elements of a window as text, from the accessibility tree: one line per
         button, field, checkbox, link, heading or text, with its value, states and screen box.
         Usually 5-20x cheaper than a screenshot. window: title substring (default: the active
         window). page=true: only the web page in a browser. query: only elements containing it.
-        Act on a line with click_element(ref)."""
-        return desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes)
+        Act on a line with click_element(ref). With no useful tree (window not on the accessibility
+        bus, or almost empty) it attaches a small picture of the window; shot_fallback=false: never."""
+        return with_tree_shot(desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes,
+                                              shot_fallback=shot_fallback))
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
@@ -248,6 +260,13 @@ def build_server(desktop: Desktop) -> MCPServer:
         back: an answer means the app holds it. Refuses password fields. If the app ignores the write
         (web pages do), it clicks the field, selects all and types the text instead (typed: true)."""
         return desktop.set_value(ref, text, force=force)
+
+    @tool
+    def batch(steps: list[dict], show_change: bool = False) -> dict:
+        """Several input steps in one call, e.g. a form from one ui_tree(): steps=[{"tool":"set_value","ref":"e3",
+        "text":"Ana"},{"tool":"click_element","ref":"e7"}]. Each step takes that tool's arguments. Stops at the
+        first failure; returns the changes after the last step. Other agents wait while it runs."""
+        return with_change_shot(desktop.batch(steps, show_change=show_change))
 
     @tool
     def clipboard(action: Literal["get", "set"] = "get", text: str | None = None) -> dict:

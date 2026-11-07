@@ -239,9 +239,9 @@ def test_ui_tree_names_the_missing_window_and_the_fix(make_desk, helper, fake):
     helper.apps, helper.tree_error = OFF_BUS, "no active accessible window; pass window=... (windows: 'Telegram')"
     fake.active = "0x01e00003"
     fake.responses[IS_ENABLED] = "b false\n"
-    with pytest.raises(CcdeskError) as err:
-        make_desk().ui_tree(page=True)
-    msg = str(err.value)
+    result = make_desk().ui_tree(page=True)  # the diagnosis comes with a picture of the window
+    assert result["fallback_shot"]["path"]
+    msg = result["note"]
     assert "'Mozilla Firefox' (Navigator.firefox) is not on the accessibility bus" in msg
     assert "on the bus: Telegram" in msg
     assert "IsEnabled is false" in msg and ENABLE in msg and "restart" in msg
@@ -252,7 +252,7 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
     helper.apps, helper.tree_error = OFF_BUS, "no accessible window title contains 'termi'; windows: 'Telegram'"
     fake.responses[IS_ENABLED] = "b true\n"
     with pytest.raises(CcdeskError) as err:
-        make_desk().ui_tree(window="termi")
+        make_desk().ui_tree(window="termi", shot_fallback=False)
     msg = str(err.value)
     assert "'Terminal' (xterm.XTerm) is not on the accessibility bus" in msg and ENABLE not in msg
     assert "GNOME_ACCESSIBILITY=1" in msg
@@ -261,7 +261,7 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
     fake.active = "0x01e00003"
     helper.tree_error = "no active accessible window; pass window=..."
     with pytest.raises(CcdeskError, match="--force-renderer-accessibility"):
-        make_desk().ui_tree()
+        make_desk().ui_tree(shot_fallback=False)
 
 
 def test_ui_tree_diagnosis_without_a_known_window(make_desk, helper, fake):

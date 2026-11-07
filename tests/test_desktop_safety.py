@@ -7,6 +7,8 @@ import sys
 
 import pytest
 
+from dataclasses import replace as replace_win
+
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
 from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError, ValidationError
@@ -605,3 +607,80 @@ def test_manage_window_says_when_the_window_closed(make_desk, fake):
 def test_doctor_warns_about_a_monitor_at_a_negative_position(make_desk, fake):
     fake.monitor_list = [{"name": "HDMI-1", "x": -1920, "y": 0, "width": 1920, "height": 1080}]
     assert any("negative position" in w for w in make_desk().doctor()["warnings"])
+
+
+# -- ui_tree picture fallback ---------------------------------------------------
+
+def _set_nodes(helper, *nodes):
+    helper.nodes = {n["path"]: dict(n) for n in nodes}
+
+
+def _thin_tree(helper, fake):
+    """An Electron window: a frame and a title, nothing to act on."""
+    fake.windows[0] = replace_win(fake.windows[0], title="Form — Mozilla Firefox")
+    _set_nodes(helper, {"path": "0", "role": "frame", "name": "Slack", "depth": 0, "showing": True,
+                        "box": [0, 0, 800, 600]})
+
+
+def test_tree_shot_fires_when_not_on_the_bus(make_desk, fake, helper):
+    helper.tree_error = "no window matches"
+    fake.windows[1] = replace_win(fake.windows[1], title="Slack", width=1600, height=1200, x=0, y=0)
+    fake.size = (1920, 1080)
+    result = make_desk().ui_tree(window="Slack")
+    shot = result["fallback_shot"]
+    assert shot["approx_tokens"] <= 1500 and shot["scale"] < 1 and shot["origin"] == {"x": 0, "y": 0}
+    assert "not on the accessibility bus" in result["note"] and "origin + pixel/scale" in result["note"]
+    assert "tree" not in result
+
+
+def test_tree_shot_fires_on_a_trivial_tree(make_desk, fake, helper):
+    _thin_tree(helper, fake)
+    result = make_desk().ui_tree()
+    assert result["tree"] and result["fallback_shot"]["width"] > 0
+    assert "nearly empty" in result["note"]
+    assert result["fallback_shot"]["approx_tokens"] <= 1500
+
+
+def test_tree_shot_not_with_a_query(make_desk, fake, helper):
+    _thin_tree(helper, fake)
+    assert "fallback_shot" not in make_desk().ui_tree(query="nothing like this")
+    helper.tree_error = "no window matches"
+    with pytest.raises(CcdeskError):
+        make_desk().ui_tree(window="Slack", query="x")
+
+
+def test_tree_shot_not_on_a_normal_tree(make_desk, fake):
+    assert "fallback_shot" not in make_desk().ui_tree()
+    assert not [c for c in fake.calls if c[0] == "screenshot"]
+
+
+def test_tree_shot_not_on_a_small_dialog(make_desk, helper):
+    _set_nodes(helper,
+               {"path": "0", "role": "label", "name": "Saved", "depth": 1, "showing": True, "box": [1, 1, 5, 5]},
+               {"path": "1", "role": "push button", "name": "OK", "depth": 1, "showing": True, "box": [1, 9, 5, 5]})
+    assert "fallback_shot" not in make_desk().ui_tree()
+
+
+def test_tree_shot_off_keeps_old_behaviour(make_desk, fake, helper):
+    _thin_tree(helper, fake)
+    d = make_desk()
+    assert "fallback_shot" not in d.ui_tree(shot_fallback=False)
+    helper.tree_error = "no window matches"
+    with pytest.raises(CcdeskError):
+        d.ui_tree(window="Terminal", shot_fallback=False)
+
+
+def test_tree_shot_unknown_window_still_raises(make_desk, helper):
+    helper.tree_error = "no window matches"
+    with pytest.raises(CcdeskError):
+        make_desk().ui_tree(window="Nonexistent")
+
+
+def test_after_a_thin_tree_actions_report_pixel_changes(make_desk, fake, helper):
+    """The picture says to work from pixels, so actions must say whether the pixels changed, not
+    compare with a tree that has nothing in it (blast-radius finding, 2026-11-07)."""
+    _thin_tree(helper, fake)
+    d = make_desk(screen_diff=True)
+    assert d.ui_tree()["fallback_shot"]
+    r = d.click(5, 5)
+    assert "screen_changed" in r and "changes" not in r

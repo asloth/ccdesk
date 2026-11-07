@@ -19,7 +19,7 @@ from ccdesk.server import TOOL_NAMES, build_server, slim_schema, slim_tools  # n
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
               "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element", "set_value",
-              "wait_for_change", "manage_window", "list_monitors"}
+              "wait_for_change", "manage_window", "list_monitors", "batch"}
 
 
 def test_slim_schema_keeps_what_the_model_needs():
@@ -83,7 +83,7 @@ def test_registered_tools(make_desk):
     assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title", "show_change"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
-    assert props["ui_tree"] == {"window", "query", "page", "max_nodes"}
+    assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback"}
     assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
     assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
@@ -227,3 +227,22 @@ def test_stdio_session(client, tmp_path):
     log = [json.loads(line) for line in (tmp_path / "audit.log").read_text().splitlines()]
     assert [e["tool"] for e in log] == ["server_start", "wait", "click", "launch", "doctor"]
     assert [e["status"] for e in log] == ["ok", "ok", "denied", "denied", "ok"]
+
+
+def test_ui_tree_fallback_shot_becomes_a_picture(make_desk, helper, fake):
+    from dataclasses import replace
+
+    fake.windows[0] = replace(fake.windows[0], title="Form — Mozilla Firefox")
+    import anyio
+    from mcp.types import ImageContent
+
+    helper.nodes = {"0": {"path": "0", "role": "frame", "name": "Slack", "depth": 0, "showing": True,
+                          "box": [0, 0, 800, 600]}}
+    server = build_server(make_desk())
+
+    async def call():
+        return await server.call_tool("ui_tree", {})
+
+    blocks = anyio.run(call).content
+    assert any(isinstance(b, ImageContent) for b in blocks)
+    assert "fallback_shot" in blocks[0].text and "_picture" not in blocks[0].text

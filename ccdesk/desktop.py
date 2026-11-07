@@ -5,12 +5,14 @@ Everything the MCP server exposes is a method here, so it can be tested without 
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +34,7 @@ from ccdesk.parsing import (
     parse_window_ref,
     png_size,
 )
-from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
+from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, _redact, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 from ccdesk.seat import SeatLock, seat_key
 
@@ -42,6 +44,10 @@ YIELDING_TOOLS = INPUT_TOOLS - {"launch", "clipboard_set"}
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
+BATCH_TOOLS = ("click_element", "set_value", "type_text", "press_key", "click", "scroll", "move", "drag",
+               "activate_window", "wait")
+MAX_BATCH_STEPS = 20
+MAX_BATCH_WAIT = 5.0  # seconds per wait step: the seat is held meanwhile
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
 POLL = 0.2  # seconds between captures in wait_for_change
 MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) before it is refused
@@ -59,6 +65,7 @@ MAX_WINDOW_COORD = 65_535
 WINDOW_POLLS = 8  # reads, POLL apart, for a window manager to finish before calling a request ignored
 SHOT_PAD = 24  # screen pixels around changed_area in a change_shot
 SHOT_MAX_TOKENS = 600  # a bigger change_shot is scaled down to about this
+TREE_SHOT_MAX_TOKENS = 1500  # the picture ui_tree attaches when the window has no useful tree
 HINT_MIN_TOKENS = 400  # a screenshot cheaper than this gets no "crop it" hint
 DIFF_TOOLS = frozenset({"click", "drag", "scroll", "type_text", "press_key"})  # report screen_changed
 
@@ -67,6 +74,26 @@ def shown(value) -> str:
     """A field's text as a tree read shows it: whitespace collapsed, cut at 200 characters."""
     text = " ".join(str(value or "").split())
     return text[:200].removesuffix("…")
+
+
+TREE_SHOT_NOTE = ("A picture of the window is attached: work from it. Screen pixel = "
+                  "origin + pixel/scale")
+# Roles that count as something to act on (the same idea as ACTIONABLE in a11y_helper.py).
+ACTIONABLE_ROLES = frozenset({
+    "push button", "toggle button", "button", "entry", "password text", "text", "check box",
+    "radio button", "combo box", "link", "menu item", "check menu item", "radio menu item",
+    "page tab", "spin button", "slider", "list item", "tree item", "switch",
+})
+
+
+def tree_is_empty(text: str) -> bool:
+    """A tree too thin to work from: fewer than 3 lines and none with a role to act on. An
+    Electron or canvas window gives just its frame and title (0-2 lines, no button or field),
+    while the smallest real dialog has a message and an OK (2 lines, one a button)."""
+    lines = [ln.split(None, 1)[1] for ln in text.splitlines() if ln.strip() and len(ln.split(None, 1)) == 2]
+    if len(lines) >= 3:
+        return False
+    return not any(ln.startswith(role + " ") or ln == role for ln in lines for role in ACTIONABLE_ROLES)
 
 
 class Desktop:
@@ -104,6 +131,10 @@ class Desktop:
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
         self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
         self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
+        self._busy = threading.RLock()  # one input action of this server at a time, observation included
+        self._batching = False  # inside batch(): steps keep the first baseline and re-check password focus
+        self._deferring = False  # inside an input action: _changes() leaves the observing to _act
+        self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
 
     # -- plumbing -------------------------------------------------------------
 
@@ -114,20 +145,10 @@ class Desktop:
             if (policy_tool or tool) in INPUT_TOOLS:
                 # Wait for the user before taking the seat: a human at the mouse must not stall the
                 # other agents too. The action's own _yield_to_user() calls then return this result.
-                try:
-                    if tool in YIELDING_TOOLS:
-                        self._yield_done = self._yield_to_user()
-                    with self.seat:  # the focus check and the input itself, with no other agent in between
-                        try:
-                            if self._yield_done is not None:
-                                self._still_idle()  # the user may have come back while we queued
-                            result = fn()
-                        finally:
-                            self._flush_cursor()
-                            if tool in YIELDING_TOOLS:
-                                self.seat.note_input(self.clock())
-                finally:
-                    self._yield_done = None
+                # _busy keeps this server's own calls (MCP runs each on a worker thread) from sharing
+                # the state below while one of them observes outside the seat.
+                with self._busy:
+                    result = self._seated(tool, fn)
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -149,7 +170,7 @@ class Desktop:
         return result
 
     def _show_cursor(self, x: int, y: int) -> None:
-        """Move the drawn cursor once the action is over: after _changes() has compared the window,
+        """Move the drawn cursor once the action is over: after _observe() has compared the window,
         so its own arrow never counts as the app changing."""
         if self.cursor is not None:
             self._cursor_next = (x, y)
@@ -216,7 +237,47 @@ class Desktop:
             self.backend.sleep(pause)
             waited += pause
 
+    def _seated(self, tool: str, fn):
+        """Run an input action: its input under the seat lock, then what it changed, observed once
+        the seat is free so the other agents' input can go meanwhile."""
+        try:
+            if tool in YIELDING_TOOLS:
+                self._yield_done = self._yield_to_user()
+            outer = self._deferring
+            deferred = None
+            self._deferring = True
+            try:
+                with self.seat:  # the focus check and the input itself, with no other agent in between
+                    try:
+                        if self._yield_done is not None:
+                            self._still_idle()  # the user may have come back while we queued
+                        result = fn()
+                    finally:
+                        if tool in YIELDING_TOOLS:
+                            self.seat.note_input(self.clock())
+            finally:
+                self._deferring = outer
+                if not outer:  # a nested action (a step of batch) leaves it to the outermost one
+                    deferred, self._deferred = self._deferred, None
+            if deferred is not None:
+                # Out of the seat: settling and re-reading the window only reads the screen,
+                # so the other agents can send their input meanwhile.
+                result = self._observe(*deferred)
+        finally:
+            if not self._deferring:
+                self._yield_done = None  # a step inside batch keeps the wait the batch did
+                self._flush_cursor()
+        return result
+
     def _changes(self, result: dict, show_change: bool = False) -> dict:
+        """What an action changed, filled in by _observe(). Inside an input action it runs after
+        _act has released the seat lock; the result dict is filled in place then."""
+        if self._deferring:
+            self._deferred = (result, show_change)
+            return result
+        return self._observe(result, show_change)
+
+    def _observe(self, result: dict, show_change: bool = False) -> dict:
         """After ui_tree() has been used, add what the action changed in that window. Without a
         tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
         with show_change, attach a small capture of that area so no screenshot is needed to see it."""
@@ -259,20 +320,38 @@ class Desktop:
     def _change_shot(self, box: Region) -> dict:
         """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS."""
         reg = self._padded(box)
-        out = self._shot_path(None)
         try:
-            self.backend.screenshot(str(out), reg)
-            width, height = png_size(out)
-            factor = min(1.0, (SHOT_MAX_TOKENS * 750 / (width * height)) ** 0.5)
-            if factor < 1:
-                self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
-                width, height = png_size(out)
+            shot, factor = self._scaled_capture(reg, SHOT_MAX_TOKENS)
         except (CcdeskError, OSError, ValueError) as exc:
             return {"error": f"could not capture the change: {exc}"}
-        shot = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
-                "origin": {"x": reg.x, "y": reg.y}}
         if factor < 1:
             shot["scale"] = round(factor, 3)
+        return shot
+
+    def _scaled_capture(self, reg: Region, max_tokens: int) -> tuple[dict, float]:
+        """Capture reg, scaled down to about max_tokens (tokens ~ width*height/750).
+        Returns the shot (path, width, height, approx_tokens, origin) and the scale factor used."""
+        out = self._shot_path(None)
+        self.backend.screenshot(str(out), reg)
+        width, height = png_size(out)
+        factor = min(1.0, (max_tokens * 750 / (width * height)) ** 0.5)
+        if factor < 1:
+            self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
+            width, height = png_size(out)
+        return ({"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
+                 "origin": {"x": reg.x, "y": reg.y}}, factor)
+
+    def _tree_fallback_shot(self, title: str | None) -> dict:
+        """A picture of one window for ui_tree() when it has no useful tree. Raises CcdeskError if
+        the window cannot be found or captured."""
+        if title is None:
+            wid = self.backend.active_window()
+            if wid is None:
+                raise CcdeskError("no active window to capture")
+            title = wid
+        _, reg, _ = self._shown_window_region(title)
+        shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
+        shot["scale"] = round(factor, 3) if factor < 1 else 1.0
         return shot
 
     def screen_size(self) -> tuple[int, int] | None:
@@ -363,6 +442,8 @@ class Desktop:
                 raise PolicyError(f"{window.title!r} ({window.id}) does not contain {expect_title.strip()!r}: "
                                   f"the user may have switched tabs. Take a screenshot, switch back, then retry")
         self._after = None  # wait_for_change() compares with the screen after this action, not before
+        if self._batching and self._pending is not None:
+            return window  # a batch is compared with the screen before its first step
         self._pending = None
         if self.a11y._last is None:
             region = self._window_region(window)
@@ -551,7 +632,8 @@ class Desktop:
             sx = check_int("dx", dx, -50, 50)
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
-                raise ValidationError("dx and dy are both 0; nothing to scroll")
+                raise ValidationError("dx and dy are both 0; nothing to scroll. Pass dy=3 to scroll down, dy=-3 up, "
+                                      "dx=3 right (there is no direction or amount argument)")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
             self._show_cursor(px, py)
@@ -570,6 +652,8 @@ class Desktop:
             # A typed trailing newline did not submit Firefox's address bar: send a real Return instead.
             body = text[:-1] if text.endswith("\n") else text
             enter = bool(submit) or body != text
+            if self._batching:
+                self.a11y.refresh_secret()  # an earlier step may have clicked into a password field
             if self.a11y.on_secret_field():
                 raise PolicyError("the focused field is a password field: ccdesk does not type into those. "
                                   "Ask the user to type it themselves")
@@ -723,14 +807,25 @@ class Desktop:
         return self._act("list_monitors", {}, do)
 
     def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
         def do():
             limit = check_int("max_nodes", max_nodes, 1, 2000)
+            q = (query or "").strip() or None
             try:
-                result = self.a11y.tree(window or None, (query or "").strip() or None, bool(page), limit)
+                result = self.a11y.tree(window or None, q, bool(page), limit)
             except WindowNotFound as exc:
                 why = self._a11y_diagnosis(window or None)
-                raise CcdeskError(f"{exc}. {why}" if why else str(exc)) from None
+                message = f"{exc}. {why}" if why else str(exc)
+                if shot_fallback and not q and why:
+                    # On screen but not on the bus: the window exists, so show it.
+                    try:
+                        shot = self._tree_fallback_shot(window or None)
+                    except (CcdeskError, OSError, ValueError):
+                        shot = None
+                    if shot:
+                        self.a11y.forget()  # a tree of another window: actions compare pixels now
+                        return {"fallback_shot": shot, "note": f"{message}. {TREE_SHOT_NOTE}"}
+                raise CcdeskError(message) from None
             text = result["tree"]
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
@@ -738,9 +833,19 @@ class Desktop:
             if self.backend.name in ("wayland", "kde") and "origin" not in result:
                 result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
                                   "not say where it is); verify with a screenshot")
+            if shot_fallback and not q and tree_is_empty(text):
+                try:
+                    result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
+                except (CcdeskError, OSError, ValueError):
+                    pass  # keep the (thin) tree; the model can still call screenshot()
+                else:
+                    self.a11y.forget()  # nothing to compare: actions report pixel changes instead
+                    result["note"] = " ".join(filter(None, [result.get("note"),
+                                                            f"the tree is nearly empty. {TREE_SHOT_NOTE}"]))
             return result
 
-        args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes}
+        args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
+                "shot_fallback": shot_fallback}
         return self._act("ui_tree", args, do,
                          loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
 
@@ -800,7 +905,9 @@ class Desktop:
 
     def _before_native(self) -> None:
         self._yielded = self._yield_to_user()
-        self._after = self._pending = None
+        self._after = None
+        if not self._batching:
+            self._pending = None
 
     def _in_tree_window(self, result: dict) -> dict:
         if self._yielded:
@@ -898,6 +1005,70 @@ class Desktop:
             return result
 
         return self._act("wait", {"seconds": seconds}, do)
+
+    def _batch_steps(self, steps) -> list[tuple[str, dict]]:
+        """Check every step before any input is sent: a mistake in step 7 must not leave 1-6 done."""
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_BATCH_STEPS:
+            raise ValidationError(f"steps must be a list of 1 to {MAX_BATCH_STEPS} steps")
+        checked = []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or not isinstance(step.get("tool"), str):
+                raise ValidationError(f"step {i}: expected an object with a \"tool\" name")
+            name = step["tool"]
+            args = {k: v for k, v in step.items() if k != "tool"}
+            if name not in BATCH_TOOLS:
+                raise ValidationError(f"step {i}: {name!r} cannot run in a batch (use one of {', '.join(BATCH_TOOLS)})")
+            if "show_change" in args:
+                raise ValidationError(f"step {i}: show_change belongs to the batch call, not to a step")
+            try:
+                inspect.signature(getattr(self, name)).bind(**args)
+            except TypeError as exc:
+                raise ValidationError(f"step {i} ({name}): {exc}") from None
+            if name == "wait":
+                try:
+                    ok = 0 <= float(args["seconds"]) <= MAX_BATCH_WAIT
+                except (TypeError, ValueError):
+                    ok = False
+                if not ok:
+                    raise ValidationError(f"step {i}: wait in a batch takes 0 to {MAX_BATCH_WAIT:g} seconds")
+            checked.append((name, args))
+        typed = sum(len(a["text"]) for _, a in checked if isinstance(a.get("text"), str))
+        if typed > MAX_TEXT:
+            # Every other agent on the screen waits while a batch holds the seat.
+            raise ValidationError(f"a batch types at most {MAX_TEXT} characters in all, got {typed}")
+        return checked
+
+    def batch(self, steps: list[dict], show_change: bool = False) -> dict:
+        """Run several input steps in one call, holding the seat for all of them, and observe only
+        the end state. Stops at the first step that fails."""
+        checked = self._batch_steps(steps)
+        logged = [{"tool": n, **_redact(a)} for n, a in checked]
+
+        def do():
+            done: list[dict] = []
+            result: dict = {"done": 0, "steps": done}
+            self._batching, self._pending = True, None
+            try:
+                self._run_steps(checked, result, done)
+            finally:
+                self._batching = False
+            if self._deferred is not None:  # one observation for the whole batch, into this result
+                self._deferred = (result, show_change)
+            return result
+
+        return self._act("batch", {"steps": logged}, do,
+                         loggable=lambda r: {k: r[k] for k in ("done", "failed") if k in r})
+
+    def _run_steps(self, checked, result: dict, done: list) -> None:
+        for i, (name, args) in enumerate(checked):
+            try:
+                out = getattr(self, name)(**args)
+            except Exception as exc:  # the steps before it were sent: report, then observe them
+                msg = str(exc) if isinstance(exc, CcdeskError) else f"{type(exc).__name__}: {exc}"
+                result["failed"] = {"index": i, "tool": name, "error": msg}
+                break
+            done.append({"tool": name, **{k: v for k, v in out.items() if k not in ("window", "hint")}})
+            result["done"] = i + 1
 
     def wait_for_change(self, region=None, timeout: float = 10, settle_ms: int = 500) -> dict:
         """Wait until the screen differs from how it looked right after the latest action (or, with

@@ -199,8 +199,10 @@ servers only at startup.
 ### Several agents on one screen
 
 A screen has one pointer and one keyboard focus. Every input action takes a lock on the display
-for its whole run (the focus check, the clicks or keys), so two ccdesk servers on the same
-display take turns one action at a time and never interleave inside an action. Give each server
+for the focus check and the clicks or keys, so two ccdesk servers on the same display take turns
+one action at a time and never interleave inside an action. Waiting for the app to settle and
+comparing the window afterwards only reads the screen, so it runs after the lock is released.
+A `batch` call holds the lock for all of its steps. Give each server
 a name with `--agent`:
 
 ```sh
@@ -226,6 +228,10 @@ itself off and `doctor` says so. The colour is picked from the name; set it with
 
 In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
 in 4.1 s. With no lock, both windows came out with letters from both agents.
+With two agents typing 15 words each and no `ui_tree`, comparing outside the lock cut the time an
+action holds it from 0.48 s to 0.13 s, and both finished in 7.4 s instead of 14.4 s (2026-11-07).
+Because another agent may act while this one compares, a `screen_changed` can now include that
+agent's drawn cursor or its window moving over this one.
 
 #### A named private screen for several agents
 
@@ -298,9 +304,10 @@ while it is on.
 | `wait(seconds)` | Sleeps, up to 300 s. Right after an action, says `wait_for_change()` would have been the better call. |
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
-| `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
+| `ui_tree(window?, query?, page=false, max_nodes=300, shot_fallback=true)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
 | `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. When the app ignores or refuses the write and keeps its old value, as Firefox and Chromium web forms do, it clicks the field, selects all and types the text, then reads it back (`typed: true`). |
+| `batch(steps, show_change=false)` | Runs 1 to 20 input steps (`click_element`, `set_value`, `type_text`, `press_key`, `click`, `scroll`, `move`, `drag`, `activate_window`, `wait` up to 5 s) in one call: the seat is taken once, every step keeps its own checks (destructive keys still need `confirm=true`) and audit entry, and only the final state is observed (`changes` or `screen_changed`). All steps are validated before the first one runs; it stops at the first failure and reports `done`, `steps` and `failed`. Use it to fill a form from one `ui_tree()`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -387,7 +394,11 @@ busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled 
 ```
 
 When `ui_tree()` finds no window, its error names the window that is missing from the bus,
-what is on the bus, and this fix, so Claude can ask you to apply it.
+what is on the bus, and this fix, so Claude can ask you to apply it. Together with that text,
+`ui_tree()` attaches a picture of the window (at most about 1500 tokens), so the model does not
+need another request for `screenshot()`. It does the same when the tree has fewer than 3 lines and
+none with a button, field or other role to act on (an Electron or canvas window). Not with
+`query=`, and `shot_fallback=false` turns it off.
 
 The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python with PyGObject
 (`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
@@ -433,7 +444,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
-- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `click_element`, `set_value`, `move`,
+- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `batch`, `click`, `click_element`, `set_value`, `move`,
   `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with
