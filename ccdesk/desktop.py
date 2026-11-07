@@ -5,6 +5,7 @@ Everything the MCP server exposes is a method here, so it can be tested without 
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shlex
@@ -32,7 +33,7 @@ from ccdesk.parsing import (
     parse_window_ref,
     png_size,
 )
-from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
+from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, _redact, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 from ccdesk.seat import SeatLock, seat_key
 
@@ -42,6 +43,10 @@ YIELDING_TOOLS = INPUT_TOOLS - {"launch", "clipboard_set"}
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
+BATCH_TOOLS = ("click_element", "set_value", "type_text", "press_key", "click", "scroll", "move", "drag",
+               "activate_window", "wait")
+MAX_BATCH_STEPS = 20
+MAX_BATCH_WAIT = 5.0  # seconds per wait step: the seat is held meanwhile
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
 POLL = 0.2  # seconds between captures in wait_for_change
 MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) before it is refused
@@ -120,6 +125,7 @@ class Desktop:
                     if tool in YIELDING_TOOLS:
                         self._yield_done = self._yield_to_user()
                     outer = self._deferring
+                    deferred = None
                     self._deferring = True
                     try:
                         with self.seat:  # the focus check and the input itself, with no other agent in between
@@ -132,16 +138,15 @@ class Desktop:
                                     self.seat.note_input(self.clock())
                     finally:
                         self._deferring = outer
-                        deferred, self._deferred = self._deferred, None
-                    if deferred is not None and not outer:
+                        if not outer:  # a nested action (a step of batch) leaves it to the outermost one
+                            deferred, self._deferred = self._deferred, None
+                    if deferred is not None:
                         # Out of the seat: settling and re-reading the window only reads the screen,
                         # so the other agents can send their input meanwhile.
                         result = self._observe(*deferred)
-                    elif deferred is not None:
-                        self._deferred = deferred  # a nested action: the outermost one observes
                 finally:
-                    self._yield_done = None
                     if not self._deferring:
+                        self._yield_done = None  # a step inside batch keeps the wait the batch did
                         self._flush_cursor()
             else:
                 result = fn()
@@ -921,6 +926,59 @@ class Desktop:
             return result
 
         return self._act("wait", {"seconds": seconds}, do)
+
+    def _batch_steps(self, steps) -> list[tuple[str, dict]]:
+        """Check every step before any input is sent: a mistake in step 7 must not leave 1-6 done."""
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_BATCH_STEPS:
+            raise ValidationError(f"steps must be a list of 1 to {MAX_BATCH_STEPS} steps")
+        checked = []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or not isinstance(step.get("tool"), str):
+                raise ValidationError(f"step {i}: expected an object with a \"tool\" name")
+            name = step["tool"]
+            args = {k: v for k, v in step.items() if k != "tool"}
+            if name not in BATCH_TOOLS:
+                raise ValidationError(f"step {i}: {name!r} cannot run in a batch (use one of {', '.join(BATCH_TOOLS)})")
+            if "show_change" in args:
+                raise ValidationError(f"step {i}: show_change belongs to the batch call, not to a step")
+            try:
+                inspect.signature(getattr(self, name)).bind(**args)
+            except TypeError as exc:
+                raise ValidationError(f"step {i} ({name}): {exc}") from None
+            if name == "wait":
+                try:
+                    ok = 0 <= float(args["seconds"]) <= MAX_BATCH_WAIT
+                except (TypeError, ValueError):
+                    ok = False
+                if not ok:
+                    raise ValidationError(f"step {i}: wait in a batch takes 0 to {MAX_BATCH_WAIT:g} seconds")
+            checked.append((name, args))
+        return checked
+
+    def batch(self, steps: list[dict], show_change: bool = False) -> dict:
+        """Run several input steps in one call, holding the seat for all of them, and observe only
+        the end state. Stops at the first step that fails."""
+        checked = self._batch_steps(steps)
+        logged = [{"tool": n, **_redact(a)} for n, a in checked]
+
+        def do():
+            done: list[dict] = []
+            result: dict = {"done": 0, "steps": done}
+            for i, (name, args) in enumerate(checked):
+                try:
+                    out = getattr(self, name)(**args)
+                except Exception as exc:  # the steps before it were sent: report, then observe them
+                    msg = str(exc) if isinstance(exc, CcdeskError) else f"{type(exc).__name__}: {exc}"
+                    result["failed"] = {"index": i, "tool": name, "error": msg}
+                    break
+                done.append({"tool": name, **{k: v for k, v in out.items() if k not in ("window", "hint")}})
+                result["done"] = i + 1
+            if self._deferred is not None:  # one observation for the whole batch, into this result
+                self._deferred = (result, show_change)
+            return result
+
+        return self._act("batch", {"steps": logged}, do,
+                         loggable=lambda r: {k: r[k] for k in ("done", "failed") if k in r})
 
     def wait_for_change(self, region=None, timeout: float = 10, settle_ms: int = 500) -> dict:
         """Wait until the screen differs from how it looked right after the latest action (or, with
