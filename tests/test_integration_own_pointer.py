@@ -110,3 +110,88 @@ def test_a_stale_master_from_a_crash_is_replaced(screen):
     finally:
         m.close()
     assert devices(env) == []
+
+
+# -- bspwm must ignore the agent's clicks ----------------------------------------------------------------
+
+BUTTON_APP = Path(__file__).with_name("gtk_button_app.py")
+
+
+def bspc(env, *args) -> str:
+    return subprocess.run(["bspc", *args], env=env, capture_output=True, text=True).stdout.strip()
+
+
+def core_focus(env) -> int:
+    return int(subprocess.run(["xdotool", "getwindowfocus"], env=env, capture_output=True, text=True).stdout)
+
+
+def test_bspwm_does_not_move_the_users_focus_on_agent_clicks(screen, tmp_path):
+    from ccdesk.backends.x11_own import OwnPointerBackend
+
+    hl, env, procs = screen
+    if hl.info().get("window_manager") != "bspwm" or not shutil.which("bspc"):
+        pytest.skip("needs bspwm as the headless window manager")
+    backend = X11Backend(env=env)
+    ids, files = [], []
+    for name in ("A", "B"):
+        f = tmp_path / f"{name}.txt"
+        files.append(f)
+        procs.append(subprocess.Popen(["/usr/bin/python3", str(BUTTON_APP), str(f), f"BTN-{name}"],
+                                      env=dict(env, GDK_BACKEND="x11")))
+        ids.append(wait_for(lambda n=name: next((w.id for w in backend.list_windows() if w.title == f"BTN-{n}"), None)))
+        wait_for(f.exists)
+    a, b = ids
+    for wid, x in zip(ids, (50, 700)):
+        backend.move_window(next(w for w in backend.list_windows() if w.id == wid), x, 100)
+    time.sleep(0.5)
+    win_a = next(w for w in backend.list_windows() if w.id == a)
+    original = bspc(env, "config", "click_to_focus")
+    assert original and original != "none"
+
+    mpx = Mpx("clk", env)
+    mpx.create()
+    try:
+        own = OwnPointerBackend(mpx, env=env)
+        assert own.click_guard.active()
+        bspc(env, "node", b, "-f")  # the user is working in B
+        time.sleep(0.3)
+        user_focus = core_focus(env)
+        assert user_focus == int(b, 16)
+        for _ in range(10):
+            own.click(win_a.x + win_a.width // 2, win_a.y + win_a.height // 2, 1, 1)
+            time.sleep(0.15)
+            assert core_focus(env) == user_focus
+            assert bspc(env, "query", "-N", "-n", "focused") == b
+            assert bspc(env, "config", "click_to_focus") == original
+        time.sleep(0.3)
+        assert files[0].read_text() == "CLICKED 10"
+        assert files[1].read_text() == "CLICKED 0"
+        assert bspc(env, "config", "click_to_focus") == original
+        # the user's own click, on the core pointer, still focuses the window
+        subprocess.run(["xdotool", "mousemove", str(win_a.x + win_a.width // 2), str(win_a.y + 50), "click", "1"],
+                       env=env, check=True)
+        wait_for(lambda: core_focus(env) == int(a, 16))
+    finally:
+        mpx.close()
+
+
+def test_a_second_agent_with_the_same_name_is_refused_and_leftovers_of_dead_ones_are_cleaned(screen):
+    from ccdesk.doctor import housekeeping
+
+    hl, env, procs = screen
+    subprocess.run(["xinput", "create-master", "ccdesk-dead"], env=env, check=True)  # what kill -9 leaves
+    first = Mpx("dup", env)
+    first.create()
+    try:
+        assert first.cleaned == ["ccdesk-dead"]
+        ids = {r["id"] for r in devices(env)}
+        with pytest.raises(CcdeskError, match="another ccdesk agent named dup is running"):
+            Mpx("dup", env).create()
+        assert {r["id"] for r in devices(env)} == ids  # the first agent's pair is untouched
+        subprocess.run(["xinput", "create-master", "ccdesk-dead2"], env=env, check=True)
+        done = housekeeping(X11Backend(env=env))
+        assert done["removed_devices"] == ["ccdesk-dead2"]  # doctor, with the live "dup" left alone
+        assert {r["name"] for r in devices(env) if r["kind"] == "master"} == {"ccdesk-dup pointer", "ccdesk-dup keyboard"}
+    finally:
+        first.close()
+    assert devices(env) == []

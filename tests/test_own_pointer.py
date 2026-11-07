@@ -146,11 +146,17 @@ class ScriptedXinput:
     def __init__(self, stale=False):
         self.calls: list[tuple] = []
         self.has_pair = stale
+        self.name = "ccdesk-a"  # whose pair `xinput list` shows (ids 8 to 11)
+        self.extra = False  # also show a pair of an agent "dead" (ids 20 to 23)
 
     def __call__(self, *args):
         self.calls.append(args)
         if args[0] == "list":
-            return XINPUT_LIST if self.has_pair else ""
+            text = XINPUT_LIST.replace("ccdesk-a", self.name) if self.has_pair else ""
+            if self.extra:
+                text += XINPUT_LIST.replace("ccdesk-a", "ccdesk-dead").replace("id=8", "id=20").replace(
+                    "id=9", "id=21").replace("id=10", "id=22").replace("id=11", "id=23")
+            return text
         if args[0] == "create-master":
             self.has_pair = True
         if args[0] == "remove-master":
@@ -173,9 +179,9 @@ def test_create_removes_a_stale_pair_first_and_close_removes_ours():
     assert m.ids["master_keyboard"] == 9
     run.calls.clear()
     m.close()
-    assert [c[0] for c in run.calls] == ["remove-master"]
+    assert [c[0] for c in run.calls] == ["list", "remove-master"]  # it checks the pair is still ours
     m.close()  # idempotent
-    assert [c[0] for c in run.calls] == ["remove-master"]
+    assert [c[0] for c in run.calls] == ["list", "remove-master"]
 
 
 def test_create_without_a_stale_pair_does_not_remove():
