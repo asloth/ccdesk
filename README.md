@@ -196,6 +196,25 @@ does, like a web console or a chat you're signed in to. Keep your hands off the 
 Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
 servers only at startup.
 
+### Several agents on one screen
+
+A screen has one pointer and one keyboard focus. Every input action takes a lock on the display
+for its whole run (the focus check, the clicks or keys), so two ccdesk servers on the same
+display take turns one action at a time and never interleave inside an action. Give each server
+a name with `--agent`:
+
+```sh
+ccdesk mcp --agent bot-1
+ccdesk mcp --agent bot-2
+```
+
+With `--agent`, when another agent has moved focus away from the window this agent activated,
+ccdesk activates that window again and sends the input. Without it, ccdesk refuses, because the
+one who moved focus is probably you. Audit entries carry the agent's name.
+
+In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
+in 4.1 s. With no lock, both windows came out with letters from both agents.
+
 ### Firefox for Claude, without the mouse (opt-in)
 
 For web pages, ccdesk can hand off to Mozilla's

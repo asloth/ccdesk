@@ -73,6 +73,9 @@ def build_parser() -> argparse.ArgumentParser:
     _policy_flags(p)
     p.add_argument("--backend", choices=["x11", "wayland"], help="force a backend instead of auto-detecting")
     p.add_argument("--audit-log", metavar="PATH", help="audit log path (default ~/.cache/ccdesk/audit.log)")
+    p.add_argument("--agent", metavar="NAME",
+                   help="this server is one of several agents on the same screen: tag its audit entries "
+                        "with NAME and take its window back when another agent moved focus")
     _headless_flags(p)
 
     p = sub.add_parser("firefox", help="start your Firefox with automation on (for install --firefox mine)")
@@ -165,8 +168,9 @@ def _mcp(args) -> int:
             backend=backend,
             policy=Policy(read_only=args.read_only, allow_launch=args.allow_launch,
                           confirm_keys=parse_confirm_keys(args.confirm_keys), yield_ms=args.yield_ms),
-            audit=AuditLog(args.audit_log),
+            audit=AuditLog(args.audit_log, agent=args.agent),
             headless=headless,
+            agent=args.agent,
         )
         desktop.audit.record("server_start", {"read_only": args.read_only, "allow_launch": args.allow_launch,
                                               "confirm_keys": args.confirm_keys, "yield_ms": args.yield_ms,

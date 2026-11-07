@@ -34,6 +34,7 @@ from ccdesk.parsing import (
 )
 from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
 from ccdesk.screendiff import Grid, changed_box
+from ccdesk.seat import SeatLock, seat_key
 
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
@@ -68,8 +69,12 @@ def shown(value) -> str:
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
-                 a11y: A11y | None = None, headless=None, screen_diff: bool = True):
+                 a11y: A11y | None = None, headless=None, screen_diff: bool = True,
+                 agent: str | None = None, seat: SeatLock | None = None):
         self.backend = backend or get_backend()
+        # With several agents on one screen: this one's name, and the lock they all share.
+        self.agent = agent
+        self.seat = seat or SeatLock(seat_key(self.backend.name, self.backend.env))
         self.a11y = a11y or A11y()
         self.a11y.locate = self.backend.window_origin
         self.headless = headless  # ccdesk.headless.Headless when the agent has its own screen
@@ -99,7 +104,11 @@ class Desktop:
         start = time.monotonic()
         try:
             self.policy.check(policy_tool or tool)
-            result = fn()
+            if (policy_tool or tool) in INPUT_TOOLS:
+                with self.seat:  # the focus check and the input itself, with no other agent in between
+                    result = fn()
+            else:
+                result = fn()
         except PolicyError as exc:  # refused before any input was sent
             self.audit.record(tool, args, "denied", error=str(exc))
             raise
@@ -271,6 +280,12 @@ class Desktop:
             windows = {}
         window = self._receiver(windows, point) if windows else None
         target = self._target
+        if (self.agent and target and not force and window is not None and target.id in windows
+                and not self._belongs_to_target(window)):
+            # Another agent on this screen moved focus or raised its window over ours. We hold the
+            # seat lock, so take our window back and check again.
+            self.backend.activate_window(target)
+            window = self._receiver(windows, point)
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
             if target.id not in windows:
