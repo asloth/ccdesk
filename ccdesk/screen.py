@@ -7,12 +7,14 @@ leaving the server does not stop the screen, `ccdesk screen stop NAME` (or Ctrl-
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 import signal
 import sys
 import threading
+import time
 from pathlib import Path
 
 from ccdesk import headless as hl
@@ -39,13 +41,34 @@ def state_path(name: str) -> Path:
     return state_dir() / f"{check_name(name)}.json"
 
 
-def _alive(pid) -> bool:
+def _proc_stat(pid) -> list[str] | None:
+    """Fields 3.. of /proc/<pid>/stat (state first, start time at index 19), or None if unreadable."""
+    try:
+        text = Path(f"/proc/{int(pid)}/stat").read_text()
+    except (OSError, ValueError, TypeError):
+        return None
+    return text.rpartition(")")[2].split()
+
+
+def start_time(pid) -> str | None:
+    fields = _proc_stat(pid)
+    return fields[19] if fields and len(fields) > 19 else None
+
+
+def _alive(pid, started: str | None = None) -> bool:
+    """Is `pid` a live process (not a zombie) and, when `started` is given, still the same process."""
     try:
         os.kill(int(pid), 0)
     except PermissionError:
-        return True
+        pass
     except (OSError, ValueError, TypeError):
         return False
+    if Path("/proc/self/stat").exists():
+        fields = _proc_stat(pid)
+        if not fields or fields[0] in ("Z", "X"):
+            return False
+        if started is not None and (len(fields) < 20 or fields[19] != str(started)):
+            return False
     return True
 
 
@@ -54,7 +77,7 @@ def read_state(name: str) -> dict | None:
     path = state_path(name)
     try:
         info = json.loads(path.read_text())
-        if _alive(info["pid"]):
+        if _alive(info["pid"], info.get("started")):
             return info
     except FileNotFoundError:
         return None
@@ -86,7 +109,8 @@ def write_state(name: str, screen: hl.Headless) -> Path:
         d.mkdir(parents=True, exist_ok=True)
         os.chmod(d, 0o700)
     w, h = screen.size
-    info = {"name": name, "pid": os.getpid(), "display": screen.display, "size": f"{w}x{h}",
+    info = {"name": name, "pid": os.getpid(), "started": start_time(os.getpid()),
+            "display": screen.display, "size": f"{w}x{h}",
             "wm": screen.wm_name, "private_bus": screen.private_bus, "notes": screen.notes,
             "env": screen_env(screen.env)}
     path = state_path(name)
@@ -130,8 +154,26 @@ def join(name: str, base_env: dict | None = None) -> JoinedScreen:
 
 def start(name: str, size: str = hl.DEFAULT_SIZE, wm: str = "auto") -> int:
     check_name(name)
-    if read_state(name):
+    folder = state_dir()
+    for d in (folder.parent, folder):
+        d.mkdir(parents=True, exist_ok=True)
+        os.chmod(d, 0o700)
+    # Held for the screen's whole life; the kernel drops it if this process dies.
+    lock = open(folder / f"{name}.lock", "a")
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except OSError:
+        lock.close()
         raise CcdeskError(f"screen {name!r} is already running (stop it with `ccdesk screen stop {name}`)")
+    try:
+        if read_state(name):
+            raise CcdeskError(f"screen {name!r} is already running (stop it with `ccdesk screen stop {name}`)")
+        return _run(name, size, wm)
+    finally:
+        lock.close()
+
+
+def _run(name: str, size: str, wm: str) -> int:
     screen = hl.Headless(size=size, wm=wm)
     stop = threading.Event()
     signal.signal(signal.SIGINT, lambda *_: stop.set())
@@ -151,13 +193,29 @@ def start(name: str, size: str = hl.DEFAULT_SIZE, wm: str = "auto") -> int:
                 break
     finally:
         if path:
-            path.unlink(missing_ok=True)
+            try:
+                if json.loads(path.read_text()).get("pid") == os.getpid():
+                    path.unlink(missing_ok=True)
+            except (OSError, ValueError):
+                pass
         screen.stop()
     return 0
 
 
-def stop_screen(name: str) -> None:
-    info = read_state(name)
+def stop_screen(name: str, timeout: float = 5.0) -> None:
+    info = read_state(name)  # also checks the pid is still the screen, not a reused one
     if not info:
         raise CcdeskError(f"no screen named {name!r} is running")
-    os.kill(int(info["pid"]), signal.SIGTERM)
+    pid = int(info["pid"])
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        raise CcdeskError(f"no screen named {name!r} is running")
+    except PermissionError:
+        raise CcdeskError(f"cannot stop screen {name!r} (pid {pid}): it belongs to another user")
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if not _alive(pid, info.get("started")):
+            return
+        time.sleep(0.05)
+    raise CcdeskError(f"screen {name!r} (pid {pid}) did not exit within {timeout:g}s after SIGTERM")

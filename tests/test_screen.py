@@ -1,7 +1,12 @@
 """Named screens without starting anything: state file, permissions, duplicates, stale files, joining env."""
 
 import json
+import fcntl
+import multiprocessing
 import os
+import subprocess
+import sys
+import time
 
 import pytest
 
@@ -100,7 +105,8 @@ def test_stop_sends_sigterm_to_the_pid(runtime, monkeypatch):
     sent = []
     real_kill = os.kill
     monkeypatch.setattr(os, "kill", lambda pid, sig: sent.append((pid, sig)) if sig else real_kill(pid, sig))
-    screen.stop_screen("t1")
+    with pytest.raises(CcdeskError, match="did not exit"):  # the fake signal kills nothing
+        screen.stop_screen("t1", timeout=0.2)
     assert sent == [(os.getpid(), 15)]
     with pytest.raises(CcdeskError):
         screen.stop_screen("missing")
@@ -136,3 +142,94 @@ def test_peek_lists_named_screens(runtime, monkeypatch, capsys):
     monkeypatch.setattr(backends, "X11Backend", B)
     assert cli.main(["peek"]) == 0
     assert "screen t1" in capsys.readouterr().out
+
+
+def _write_pid_state(name, pid, started):
+    path = screen.write_state(name, fake_screen())
+    info = json.loads(path.read_text())
+    info["pid"], info["started"] = pid, started
+    path.write_text(json.dumps(info))
+    return path
+
+
+def test_zombie_pid_is_not_a_running_screen(runtime):
+    pid = os.fork()
+    if pid == 0:
+        os._exit(0)
+    try:
+        for _ in range(100):  # wait until it is a zombie, without reaping it
+            if screen._proc_stat(pid) and screen._proc_stat(pid)[0] == "Z":
+                break
+            time.sleep(0.02)
+        path = _write_pid_state("z", pid, None)
+        assert screen.read_state("z") is None and not path.exists()
+    finally:
+        os.waitpid(pid, 0)
+
+
+def test_reused_pid_with_other_start_time_is_not_the_screen_and_stop_spares_it(runtime):
+    sleeper = subprocess.Popen(["sleep", "60"])
+    try:
+        path = _write_pid_state("r", sleeper.pid, "1")  # not the real start time
+        assert screen.read_state("r") is None and not path.exists()
+        _write_pid_state("r", sleeper.pid, "1")
+        with pytest.raises(CcdeskError, match="no screen"):
+            screen.stop_screen("r")
+        assert sleeper.poll() is None
+        _write_pid_state("r", sleeper.pid, screen.start_time(sleeper.pid))
+        assert screen.read_state("r")["pid"] == sleeper.pid
+    finally:
+        sleeper.kill()
+        sleeper.wait()
+
+
+def test_stop_turns_permission_error_into_a_clear_error(runtime, monkeypatch):
+    screen.write_state("t1", fake_screen())
+    real_kill = os.kill
+
+    def kill(pid, sig):
+        if sig:
+            raise PermissionError
+        return real_kill(pid, sig)
+
+    monkeypatch.setattr(os, "kill", kill)
+    with pytest.raises(CcdeskError, match="another user"):
+        screen.stop_screen("t1")
+
+
+def test_stop_waits_for_the_screen_to_exit(runtime):
+    sleeper = subprocess.Popen(["sleep", "60"])
+    try:
+        _write_pid_state("w", sleeper.pid, screen.start_time(sleeper.pid))
+        import threading
+        threading.Thread(target=sleeper.wait, daemon=True).start()  # reaps it once SIGTERM lands
+        screen.stop_screen("w", timeout=5)
+        assert sleeper.poll() is not None
+    finally:
+        sleeper.kill()
+
+
+def _hold_lock(path, ready, release):
+    f = open(path, "a")
+    fcntl.flock(f, fcntl.LOCK_EX)
+    ready.set()
+    release.wait(10)
+
+
+def test_start_refuses_when_another_process_holds_the_screen_lock(runtime, monkeypatch):
+    ctx = multiprocessing.get_context("spawn")
+    ready, release = ctx.Event(), ctx.Event()
+    folder = screen.state_dir()
+    folder.mkdir(parents=True)
+    proc = ctx.Process(target=_hold_lock, args=(str(folder / "dup.lock"), ready, release))
+    proc.start()
+    try:
+        assert ready.wait(20)
+        built = []
+        monkeypatch.setattr(headless, "Headless", lambda **kw: built.append(kw))
+        with pytest.raises(CcdeskError, match="already running"):
+            screen.start("dup")
+        assert built == []
+    finally:
+        release.set()
+        proc.join(10)
