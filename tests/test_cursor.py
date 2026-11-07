@@ -92,7 +92,22 @@ def test_desktop_moves_the_cursor_after_pointer_actions(tmp_path):
     d._show_cursor(10, 20)
     d._cursor_to_node({"box": (100, 200, 40, 20)})
     d._cursor_to_node({"box": None})
-    assert spy.moves == [(10, 20), (120, 210)]
+    assert spy.moves == []  # nothing moves until the action is over
+    d._flush_cursor()
+    assert spy.moves == [(120, 210)]  # the latest point wins
+    d.click(30, 40)
+    assert spy.moves[-1] == (30, 40)
+
+
+def test_cursor_moves_after_the_change_check(tmp_path):
+    """The agent's own arrow must not be in the window when _changes() compares it."""
+    spy = Spy()
+    d, _ = desk(tmp_path, spy)
+    seen = []
+    real = d._changes
+    d._changes = lambda *a, **k: (seen.append(list(spy.moves)), real(*a, **k))[1]
+    d.click(30, 40)
+    assert seen == [[]] and spy.moves == [(30, 40)]
 
 
 def test_no_cursor_without_an_agent_name(tmp_path):

@@ -36,6 +36,9 @@ from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 from ccdesk.seat import SeatLock, seat_key
 
+# Input tools that wait for the user with --yield-ms (launch and clipboard never did).
+YIELDING_TOOLS = INPUT_TOOLS - {"launch", "clipboard_set"}
+
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
@@ -99,6 +102,8 @@ class Desktop:
         self.clock = time.monotonic
         self._own_input: float | None = None  # clock() when ccdesk's latest input action finished
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
+        self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
+        self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
 
     # -- plumbing -------------------------------------------------------------
 
@@ -107,8 +112,15 @@ class Desktop:
         try:
             self.policy.check(policy_tool or tool)
             if (policy_tool or tool) in INPUT_TOOLS:
+                # Wait for the user before taking the seat: a human at the mouse must not stall the
+                # other agents too. The action's own _yield_to_user() calls then return this result.
+                if tool in YIELDING_TOOLS:
+                    self._yield_done = self._yield_to_user()
                 with self.seat:  # the focus check and the input itself, with no other agent in between
-                    result = fn()
+                    try:
+                        result = fn()
+                    finally:
+                        self._flush_cursor()
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -130,8 +142,16 @@ class Desktop:
         return result
 
     def _show_cursor(self, x: int, y: int) -> None:
+        """Move the drawn cursor once the action is over: after _changes() has compared the window,
+        so its own arrow never counts as the app changing."""
         if self.cursor is not None:
-            self.cursor.move(x, y)
+            self._cursor_next = (x, y)
+
+    def _flush_cursor(self) -> None:
+        self._yield_done = None
+        point, self._cursor_next = self._cursor_next, None
+        if point is not None and self.cursor is not None:
+            self.cursor.move(*point)
 
     def _cursor_to_node(self, node: dict | None) -> None:
         if self.cursor is not None and node and node.get("box"):
@@ -145,6 +165,8 @@ class Desktop:
     def _yield_to_user(self) -> int:
         """With --yield-ms, hold input while the user is using the mouse or keyboard: wait until
         they have been idle that long, up to MAX_YIELD. Returns how long it waited, in ms."""
+        if self._yield_done is not None:
+            return self._yield_done  # _act already waited, before taking the seat
         need = self.policy.yield_ms
         if not need:
             return 0
@@ -920,6 +942,11 @@ class Desktop:
     def doctor(self) -> dict:
         from ccdesk.doctor import build_report
 
-        return self._act("doctor", {}, lambda: build_report(self.backend, self.policy, self.audit.path, self.a11y,
-                                                     self.headless, self.cursor),
+        def report():
+            r = build_report(self.backend, self.policy, self.audit.path, self.a11y, self.headless, self.cursor)
+            if self.seat.unavailable:
+                r["warnings"].append(self.seat.unavailable)
+            return r
+
+        return self._act("doctor", {}, report,
                          loggable=lambda r: {"backend": r["backend"], "ready": r["ready"], "missing": r["missing"]})

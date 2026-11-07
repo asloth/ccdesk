@@ -2,6 +2,7 @@
 
 import multiprocessing
 import os
+from pathlib import Path
 
 import pytest
 
@@ -25,7 +26,7 @@ def test_seat_key_follows_the_backend():
 def test_lock_dir_prefers_runtime_dir(monkeypatch, tmp_path):
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
     assert lock_dir() == tmp_path / "ccdesk"
-    monkeypatch.delenv("XDG_RUNTIME_DIR")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "missing"))
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "c"))
     assert lock_dir() == tmp_path / "c" / "ccdesk" / "locks"
 
@@ -149,3 +150,63 @@ def test_without_agent_focus_change_is_still_refused(make_desk, fake):
     fake.active = fake.under = TERMINAL
     with pytest.raises(PolicyError, match="the user may have switched windows"):
         d.type_text("hi")
+
+
+def test_threads_of_one_process_take_turns(tmp_path):
+    """The MCP server runs tool calls on worker threads: two calls of one agent must not overlap."""
+    import threading
+    import time as _t
+    lock = SeatLock("k", directory=tmp_path)
+    inside, peak = [0], [0]
+
+    def work():
+        with lock:
+            inside[0] += 1
+            peak[0] = max(peak[0], inside[0])
+            _t.sleep(0.1)
+            inside[0] -= 1
+
+    threads = [threading.Thread(target=work) for _ in range(3)]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+    assert peak[0] == 1 and lock._fd is None
+
+
+def test_timeout_from_env(monkeypatch, tmp_path):
+    monkeypatch.setenv("CCDESK_SEAT_TIMEOUT", "7")
+    assert SeatLock("k", directory=tmp_path).timeout == 7
+    monkeypatch.setenv("CCDESK_SEAT_TIMEOUT", "junk")
+    assert SeatLock("k", directory=tmp_path).timeout == 180
+
+
+def test_lock_dir_is_the_same_without_runtime_env(monkeypatch, tmp_path):
+    import os as _os
+    run = f"/run/user/{_os.getuid()}"
+    if not _os.path.isdir(run):
+        pytest.skip("no /run/user for this uid")
+    monkeypatch.delenv("XDG_RUNTIME_DIR", raising=False)
+    assert lock_dir() == Path(run) / "ccdesk"
+
+
+def test_unwritable_lock_dir_leaves_input_working(make_desk, fake, tmp_path):
+    d = make_desk()
+    d.seat = SeatLock("k", directory=Path("/proc/ccdesk-cannot-exist"))
+    assert d.click(10, 20)["clicked"] == {"x": 10, "y": 20}
+    assert "no input lock" in d.seat.unavailable
+    assert any("no input lock" in w for w in d.doctor()["warnings"])
+
+
+def test_yield_happens_before_the_seat(make_desk, fake):
+    d = make_desk(yield_ms=500)
+    seat = d.seat = RecordingSeat()
+    held_while_yielding = []
+    real = d._yield_to_user
+
+    def spy():
+        held_while_yielding.append(seat.held)
+        return real()
+    d._yield_to_user = spy
+    d.click(10, 20)
+    assert held_while_yielding and held_while_yielding[0] is False

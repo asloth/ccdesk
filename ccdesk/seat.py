@@ -15,19 +15,31 @@ from __future__ import annotations
 import fcntl
 import os
 import re
+import threading
 import time
 from pathlib import Path
 
 from ccdesk.errors import CcdeskError
 from ccdesk.safety import cache_dir
 
-DEFAULT_TIMEOUT = 30.0
+# One type_text of the longest allowed text takes ~2 minutes at xdotool's 12 ms per character:
+# a waiting agent must outlast that. CCDESK_SEAT_TIMEOUT overrides it (seconds).
+DEFAULT_TIMEOUT = 180.0
 POLL = 0.02
 
 
 def lock_dir() -> Path:
-    runtime = os.environ.get("XDG_RUNTIME_DIR")
-    return Path(runtime) / "ccdesk" if runtime else cache_dir() / "locks"
+    """The same folder for every ccdesk of this user, however it was started: a server run from a
+    systemd unit or `env -i` without XDG_RUNTIME_DIR must still find the terminal one's lock."""
+    runtime = os.environ.get("XDG_RUNTIME_DIR") or f"/run/user/{os.getuid()}"
+    return Path(runtime) / "ccdesk" if os.path.isdir(runtime) else cache_dir() / "locks"
+
+
+def default_timeout() -> float:
+    try:
+        return max(1.0, float(os.environ["CCDESK_SEAT_TIMEOUT"]))
+    except (KeyError, ValueError):
+        return DEFAULT_TIMEOUT
 
 
 def seat_key(backend_name: str, env: dict) -> str:
@@ -40,38 +52,59 @@ def seat_key(backend_name: str, env: dict) -> str:
 
 
 class SeatLock:
-    """Reentrant within one process (nested input actions take it once), exclusive across processes."""
+    """Exclusive across processes and across the threads of one process (the MCP server runs each
+    tool call on a worker thread, so one agent's calls can overlap); reentrant for the thread that
+    holds it, so a nested input action takes it once."""
 
-    def __init__(self, key: str, directory: Path | None = None, timeout: float = DEFAULT_TIMEOUT,
+    def __init__(self, key: str, directory: Path | None = None, timeout: float | None = None,
                  clock=time.monotonic, sleep=time.sleep):
         self.key = key
         self.path = (directory or lock_dir()) / f"input-{key}.lock"
-        self.timeout = timeout
+        self.timeout = default_timeout() if timeout is None else timeout
         self.clock = clock
         self.sleep = sleep
         self._fd: int | None = None
         self._depth = 0
+        self._threads = threading.RLock()
         self.waited_ms = 0  # how long the latest outermost acquire waited for another agent
+        self.unavailable: str | None = None  # why there is no lock file: input then goes unlocked
 
     def __enter__(self) -> SeatLock:
-        if self._depth == 0:
-            self._acquire()
+        start = self.clock()
+        if not self._threads.acquire(timeout=self.timeout):
+            raise CcdeskError(f"another call of this agent has held the input on {self.key} for "
+                              f"{self.timeout:.0f}s; wait() and retry")
+        try:
+            if self._depth == 0:
+                self._acquire(start)
+        except BaseException:
+            self._threads.release()
+            raise
         self._depth += 1
         return self
 
     def __exit__(self, *exc) -> None:
         self._depth -= 1
-        if self._depth == 0 and self._fd is not None:
-            try:
-                fcntl.flock(self._fd, fcntl.LOCK_UN)
-            finally:
-                os.close(self._fd)
-                self._fd = None
+        try:
+            if self._depth == 0 and self._fd is not None:
+                try:
+                    fcntl.flock(self._fd, fcntl.LOCK_UN)
+                finally:
+                    os.close(self._fd)
+                    self._fd = None
+        finally:
+            self._threads.release()
 
-    def _acquire(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-        fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
-        start = self.clock()
+    def _acquire(self, start: float) -> None:
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            # A read-only home or a container without a runtime dir: one agent alone still works
+            # as it did before there was a lock. doctor() reports it.
+            self.unavailable = f"no input lock ({exc}); several agents on this screen may mix their input"
+            return
+        self.unavailable = None
         while True:
             try:
                 fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
