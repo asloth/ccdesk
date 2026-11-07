@@ -8,7 +8,9 @@ raises into an action: if the helper cannot run, the cursor turns itself off and
 from __future__ import annotations
 
 import atexit
+import fcntl
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -22,14 +24,58 @@ from ccdesk.a11y import helper_pythons
 HELPER = Path(__file__).with_name("cursor_helper.py")
 TITLE_PREFIX = "ccdesk-cursor:"
 OFFSET = 2  # the overlay sits just below-right of the point, never on the pixel the click lands on
-PALETTE = ("#e5484d", "#3e63dd", "#30a46c", "#f5a524", "#8e4ec6",
-           "#0ea5b7", "#d6409f", "#ff6b35", "#6e56cf", "#5b8c00")
+# Eight hues far enough apart to tell cursors apart at a glance (red, blue, green, orange,
+# purple, cyan, pink, yellow).
+PALETTE = ("#e5484d", "#3e63dd", "#30a46c", "#f76b15", "#8e4ec6", "#0ea5b7", "#d6409f", "#e2b600")
 
 
 def pick_color(name: str, given: str | None = None) -> str:
     if given:
         return given
     return PALETTE[int(hashlib.sha256(name.encode()).hexdigest(), 16) % len(PALETTE)]
+
+
+def _alive(pid) -> bool:
+    try:
+        os.kill(int(pid), 0)
+    except PermissionError:
+        return True
+    except (OSError, ValueError, TypeError):
+        return False
+    return True
+
+
+def claim_color(name: str, registry: Path, pid: int | None = None) -> str:
+    """A color no other live agent on this screen has. Agents note their pick in a small JSON
+    registry next to the seat lock; a name keeps its color across restarts while it is free. Starts
+    from the name's hash so the pick is stable, and falls back to it when all colors are taken."""
+    pid = os.getpid() if pid is None else pid
+    preferred = pick_color(name)
+    try:
+        registry.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+        fd = os.open(registry, os.O_RDWR | os.O_CREAT, 0o600)
+    except OSError:
+        return preferred
+    with os.fdopen(fd, "r+") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        try:
+            data = json.loads(f.read() or "{}")
+            if not isinstance(data, dict):
+                data = {}
+        except ValueError:
+            data = {}
+        live = {n: e for n, e in data.items()
+                if n != name and isinstance(e, dict) and e.get("color") in PALETTE and _alive(e.get("pid"))}
+        taken = {e["color"] for e in live.values()}
+        mine = data.get(name, {}).get("color") if isinstance(data.get(name), dict) else None
+        start = PALETTE.index(preferred)
+        order = ([mine] if mine in PALETTE else []) + [PALETTE[(start + i) % len(PALETTE)] for i in range(len(PALETTE))]
+        color = next((c for c in order if c not in taken), preferred)
+        live[name] = {"color": color, "pid": pid}
+        f.seek(0)
+        f.truncate()
+        json.dump(live, f)
+    return color
 
 
 def valid_color(text: str) -> bool:

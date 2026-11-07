@@ -9,7 +9,8 @@ import signal
 import sys
 
 from ccdesk import __version__
-from ccdesk.cursor import AgentCursor, valid_color
+from ccdesk.cursor import AgentCursor, claim_color, valid_color
+from ccdesk.seat import lock_dir, seat_key
 
 
 def _policy_flags(p: argparse.ArgumentParser) -> None:
@@ -203,7 +204,9 @@ def _mcp(args) -> int:
         if args.cursor_color and not valid_color(args.cursor_color):
             print("ccdesk mcp: --cursor-color must look like '#RRGGBB'", file=sys.stderr)
             return 1
-        cursor = AgentCursor(args.agent, args.cursor_color, env=backend.env)
+        color = args.cursor_color or claim_color(
+            args.agent, lock_dir() / f"cursors-{seat_key(backend.name, backend.env)}.json")
+        cursor = AgentCursor(args.agent, color, env=backend.env)
     try:
         desktop = Desktop(
             backend=backend,

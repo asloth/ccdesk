@@ -1,11 +1,12 @@
 """The drawn cursor, with a fake helper that records what it is sent (no GTK, no display)."""
 
+import os
 import sys
 import time
 from pathlib import Path
 
 from ccdesk.backends import X11Backend
-from ccdesk.cursor import OFFSET, PALETTE, AgentCursor, pick_color, valid_color
+from ccdesk.cursor import OFFSET, PALETTE, AgentCursor, claim_color, pick_color, valid_color
 from ccdesk.desktop import Desktop
 from ccdesk.safety import AuditLog
 from tests.test_backends import X11_ALL, make
@@ -122,3 +123,29 @@ def test_list_windows_hides_the_overlays_in_both_paths():
 
     b = X11Backend(env={"DISPLAY": ":0"}, runner=runner, which=lambda n: f"/usr/bin/{n}" if n == "xdotool" else None)
     assert [w.title for w in b.list_windows()] == ["real"]
+
+
+def test_palette_colors_are_distinct():
+    assert len(set(PALETTE)) == len(PALETTE) == 8
+
+
+def test_live_agents_on_one_screen_get_different_colors(tmp_path):
+    reg = tmp_path / "cursors.json"
+    me = os.getpid()
+    colors = [claim_color(f"bot-{i}", reg, pid=me) for i in range(1, 9)]
+    assert len(set(colors)) == 8  # every palette color once, even when the hashes collide
+    assert claim_color("bot-1", reg, pid=me) == colors[0]  # a name keeps its color
+    assert claim_color("bot-9", reg, pid=me) in PALETTE  # all taken: falls back to its hash pick
+
+
+def test_dead_agents_free_their_color(tmp_path):
+    reg = tmp_path / "cursors.json"
+    dead = 2 ** 22 + 12345  # above pid_max on most systems
+    reg.write_text('{"bot-a": {"color": "%s", "pid": %d}}' % (pick_color("bot-b"), dead))
+    assert claim_color("bot-b", reg) == pick_color("bot-b")  # the dead holder no longer blocks it
+
+
+def test_registry_survives_garbage(tmp_path):
+    reg = tmp_path / "cursors.json"
+    reg.write_text("not json")
+    assert claim_color("bot-1", reg) == pick_color("bot-1")
