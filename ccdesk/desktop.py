@@ -632,7 +632,8 @@ class Desktop:
             sx = check_int("dx", dx, -50, 50)
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
-                raise ValidationError("dx and dy are both 0; nothing to scroll")
+                raise ValidationError("dx and dy are both 0; nothing to scroll. Pass dy=3 to scroll down, dy=-3 up, "
+                                      "dx=3 right (there is no direction or amount argument)")
             window = self._guard(force, (px, py))
             self.backend.scroll(px, py, sx, sy)
             self._show_cursor(px, py)
