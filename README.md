@@ -458,8 +458,16 @@ Without a tree (apps that don't publish one, or the bus switched off), `click`, 
 from before and after the action and return `screen_changed` and, if it changed,
 `changed_area`. A blinking text caret doesn't count. "Save did nothing" is then one call
 instead of a wait and two screenshots, and `wait_for_change()` replaces fixed `wait()`s for
-pages and dialogs. Each comparison costs about 0.2 s per capture (ImageMagick does the
-shrinking; without it the fields are left out).
+pages and dialogs. On X11 ccdesk reads the window straight from the X server (`XGetImage`
+through ctypes) and averages it itself: about 40 ms per capture on a 1912x1023 window, against
+220 ms for `import`, which copies the whole screen and leaves the shrinking to ImageMagick. With
+that fast capture, the after-capture is taken as soon as the window has changed and held still
+for one more capture, rather than after a fixed 0.3 s. A click on a 3840x1080 dual-monitor screen went
+from 0.85 s to 0.57 s. Other backends still use ImageMagick (without it the fields are left out).
+
+A browser started before the accessibility bus was switched on publishes its toolbars and tabs
+but an empty page. `ui_tree()` counts that as no tree, attaches `fallback_shot` and says to
+restart the browser.
 
 <a id="without-a-tree"></a>`show_change=true` on those same actions also puts a capture of
 `changed_area` (padded 24 px, scaled down to about 600 tokens at most) in the answer as

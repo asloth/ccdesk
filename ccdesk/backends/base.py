@@ -33,6 +33,7 @@ class Backend:
         self._which = which
         # Tools run with this backend's env, not ccdesk's: it may point at another display.
         self._runner = runner or functools.partial(self._subprocess_run, env=self.env)
+        self._real_tools = runner is None  # False under tests: no direct display access then
 
     # -- process helpers -------------------------------------------------
 
@@ -126,6 +127,12 @@ class Backend:
 
     def screenshot(self, path: str, region: Region | None) -> None:
         self._unsupported("screenshot")
+
+    def gray_grid(self, region: Region | None, cell: int):
+        """(cols, rows, gray bytes, (x, y)) averaging cell x cell blocks of region, read straight
+        from the display server; None when this backend has no such path (the caller then uses
+        screenshot() and scale_png())."""
+        return None
 
     def scale_png(self, path: str, width: int, height: int) -> None:
         """Resize a PNG in place. ImageMagick is the only resizer; the core stays stdlib-only."""

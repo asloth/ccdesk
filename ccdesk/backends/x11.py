@@ -68,6 +68,15 @@ class X11Backend(Backend):
             return []
         return parse_xrandr_monitors(self.try_run(["xrandr", "--listmonitors"]) or "")
 
+    def gray_grid(self, region: Region | None, cell: int):
+        if not self._real_tools or not self.env.get("DISPLAY"):
+            return None
+        grab = getattr(self, "_xgrab", None)
+        if grab is None:
+            from ccdesk.backends.xgrab import XGrab
+            grab = self._xgrab = XGrab(self.env["DISPLAY"])
+        return grab.gray(region, cell)
+
     def screenshot(self, path: str, region: Region | None) -> None:
         attempts = []
         if self.which("scrot"):
