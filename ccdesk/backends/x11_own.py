@@ -9,6 +9,8 @@ from __future__ import annotations
 from ccdesk.backends.base import interpolate
 from ccdesk.backends.x11 import WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT, WHEEL_UP, X11Backend
 from ccdesk.parsing import KeyCombo, Window
+from ccdesk.seat import SeatLock, seat_key
+from ccdesk.wmguard import ClickGuard
 
 CLICK_DELAY = 0.08
 
@@ -16,10 +18,21 @@ CLICK_DELAY = 0.08
 class OwnPointerBackend(X11Backend):
     own_pointer = True
 
-    def __init__(self, mpx, **kw):
+    def __init__(self, mpx, display_seat: SeatLock | None = None, **kw):
         super().__init__(**kw)
         self.mpx = mpx
         self._note: str | None = None
+        # The display's own seat (the one agents on the user's pointer share): the fallback
+        # activation below moves the user's focus, so it must not interleave with their input.
+        self._display_seat = display_seat
+        # bspwm would move the user's keyboard focus on an agent's click; see ccdesk/wmguard.py.
+        self.click_guard = ClickGuard(self.try_run, self.env, which=self.which)
+
+    @property
+    def display_seat(self) -> SeatLock:
+        if self._display_seat is None:
+            self._display_seat = SeatLock(seat_key(self.name, self.env))
+        return self._display_seat
 
     def take_note(self) -> str | None:
         note, self._note = self._note, None
@@ -35,32 +48,35 @@ class OwnPointerBackend(X11Backend):
         self.mpx.button(button, False)
 
     def click(self, x: int, y: int, button: int, count: int) -> None:
-        self.mpx.warp(x, y)
-        for i in range(count):
-            if i:
-                self.sleep(CLICK_DELAY)
-            self._press(button)
+        with self.click_guard.quiet():
+            self.mpx.warp(x, y)
+            for i in range(count):
+                if i:
+                    self.sleep(CLICK_DELAY)
+                self._press(button)
 
     def drag(self, x0: int, y0: int, x1: int, y1: int, duration_ms: int) -> None:
         steps = self.drag_steps(duration_ms)
         pause = duration_ms / 1000 / steps
-        self.mpx.warp(x0, y0)
-        self.mpx.button(1, True)
-        try:
-            for x, y in interpolate(x0, y0, x1, y1, steps):
-                self.sleep(pause)
-                self.mpx.warp(x, y)
-        finally:
-            self.mpx.button(1, False)
+        with self.click_guard.quiet():
+            self.mpx.warp(x0, y0)
+            self.mpx.button(1, True)
+            try:
+                for x, y in interpolate(x0, y0, x1, y1, steps):
+                    self.sleep(pause)
+                    self.mpx.warp(x, y)
+            finally:
+                self.mpx.button(1, False)
 
     def scroll(self, x: int, y: int, dx: int, dy: int) -> None:
-        self.mpx.warp(x, y)
-        for _ in range(abs(dy)):
-            self._press(WHEEL_DOWN if dy > 0 else WHEEL_UP)
-            self.sleep(0.03)
-        for _ in range(abs(dx)):
-            self._press(WHEEL_RIGHT if dx > 0 else WHEEL_LEFT)
-            self.sleep(0.03)
+        with self.click_guard.quiet():
+            self.mpx.warp(x, y)
+            for _ in range(abs(dy)):
+                self._press(WHEEL_DOWN if dy > 0 else WHEEL_UP)
+                self.sleep(0.03)
+            for _ in range(abs(dx)):
+                self._press(WHEEL_RIGHT if dx > 0 else WHEEL_LEFT)
+                self.sleep(0.03)
 
     # -- keyboard ---------------------------------------------------------------
 
@@ -79,7 +95,8 @@ class OwnPointerBackend(X11Backend):
         other_desktop = (window.desktop is not None and window.desktop >= 0
                          and self.current_desktop() not in (None, window.desktop))
         if shown is False or other_desktop:
-            super().activate_window(window)
+            with self.display_seat:
+                super().activate_window(window)
             self._note = ("the window was not on screen (minimized or on another desktop), so it was shown "
                           "with the normal activation; that moved your keyboard focus once")
         self.mpx.focus(int(window.id, 16))
