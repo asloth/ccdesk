@@ -202,7 +202,11 @@ def _run(name: str, size: str, wm: str) -> int:
     return 0
 
 
-def stop_screen(name: str, timeout: float = 5.0) -> None:
+# Headless.stop() gives each of its ~5 children up to 3 s to exit after SIGTERM.
+STOP_TIMEOUT = 20.0
+
+
+def stop_screen(name: str, timeout: float = STOP_TIMEOUT) -> None:
     info = read_state(name)  # also checks the pid is still the screen, not a reused one
     if not info:
         raise CcdeskError(f"no screen named {name!r} is running")

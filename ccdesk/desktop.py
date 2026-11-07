@@ -114,13 +114,20 @@ class Desktop:
             if (policy_tool or tool) in INPUT_TOOLS:
                 # Wait for the user before taking the seat: a human at the mouse must not stall the
                 # other agents too. The action's own _yield_to_user() calls then return this result.
-                if tool in YIELDING_TOOLS:
-                    self._yield_done = self._yield_to_user()
-                with self.seat:  # the focus check and the input itself, with no other agent in between
-                    try:
-                        result = fn()
-                    finally:
-                        self._flush_cursor()
+                try:
+                    if tool in YIELDING_TOOLS:
+                        self._yield_done = self._yield_to_user()
+                    with self.seat:  # the focus check and the input itself, with no other agent in between
+                        try:
+                            if self._yield_done is not None:
+                                self._still_idle()  # the user may have come back while we queued
+                            result = fn()
+                        finally:
+                            self._flush_cursor()
+                            if tool in YIELDING_TOOLS:
+                                self.seat.note_input(self.clock())
+                finally:
+                    self._yield_done = None
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -158,6 +165,32 @@ class Desktop:
             x, y, w, h = node["box"]
             self._show_cursor(*self._point(x + w // 2, y + h // 2))
 
+    def _user_idle_ms(self) -> float | None:
+        """How long the user has left mouse and keyboard alone, or None when it can't be told.
+        X's idle counter is reset by every agent's xdotool events too, so input that came right
+        after an agent's (this one's or another's on the same screen) counts as theirs."""
+        try:
+            idle = self.backend.idle_ms()
+        except CcdeskError:
+            return None
+        if idle is None:
+            return None
+        agents = [t for t in (self._own_input, self.seat.last_input()) if t is not None and t == t]
+        if agents:
+            since_agents = (self.clock() - max(agents)) * 1000
+            if idle >= since_agents - OWN_INPUT_SLACK_MS:
+                return float("inf")  # nothing since the agents' input: the user is away
+        return idle
+
+    def _still_idle(self) -> None:
+        """One look, no waiting: _act waited for the user before queueing for the seat, and the
+        wait for another agent can be long."""
+        need = self.policy.yield_ms
+        idle = self._user_idle_ms() if need else None
+        if idle is not None and idle < need:
+            raise PolicyError(f"the user started using the mouse or keyboard ({idle:.0f} ms ago) while this "
+                              f"agent waited for another one; nothing was sent. wait() and retry")
+
     def _input_done(self, tool: str) -> None:
         if tool in INPUT_TOOLS:
             self._own_input = self.clock()
@@ -172,16 +205,9 @@ class Desktop:
             return 0
         waited = 0.0
         while True:
-            try:
-                idle = self.backend.idle_ms()
-            except CcdeskError:
-                idle = None
-            if idle is None:
-                return round(waited * 1000)  # cannot tell: don't block
-            # Our own xdotool events reset the counter too: only input after ours is the user's.
-            since_ours = (self.clock() - self._own_input) * 1000 if self._own_input is not None else float("inf")
-            if idle >= need or idle >= since_ours - OWN_INPUT_SLACK_MS:
-                return round(waited * 1000)
+            idle = self._user_idle_ms()
+            if idle is None or idle >= need:
+                return round(waited * 1000)  # idle long enough, or cannot tell: don't block
             if waited >= MAX_YIELD:
                 raise PolicyError(f"the user is using the mouse or keyboard (last input {idle} ms ago; "
                                   f"waited {waited:.0f}s for a {need} ms pause). Don't race them: wait() "

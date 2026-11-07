@@ -212,6 +212,10 @@ With `--agent`, when another agent has moved focus away from the window this age
 ccdesk activates that window again and sends the input. Without it, ccdesk refuses, because the
 one who moved focus is probably you. Audit entries carry the agent's name.
 
+Screenshots show the drawn cursors of every agent on the screen, this one's included. With
+`--yield-ms`, input that comes right after any agent's counts as that agent's, and an agent that
+waited in line for the screen checks once more that you are still away before it sends anything.
+
 On X11, each named agent also gets a drawn cursor: an arrow in the agent's colour with a small
 label holding its name. It moves to the point of each click, move, drag, scroll and click_element,
 and to the field set_value writes to. It is only a picture: the real pointer still does the

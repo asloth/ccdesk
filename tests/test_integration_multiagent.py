@@ -59,6 +59,14 @@ class NoLock:
     def __exit__(self, *exc):
         return None
 
+    unavailable = None
+
+    def note_input(self, when):
+        pass
+
+    def last_input(self):
+        return None
+
 
 def worker(name: str, window_id: str, tmp: str, locked: bool, start_at: float) -> None:
     """One agent process: activate its window once, then type its words. Prints a JSON result."""

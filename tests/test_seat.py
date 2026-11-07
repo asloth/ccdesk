@@ -79,9 +79,18 @@ def test_a_dead_holder_frees_the_lock(tmp_path):
 
 
 class RecordingSeat:
+    unavailable = None
+
     def __init__(self):
         self.held = False
         self.entries = 0
+        self.last = None
+
+    def note_input(self, when):
+        self.last = when
+
+    def last_input(self):
+        return self.last
 
     def __enter__(self):
         self.held = True
@@ -210,3 +219,38 @@ def test_yield_happens_before_the_seat(make_desk, fake):
     d._yield_to_user = spy
     d.click(10, 20)
     assert held_while_yielding and held_while_yielding[0] is False
+
+
+def test_input_from_another_agent_is_not_the_user(make_desk, fake, tmp_path):
+    """X's idle counter is reset by every agent: input right after another agent's is theirs."""
+    d = make_desk(yield_ms=500)
+    other = SeatLock("test", directory=tmp_path / "locks")
+    with other:
+        other.note_input(fake.clock())  # another agent on this screen just typed
+    fake.last_event = fake.now  # the idle counter was just reset, but by the other agent
+    assert d.click(10, 20).get("yielded_ms", 0) == 0
+
+
+def test_user_coming_back_while_queued_is_refused(make_desk, fake):
+    d = make_desk(yield_ms=500)
+    calls = []
+
+    def idle():
+        calls.append(1)
+        return 10_000 if len(calls) == 1 else 5  # idle before queueing, typing once the seat is ours
+    fake.idle_ms = idle
+    with pytest.raises(PolicyError, match="while this agent waited for another one"):
+        d.click(10, 20)
+    assert not [c for c in fake.calls if c[0] == "click"]
+
+
+def test_a_seat_timeout_does_not_leave_the_yield_cached(make_desk, fake):
+    d = make_desk(yield_ms=500)
+
+    class Busy(RecordingSeat):
+        def __enter__(self):
+            raise CcdeskError("another agent has held the input")
+    d.seat = Busy()
+    with pytest.raises(CcdeskError):
+        d.click(10, 20)
+    assert d._yield_done is None

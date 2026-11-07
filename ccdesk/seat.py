@@ -117,3 +117,23 @@ class SeatLock:
                 self.sleep(POLL)
         self.waited_ms = round((self.clock() - start) * 1000)
         self._fd = fd
+
+    # When any agent on this screen last sent input, so --yield-ms can tell the user's input from
+    # the agents' (X's idle counter is reset by both). Written into the lock file itself; the value
+    # is a CLOCK_MONOTONIC reading, which is the same clock in every process.
+
+    def note_input(self, when: float) -> None:
+        if self._fd is None:
+            return
+        try:
+            os.ftruncate(self._fd, 0)
+            os.pwrite(self._fd, repr(float(when)).encode(), 0)
+        except OSError:
+            pass
+
+    def last_input(self) -> float | None:
+        try:
+            with open(self.path, "rb") as f:
+                return float(f.read(64) or b"nan") if self.path.exists() else None
+        except (OSError, ValueError):
+            return None
