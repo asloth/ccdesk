@@ -15,6 +15,8 @@ from __future__ import annotations
 import atexit
 import ctypes as C
 import ctypes.util
+import fcntl
+import os
 import re
 import shutil
 import subprocess
@@ -23,6 +25,7 @@ import time
 
 from ccdesk.errors import CcdeskError, UnsupportedError, ValidationError
 from ccdesk.parsing import KeyCombo
+from ccdesk.seat import _screen_key, lock_dir
 
 PREFIX = "ccdesk-"
 CORE_POINTER, CORE_KEYBOARD = 2, 3  # the user's master pair: where removed devices' slaves go back to
@@ -64,6 +67,70 @@ def find_devices(rows: list[dict], name: str) -> dict[str, int]:
             if row["name"] == dev_name and row["kind"] == kind and row["type"] == typ:
                 found[role] = row["id"]
     return found
+
+
+class NameLock:
+    """One live process per agent name on a screen: an flock held for the process lifetime on
+    lock_dir()/own-DISPLAY-NAME.lock. The kernel drops it when the process dies, however it dies, so
+    a free lock proves that a ccdesk-NAME master pair on that screen is a leftover."""
+
+    def __init__(self, env: dict, agent: str):
+        safe = re.sub(r"[^A-Za-z0-9_.-]", "_", agent)
+        self.path = lock_dir() / f"own-{_screen_key('x11', env)}-{safe}.lock"
+        self.agent = agent
+        self._fd: int | None = None
+        self.unavailable: str | None = None  # why the lock file cannot be made
+
+    def acquire(self) -> bool:
+        """True when held. False when the lock file cannot be made (then nothing is proven).
+        Raises CcdeskError when another live process holds it."""
+        try:
+            self.path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            fd = os.open(self.path, os.O_RDWR | os.O_CREAT, 0o600)
+        except OSError as exc:
+            self.unavailable = str(exc)
+            return False
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError:
+            os.close(fd)
+            raise CcdeskError(f"another ccdesk agent named {self.agent} is running on this screen; "
+                              f"use another --agent name") from None
+        self._fd = fd
+        return True
+
+    def release(self) -> None:
+        fd, self._fd = self._fd, None
+        if fd is not None:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+
+
+def clean_leftovers(run, env: dict) -> list[str]:
+    """Remove every ccdesk-* master pair whose agent-name lock is free (its process is gone):
+    what a kill -9 or a crash leaves behind. Returns the device names removed."""
+    removed = []
+    for row in parse_xinput_list(run("list")):
+        name = row["name"]
+        if not (row["kind"] == "master" and row["type"] == "pointer" and name.startswith(PREFIX)
+                and name.endswith(" pointer")):
+            continue
+        lock = NameLock(env, name[len(PREFIX):-len(" pointer")])
+        try:
+            if not lock.acquire():
+                continue
+        except CcdeskError:
+            continue  # a live agent owns it
+        try:
+            run("remove-master", str(row["id"]), "AttachToMaster", str(CORE_POINTER), str(CORE_KEYBOARD))
+            removed.append(name[:-len(" pointer")])
+        except CcdeskError:
+            pass
+        finally:
+            lock.release()
+    return removed
 
 
 def unavailable_reason(backend_name: str, which=shutil.which) -> str | None:
@@ -141,6 +208,8 @@ class Mpx:
         self._handler = None
         self._closed = True
         self._spare_lock = threading.Lock()
+        self.name_lock = NameLock(self.env, agent)
+        self.cleaned: list[str] = []  # leftovers of dead agents that create() removed
 
     # -- xinput ------------------------------------------------------------
 
@@ -174,20 +243,32 @@ class Mpx:
         with self.lock:
             if not self._closed:
                 return
-            self.remove_stale()
-            self._run("create-master", self.name)
-            self.ids = self.devices()
-            missing = {"master_pointer", "master_keyboard", "slave_pointer", "slave_keyboard"} - set(self.ids)
-            if missing:
-                self.ids = {}
-                raise CcdeskError(f"xinput create-master {self.name} did not make {', '.join(sorted(missing))}")
-            self._closed = False
+            self.name_lock.acquire()  # raises when a live process already has this name
             try:
-                self._open()
+                self._create()
             except BaseException:
-                self.close()
+                self.name_lock.release()
                 raise
             atexit.register(self.close)
+
+    def _create(self) -> None:
+        # The name lock is ours, so a pair with this name is a leftover; so is any other
+        # ccdesk-* pair whose own lock is free.
+        self.remove_stale()
+        if not self.name_lock.unavailable:
+            self.cleaned = clean_leftovers(self._run, self.env)
+        self._run("create-master", self.name)
+        self.ids = self.devices()
+        missing = {"master_pointer", "master_keyboard", "slave_pointer", "slave_keyboard"} - set(self.ids)
+        if missing:
+            self.ids = {}
+            raise CcdeskError(f"xinput create-master {self.name} did not make {', '.join(sorted(missing))}")
+        self._closed = False
+        try:
+            self._open()
+        except BaseException:
+            self.close()
+            raise
 
     def _open(self) -> None:
         libs = self._libs = self._libs or Libs()
@@ -215,31 +296,46 @@ class Mpx:
         self._sync()
 
     def close(self) -> None:
-        with self.lock:
-            if self._closed:
-                return
-            self._closed = True
-            libs = self._libs
-            try:
-                if libs and self._dpy:
-                    for dev in self._slaves.values():
-                        libs.xi.XCloseDevice(self._dpy, dev)
-                    libs.x.XSync(self._dpy, 0)
-            except Exception:
-                pass
-            self._slaves = {}
-            try:
-                if self.ids.get("master_pointer") is not None:
-                    self._run("remove-master", str(self.ids["master_pointer"]), "AttachToMaster",
-                              str(CORE_POINTER), str(CORE_KEYBOARD))
-            except CcdeskError:
-                pass  # already gone
-            try:
-                if libs and self._dpy:
-                    libs.x.XCloseDisplay(self._dpy)
-            except Exception:
-                pass
-            self._dpy = None
+        # From a signal handler while a worker types, wait a moment and then go on without the lock:
+        # the process is on its way out and the devices must not outlive it.
+        held = self.lock.acquire(timeout=2)
+        try:
+            self._close()
+        finally:
+            if held:
+                self.lock.release()
+
+    def _close(self) -> None:
+        if self._closed:
+            return
+        self._closed = True
+        libs = self._libs
+        try:
+            if libs and self._dpy:
+                for dev in self._slaves.values():
+                    libs.xi.XCloseDevice(self._dpy, dev)
+                libs.x.XSync(self._dpy, 0)
+        except Exception:
+            pass
+        self._slaves = {}
+        try:
+            # Only our own pair: if it was removed and another agent now has this name, its
+            # devices may have taken the same id.
+            mine = self.ids.get("master_pointer")
+            if mine is not None and any(
+                    r["id"] == mine and r["name"] == f"{self.name} pointer" and r["kind"] == "master"
+                    for r in parse_xinput_list(self._run("list"))):
+                self._run("remove-master", str(mine), "AttachToMaster",
+                          str(CORE_POINTER), str(CORE_KEYBOARD))
+        except CcdeskError:
+            pass  # already gone
+        self.name_lock.release()
+        try:
+            if libs and self._dpy:
+                libs.x.XCloseDisplay(self._dpy)
+        except Exception:
+            pass
+        self._dpy = None
 
     def info(self) -> dict:
         return {"enabled": True, "name": self.name, **self.ids}

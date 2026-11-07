@@ -125,10 +125,12 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "doctor":
         from ccdesk.backends import get_backend
-        from ccdesk.doctor import build_report, format_report
+        from ccdesk.doctor import build_report, format_report, housekeeping
         from ccdesk.safety import Policy, default_audit_path
 
-        report = build_report(get_backend(args.backend), Policy(), default_audit_path())
+        backend = get_backend(args.backend)
+        report = build_report(backend, Policy(), default_audit_path())
+        report["cleanup"] = housekeeping(backend)
         print(json.dumps(report, indent=2) if args.json else format_report(report))
         return 0 if report["ready"] and not report["missing"] else 1
 
@@ -269,10 +271,29 @@ def _own_pointer(args, backend):
     except CcdeskError as exc:
         print(f"ccdesk mcp --own-pointer: {exc}", file=sys.stderr)
         return None
-    # Exit through the finally block and atexit, so the devices go even when the client closes us.
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, lambda *_: sys.exit(0))
-    return SimpleNamespace(mpx=mpx, backend=OwnPointerBackend(mpx, env=backend.env))
+    if mpx.cleaned:
+        print(f"ccdesk mcp: removed leftover devices of dead agents: {', '.join(mpx.cleaned)}", file=sys.stderr)
+    own_backend = OwnPointerBackend(mpx, env=backend.env)
+    restored = own_backend.click_guard.recover()
+    if restored:
+        print(f"ccdesk mcp: put bspwm's click_to_focus back to {restored!r} (a crashed agent left it off)",
+              file=sys.stderr)
+
+    # Remove the devices and restore bspwm's setting, then die of the signal itself so the exit is
+    # prompt and the parent sees how it ended. (sys.exit in a handler is raised in the main thread,
+    # which is parked inside the stdio server and kept running.)
+    def on_signal(sig, _frame):
+        for cleanup in (own_backend.click_guard.abort, mpx.close):
+            try:
+                cleanup()
+            except Exception:
+                pass
+        signal.signal(sig, signal.SIG_DFL)
+        os.kill(os.getpid(), sig)
+
+    for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+        signal.signal(sig, on_signal)
+    return SimpleNamespace(mpx=mpx, backend=own_backend)
 
 
 def _screen(args) -> int:

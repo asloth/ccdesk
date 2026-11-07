@@ -118,6 +118,9 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
+    if backend.own_pointer and not backend.click_guard.active():
+        warnings.append("own pointer: your window manager is not bspwm, and a click by the agent may move "
+                        "your keyboard focus (the window manager's click-to-focus). Only bspwm is handled")
     report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
                                   run=backend.try_run)
     if report["firefox"]["automation"]:
@@ -133,11 +136,29 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     return report
 
 
+def housekeeping(backend: Backend) -> dict:
+    """What a crashed own-pointer agent leaves behind, cleaned up: ccdesk-* master pairs whose agent
+    no longer runs, and a bspwm click_to_focus left at none. Only things proven stale are touched."""
+    done: dict = {"removed_devices": [], "restored_click_to_focus": None}
+    if backend.name != "x11" or not backend.which("xinput"):
+        return done
+    from ccdesk.backends.mpx import clean_leftovers
+    from ccdesk.wmguard import ClickGuard
+
+    try:
+        run = lambda *args: backend.run(["xinput", *args])  # noqa: E731
+        done["removed_devices"] = clean_leftovers(run, backend.env)
+    except CcdeskError as exc:
+        done["error"] = str(exc)
+    done["restored_click_to_focus"] = ClickGuard(backend.try_run, backend.env, which=backend.which).recover()
+    return done
+
+
 def _own_pointer(backend: Backend) -> dict:
     """The agent's own pointer and keyboard (`ccdesk mcp --own-pointer`): their device ids when
     in use, else whether it could be used here and, if not, why."""
     if backend.own_pointer:
-        return backend.mpx.info()
+        return {**backend.mpx.info(), "bspwm_click_guard": backend.click_guard.active()}
     reason = unavailable_reason(backend.name, backend.which)
     return {"enabled": False, "available": reason is None, "reason": reason}
 
@@ -214,6 +235,11 @@ def format_report(report: dict) -> str:
     ]
     if report["policy"]["confirm_keys"]:
         lines.insert(-1, f"confirm keys: {', '.join(report['policy']['confirm_keys'])} (plus the built-in list)")
+    cleanup = report.get("cleanup") or {}
+    if cleanup.get("removed_devices"):
+        lines.append("cleanup:      removed leftover devices: " + ", ".join(cleanup["removed_devices"]))
+    if cleanup.get("restored_click_to_focus"):
+        lines.append(f"cleanup:      put bspwm's click_to_focus back to {cleanup['restored_click_to_focus']!r}")
     if report["warnings"]:
         lines += ["", "Warnings"] + [f"  ! {w}" for w in report["warnings"]]
     return "\n".join(lines)
