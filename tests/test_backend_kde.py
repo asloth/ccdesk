@@ -552,7 +552,7 @@ def test_ui_tree_warns_when_kde_cannot_place_the_window(tmp_path):
     b, _ = make(installed=KDE_ALL - {"kdotool"})
     desktop = desktop_for(b, tmp_path)
     desktop.a11y.tree = lambda *a: {"tree": "", "truncated": False}
-    assert "relative to the window" in desktop.ui_tree()["note"]
+    assert "relative to the window" in desktop.ui_tree(shot_fallback=False)["note"]
 
 
 def test_transient_for_follows_the_kwin_parent():
