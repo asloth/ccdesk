@@ -207,6 +207,12 @@ def test_install_forwards_headless(home, tmp_path, monkeypatch, capsys):
     assert log.read_text().splitlines()[1].endswith("mcp --headless --size 1600x900")
 
 
+def test_install_forwards_screen(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--screen", "work"]) == 0
+    assert log.read_text().splitlines()[1].endswith("mcp --screen work")
+
+
 def test_peek_without_a_headless_server(tmp_path, monkeypatch, capsys):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path))
     assert main(["peek"]) == 1

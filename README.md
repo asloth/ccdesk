@@ -215,6 +215,26 @@ one who moved focus is probably you. Audit entries carry the agent's name.
 In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
 in 4.1 s. With no lock, both windows came out with letters from both agents.
 
+#### A named private screen for several agents
+
+Each `--headless` server starts its own private screen, so two of them never see each other's
+windows. To share one private screen, start it on its own and have the servers join it:
+
+```sh
+ccdesk screen start work [--size 1600x900] [--wm CMD]   # foreground; Ctrl-C or `screen stop` ends it
+ccdesk mcp --screen work --agent bot-1
+ccdesk mcp --screen work --agent bot-2
+ccdesk screen list
+ccdesk screen stop work
+```
+
+`screen start` prints how to watch it (`x11vnc -display :N -localhost`); `ccdesk peek` also
+lists named screens. `--screen` turns on `launch` like `--headless` and cannot be combined with
+it. A server that exits leaves the screen running. `ccdesk install --screen work` registers the
+server with that flag. The state file is `$XDG_RUNTIME_DIR/ccdesk/screens/NAME.json` (mode 0600,
+in a 0700 directory) and holds the display, size, window manager, pid and only the variables a
+joining server needs.
+
 ### Firefox for Claude, without the mouse (opt-in)
 
 For web pages, ccdesk can hand off to Mozilla's

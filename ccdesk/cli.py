@@ -1,4 +1,4 @@
-"""Command line entry point: ccdesk doctor | firefox | install | mcp | peek | version."""
+"""Command line entry point: ccdesk doctor | firefox | install | mcp | peek | screen | version."""
 
 from __future__ import annotations
 
@@ -21,12 +21,19 @@ def _policy_flags(p: argparse.ArgumentParser) -> None:
                         "long (e.g. 3000; needs xprintidle). Default 0, never wait")
 
 
-def _headless_flags(p: argparse.ArgumentParser) -> None:
-    p.add_argument("--headless", action="store_true",
-                   help="work on a private invisible screen (Xvfb) instead of yours; implies --allow-launch")
+def _size_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--size", default="1920x1080", metavar="WxH", help="headless screen size (default 1920x1080)")
     p.add_argument("--wm", default="auto", metavar="CMD",
                    help='headless window manager: "auto" (default), "none", or a command')
+
+
+def _headless_flags(p: argparse.ArgumentParser) -> None:
+    g = p.add_mutually_exclusive_group()
+    g.add_argument("--headless", action="store_true",
+                   help="work on a private invisible screen (Xvfb) instead of yours; implies --allow-launch")
+    g.add_argument("--screen", metavar="NAME",
+                   help="join the private screen started with `ccdesk screen start NAME`; implies --allow-launch")
+    _size_flags(p)
 
 
 def _confirm_keys(spec: str) -> str:
@@ -52,7 +59,7 @@ def _yield_ms(spec: str) -> int:
 
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="ccdesk", description="Desktop control for Claude Code on Linux.")
-    sub = parser.add_subparsers(dest="command", metavar="{doctor,firefox,install,mcp,peek,version}")
+    sub = parser.add_subparsers(dest="command", metavar="{doctor,firefox,install,mcp,peek,screen,version}")
 
     p = sub.add_parser("doctor", help="report session type, helper tools, screen size and scale")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
@@ -85,6 +92,15 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("peek", help="screenshot the headless screens of running ccdesk servers")
     p.add_argument("--open", action="store_true", help="open each screenshot with xdg-open")
 
+    p = sub.add_parser("screen", help="a named private screen that several servers join")
+    ssub = p.add_subparsers(dest="screen_command", metavar="{start,list,stop}", required=True)
+    q = ssub.add_parser("start", help="start the screen and keep it running in the foreground")
+    q.add_argument("name")
+    _size_flags(q)
+    ssub.add_parser("list", help="list the running screens")
+    q = ssub.add_parser("stop", help="stop a running screen")
+    q.add_argument("name")
+
     sub.add_parser("version", help="print the version")
     return parser
 
@@ -114,6 +130,8 @@ def main(argv: list[str] | None = None) -> int:
             flags += ["--confirm-keys", args.confirm_keys]
         if args.yield_ms:
             flags += ["--yield-ms", str(args.yield_ms)]
+        if args.screen:
+            flags += ["--screen", args.screen]
         if args.headless:
             flags.append("--headless")
             if args.size != "1920x1080":
@@ -133,6 +151,9 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "peek":
         return _peek(args.open)
 
+    if args.command == "screen":
+        return _screen(args)
+
     parser.print_help()
     return 2
 
@@ -141,6 +162,7 @@ def _mcp(args) -> int:
     from ccdesk.backends import X11Backend, get_backend
     from ccdesk.desktop import Desktop
     from ccdesk.errors import CcdeskError
+    from ccdesk import screen as screen_mod
     from ccdesk.headless import Headless
     from ccdesk.parsing import parse_confirm_keys
     from ccdesk.safety import AuditLog, Policy
@@ -151,7 +173,16 @@ def _mcp(args) -> int:
         print(f"ccdesk mcp needs the 'mcp' package: {exc}", file=sys.stderr)
         return 1
     headless = None
-    if args.headless:
+    if args.screen:
+        try:
+            headless = screen_mod.join(args.screen)
+        except CcdeskError as exc:
+            print(f"ccdesk mcp --screen: {exc}", file=sys.stderr)
+            return 1
+        backend = X11Backend(env=headless.env)
+        args.allow_launch = True
+        signal.signal(signal.SIGTERM, lambda *_: sys.exit(0))
+    elif args.headless:
         try:
             headless = Headless(size=args.size, wm=args.wm)
             backend = X11Backend(env=headless.start())
@@ -179,7 +210,28 @@ def _mcp(args) -> int:
         serve(desktop)
     finally:
         if headless:
-            headless.stop()
+            headless.stop()  # a joined screen's stop does nothing
+    return 0
+
+
+def _screen(args) -> int:
+    from ccdesk import screen
+    from ccdesk.errors import CcdeskError
+
+    try:
+        if args.screen_command == "start":
+            return screen.start(args.name, args.size, args.wm)
+        if args.screen_command == "stop":
+            screen.stop_screen(args.name)
+            return 0
+    except CcdeskError as exc:
+        print(f"ccdesk screen {args.screen_command}: {exc}", file=sys.stderr)
+        return 1
+    found = screen.running()
+    if not found:
+        print("no named screen is running")
+    for info in found:
+        print(f"{info['name']}: {info['display']} {info['size']}, wm {info.get('wm') or 'none'}, pid {info['pid']}")
     return 0
 
 
@@ -191,7 +243,11 @@ def _peek(open_it: bool) -> int:
     from ccdesk.headless import running
     from ccdesk.safety import cache_dir
 
-    screens = running()
+    from ccdesk import screen as screen_mod
+
+    named = screen_mod.running()
+    seen = {i["display"] for i in named}
+    screens = named + [i for i in running() if i["display"] not in seen]
     if not screens:
         print("no headless ccdesk server is running")
         return 1
@@ -203,7 +259,8 @@ def _peek(open_it: bool) -> int:
         except CcdeskError as exc:
             print(f"{info['display']}: {exc}", file=sys.stderr)
             continue
-        print(f"{info['display']} ({info['size']}, server pid {info['pid']}): {path}")
+        label = f"screen {info['name']}, pid" if info.get("name") else "server pid"
+        print(f"{info['display']} ({info['size']}, {label} {info['pid']}): {path}")
         if open_it:
             subprocess.Popen(["xdg-open", str(path)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     return 0
