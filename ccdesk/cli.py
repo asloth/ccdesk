@@ -20,7 +20,7 @@ def _policy_flags(p: argparse.ArgumentParser) -> None:
                    help='extra key combos that need confirm=true, e.g. "super+x,ctrl+alt+super+p"')
     p.add_argument("--yield-ms", metavar="MS", type=_yield_ms, default=0,
                    help="on your own screen: hold input until you have left mouse and keyboard alone this "
-                        "long (e.g. 3000; needs xprintidle). Default 0, never wait. Not needed with "
+                        "long (e.g. 3000; needs xprintidle). Default 0, never wait. Ignored with "
                         "--own-pointer, which never touches your pointer or keyboard")
 
 
@@ -210,6 +210,12 @@ def _mcp(args) -> int:
         if own is None:
             return 1
         backend = own.backend
+        if args.yield_ms:
+            # The X idle counter counts every agent's XTest input, and own-pointer agents keep
+            # separate seats, so each would take the others' input for the user's and wait on it.
+            print("ccdesk mcp: --yield-ms is ignored with --own-pointer (it never touches your pointer "
+                  "or keyboard)", file=sys.stderr)
+            args.yield_ms = 0
     cursor = None
     if args.agent and not args.no_cursor and backend.name == "x11":
         if args.cursor_color and not valid_color(args.cursor_color):

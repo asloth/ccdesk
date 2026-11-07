@@ -251,7 +251,8 @@ activation, which does move your focus once; the answer says so in `note`. A win
 window covers still receives no clicks: the click is refused, as before. The focus check
 compares against the agent's own focus and the click check against the window under the agent's
 pointer. Each own-pointer agent has its own input lock, so two of them type at the same time.
-`--yield-ms` still works but is not needed. The drawn cursor follows the agent's pointer.
+`--yield-ms` is ignored: X counts every agent's input as activity, so own-pointer agents would wait
+on each other. The drawn cursor follows the agent's pointer.
 Characters that have no key in your keymap are typed through a spare keycode that is remapped
 for a moment, as xdotool does. `doctor` shows the device ids, or why they are unavailable.
 
