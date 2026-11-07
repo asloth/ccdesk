@@ -19,7 +19,7 @@ from ccdesk.server import TOOL_NAMES, build_server, slim_schema, slim_tools  # n
 ROOT = Path(__file__).resolve().parent.parent
 SPEC_TOOLS = {"screenshot", "click", "move", "drag", "scroll", "type_text", "press_key", "list_windows",
               "activate_window", "clipboard", "wait", "doctor", "launch", "ui_tree", "click_element", "set_value",
-              "wait_for_change", "manage_window", "list_monitors"}
+              "wait_for_change", "manage_window", "list_monitors", "batch"}
 
 
 def test_slim_schema_keeps_what_the_model_needs():

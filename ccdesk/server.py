@@ -35,7 +35,8 @@ nothing yet. Pass show_change=true to see the changed area in the answer, with n
 wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
-Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true."""
+Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true.
+To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each."""
 HEADLESS = """
 This server works on its own invisible screen, not the user's: it starts empty, so launch()
 the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
@@ -44,7 +45,7 @@ or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR fir
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
-    "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors",
+    "ui_tree", "click_element", "set_value", "wait_for_change", "manage_window", "list_monitors", "batch",
 )
 
 MAX_PICTURE_BYTES = 3_500_000
@@ -59,7 +60,7 @@ ANNOTATIONS = {
     "wait": OBSERVE, "wait_for_change": OBSERVE, "doctor": OBSERVE,
     "move": ARRANGE, "scroll": ARRANGE, "activate_window": ARRANGE, "manage_window": ARRANGE,
     "clipboard": ARRANGE,
-    "click": ACT, "click_element": ACT, "set_value": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT,
+    "click": ACT, "click_element": ACT, "set_value": ACT, "drag": ACT, "type_text": ACT, "press_key": ACT, "launch": ACT, "batch": ACT,
 }
 
 
@@ -248,6 +249,15 @@ def build_server(desktop: Desktop) -> MCPServer:
         back: an answer means the app holds it. Refuses password fields. If the app ignores the write
         (web pages do), it clicks the field, selects all and types the text instead (typed: true)."""
         return desktop.set_value(ref, text, force=force)
+
+    @tool
+    def batch(steps: list[dict], show_change: bool = False) -> dict:
+        """Run 1-20 input steps in one call, e.g. fill a form from one ui_tree(): steps=[{"tool":"set_value",
+        "ref":"e3","text":"Ana"},{"tool":"click_element","ref":"e7"}]. Tools: click_element, set_value, type_text,
+        press_key, click, scroll, move, drag, activate_window, wait (max 5 s). Same arguments as each tool, no
+        show_change. Stops at the first failure; returns done, steps, failed and the changes after the last step.
+        Refs are those of the latest ui_tree(); a step that changes the page can invalidate later refs."""
+        return with_change_shot(desktop.batch(steps, show_change=show_change))
 
     @tool
     def clipboard(action: Literal["get", "set"] = "get", text: str | None = None) -> dict:

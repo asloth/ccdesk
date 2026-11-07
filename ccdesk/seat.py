@@ -5,6 +5,8 @@ servers) drive the same display, each input action takes this lock for its whole
 check in Desktop._guard, any re-focus, and the clicks or keys themselves. Without it, agent B's
 activate_window can land between agent A's focus check and A's typing, and A's text goes into
 B's window (bench spike, 2026-11-06: 2 x 40 words came out mixed without the lock, intact with it).
+What comes after the input (waiting for the app to settle, re-reading the window, comparing pixels)
+only reads the screen, so it runs once the lock is released (Desktop._act).
 
 The lock is an flock on a file named after the display, so it also holds across processes that
 know nothing about each other, and the kernel drops it if a process dies holding it.

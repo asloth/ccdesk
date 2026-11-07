@@ -254,3 +254,67 @@ def test_a_seat_timeout_does_not_leave_the_yield_cached(make_desk, fake):
     with pytest.raises(CcdeskError):
         d.click(10, 20)
     assert d._yield_done is None
+
+
+def test_observing_the_change_runs_after_the_seat_is_free(make_desk, fake):
+    """The settle wait and the after-capture only read the screen: other agents may send input
+    meanwhile. The before-capture and the click stay under the lock."""
+    d = make_desk(screen_diff=True)
+    seat = d.seat = RecordingSeat()
+    shots, sleeps = [], []
+    real_shot, real_sleep = fake.screenshot, fake.sleep
+    fake.screenshot = lambda *a, **k: (shots.append(seat.held), real_shot(*a, **k))[1]
+    fake.sleep = lambda s: (sleeps.append(seat.held), real_sleep(s))[1]
+    result = d.click(10, 20)
+    assert "screen_changed" in result
+    assert shots[0] is True and shots[-1] is False
+    assert sleeps and sleeps[-1] is False
+
+
+def test_the_drawn_cursor_moves_after_the_observation(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    seat = d.seat = RecordingSeat()
+    order = []
+
+    class Cursor:
+        def move(self, x, y):
+            order.append(("cursor", seat.held))
+
+    d.cursor = Cursor()
+    real_shot = fake.screenshot
+    fake.screenshot = lambda *a, **k: (order.append(("shot", seat.held)), real_shot(*a, **k))[1]
+    d.click(10, 20)
+    assert order[-1] == ("cursor", False)
+    assert ("shot", False) in order[:-1]
+
+
+def test_one_servers_own_calls_do_not_overlap_an_observation(make_desk, fake):
+    """MCP runs each tool call on a worker thread: a second call of the same agent must not send
+    input (and reset the before-capture) while the first one is still observing outside the seat."""
+    import threading
+    d = make_desk(screen_diff=True)
+    observing = threading.Event()
+    release = threading.Event()
+    events = []
+    real_observe = d._observe
+
+    def slow_observe(result, show_change=False):
+        observing.set()
+        release.wait(5)
+        events.append("observed")
+        return real_observe(result, show_change)
+
+    d._observe = slow_observe
+    real_click = fake.click
+    fake.click = lambda *a: (events.append("click"), real_click(*a))[1]
+    first = threading.Thread(target=d.click, args=(10, 20))
+    first.start()
+    assert observing.wait(5)
+    second = threading.Thread(target=d.click, args=(30, 40))
+    second.start()
+    second.join(0.3)
+    assert events == ["click"]  # the second click waits for the first observation
+    release.set()
+    first.join(5)
+    second.join(5)
+    assert events == ["click", "observed", "click", "observed"]

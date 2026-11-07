@@ -301,6 +301,7 @@ while it is on.
 | `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
 | `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. When the app ignores or refuses the write and keeps its old value, as Firefox and Chromium web forms do, it clicks the field, selects all and types the text, then reads it back (`typed: true`). |
+| `batch(steps, show_change=false)` | Runs 1 to 20 input steps (`click_element`, `set_value`, `type_text`, `press_key`, `click`, `scroll`, `move`, `drag`, `activate_window`, `wait` up to 5 s) in one call: the seat is taken once, every step keeps its own checks (destructive keys still need `confirm=true`) and audit entry, and only the final state is observed (`changes` or `screen_changed`). All steps are validated before the first one runs; it stops at the first failure and reports `done`, `steps` and `failed`. Use it to fill a form from one `ui_tree()`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -433,7 +434,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
-- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `click_element`, `set_value`, `move`,
+- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `batch`, `click`, `click_element`, `set_value`, `move`,
   `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with

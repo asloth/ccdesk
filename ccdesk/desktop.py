@@ -5,12 +5,14 @@ Everything the MCP server exposes is a method here, so it can be tested without 
 
 from __future__ import annotations
 
+import inspect
 import os
 import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -32,7 +34,7 @@ from ccdesk.parsing import (
     parse_window_ref,
     png_size,
 )
-from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, cache_dir
+from ccdesk.safety import INPUT_TOOLS, AuditLog, Policy, _redact, cache_dir
 from ccdesk.screendiff import Grid, changed_box
 from ccdesk.seat import SeatLock, seat_key
 
@@ -42,6 +44,10 @@ YIELDING_TOOLS = INPUT_TOOLS - {"launch", "clipboard_set"}
 MAX_TEXT = 10_000
 MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
+BATCH_TOOLS = ("click_element", "set_value", "type_text", "press_key", "click", "scroll", "move", "drag",
+               "activate_window", "wait")
+MAX_BATCH_STEPS = 20
+MAX_BATCH_WAIT = 5.0  # seconds per wait step: the seat is held meanwhile
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
 POLL = 0.2  # seconds between captures in wait_for_change
 MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) before it is refused
@@ -104,6 +110,9 @@ class Desktop:
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
         self._yield_done: int | None = None  # set while an action runs that already waited, before the seat
         self._cursor_next: tuple[int, int] | None = None  # where the drawn cursor goes when the action ends
+        self._busy = threading.RLock()  # one input action of this server at a time, observation included
+        self._deferring = False  # inside an input action: _changes() leaves the observing to _act
+        self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
 
     # -- plumbing -------------------------------------------------------------
 
@@ -114,20 +123,10 @@ class Desktop:
             if (policy_tool or tool) in INPUT_TOOLS:
                 # Wait for the user before taking the seat: a human at the mouse must not stall the
                 # other agents too. The action's own _yield_to_user() calls then return this result.
-                try:
-                    if tool in YIELDING_TOOLS:
-                        self._yield_done = self._yield_to_user()
-                    with self.seat:  # the focus check and the input itself, with no other agent in between
-                        try:
-                            if self._yield_done is not None:
-                                self._still_idle()  # the user may have come back while we queued
-                            result = fn()
-                        finally:
-                            self._flush_cursor()
-                            if tool in YIELDING_TOOLS:
-                                self.seat.note_input(self.clock())
-                finally:
-                    self._yield_done = None
+                # _busy keeps this server's own calls (MCP runs each on a worker thread) from sharing
+                # the state below while one of them observes outside the seat.
+                with self._busy:
+                    result = self._seated(tool, fn)
             else:
                 result = fn()
         except PolicyError as exc:  # refused before any input was sent
@@ -149,7 +148,7 @@ class Desktop:
         return result
 
     def _show_cursor(self, x: int, y: int) -> None:
-        """Move the drawn cursor once the action is over: after _changes() has compared the window,
+        """Move the drawn cursor once the action is over: after _observe() has compared the window,
         so its own arrow never counts as the app changing."""
         if self.cursor is not None:
             self._cursor_next = (x, y)
@@ -216,7 +215,47 @@ class Desktop:
             self.backend.sleep(pause)
             waited += pause
 
+    def _seated(self, tool: str, fn):
+        """Run an input action: its input under the seat lock, then what it changed, observed once
+        the seat is free so the other agents' input can go meanwhile."""
+        try:
+            if tool in YIELDING_TOOLS:
+                self._yield_done = self._yield_to_user()
+            outer = self._deferring
+            deferred = None
+            self._deferring = True
+            try:
+                with self.seat:  # the focus check and the input itself, with no other agent in between
+                    try:
+                        if self._yield_done is not None:
+                            self._still_idle()  # the user may have come back while we queued
+                        result = fn()
+                    finally:
+                        if tool in YIELDING_TOOLS:
+                            self.seat.note_input(self.clock())
+            finally:
+                self._deferring = outer
+                if not outer:  # a nested action (a step of batch) leaves it to the outermost one
+                    deferred, self._deferred = self._deferred, None
+            if deferred is not None:
+                # Out of the seat: settling and re-reading the window only reads the screen,
+                # so the other agents can send their input meanwhile.
+                result = self._observe(*deferred)
+        finally:
+            if not self._deferring:
+                self._yield_done = None  # a step inside batch keeps the wait the batch did
+                self._flush_cursor()
+        return result
+
     def _changes(self, result: dict, show_change: bool = False) -> dict:
+        """What an action changed, filled in by _observe(). Inside an input action it runs after
+        _act has released the seat lock; the result dict is filled in place then."""
+        if self._deferring:
+            self._deferred = (result, show_change)
+            return result
+        return self._observe(result, show_change)
+
+    def _observe(self, result: dict, show_change: bool = False) -> dict:
         """After ui_tree() has been used, add what the action changed in that window. Without a
         tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
         with show_change, attach a small capture of that area so no screenshot is needed to see it."""
@@ -898,6 +937,63 @@ class Desktop:
             return result
 
         return self._act("wait", {"seconds": seconds}, do)
+
+    def _batch_steps(self, steps) -> list[tuple[str, dict]]:
+        """Check every step before any input is sent: a mistake in step 7 must not leave 1-6 done."""
+        if not isinstance(steps, list) or not 1 <= len(steps) <= MAX_BATCH_STEPS:
+            raise ValidationError(f"steps must be a list of 1 to {MAX_BATCH_STEPS} steps")
+        checked = []
+        for i, step in enumerate(steps):
+            if not isinstance(step, dict) or not isinstance(step.get("tool"), str):
+                raise ValidationError(f"step {i}: expected an object with a \"tool\" name")
+            name = step["tool"]
+            args = {k: v for k, v in step.items() if k != "tool"}
+            if name not in BATCH_TOOLS:
+                raise ValidationError(f"step {i}: {name!r} cannot run in a batch (use one of {', '.join(BATCH_TOOLS)})")
+            if "show_change" in args:
+                raise ValidationError(f"step {i}: show_change belongs to the batch call, not to a step")
+            try:
+                inspect.signature(getattr(self, name)).bind(**args)
+            except TypeError as exc:
+                raise ValidationError(f"step {i} ({name}): {exc}") from None
+            if name == "wait":
+                try:
+                    ok = 0 <= float(args["seconds"]) <= MAX_BATCH_WAIT
+                except (TypeError, ValueError):
+                    ok = False
+                if not ok:
+                    raise ValidationError(f"step {i}: wait in a batch takes 0 to {MAX_BATCH_WAIT:g} seconds")
+            checked.append((name, args))
+        typed = sum(len(a["text"]) for _, a in checked if isinstance(a.get("text"), str))
+        if typed > MAX_TEXT:
+            # Every other agent on the screen waits while a batch holds the seat.
+            raise ValidationError(f"a batch types at most {MAX_TEXT} characters in all, got {typed}")
+        return checked
+
+    def batch(self, steps: list[dict], show_change: bool = False) -> dict:
+        """Run several input steps in one call, holding the seat for all of them, and observe only
+        the end state. Stops at the first step that fails."""
+        checked = self._batch_steps(steps)
+        logged = [{"tool": n, **_redact(a)} for n, a in checked]
+
+        def do():
+            done: list[dict] = []
+            result: dict = {"done": 0, "steps": done}
+            for i, (name, args) in enumerate(checked):
+                try:
+                    out = getattr(self, name)(**args)
+                except Exception as exc:  # the steps before it were sent: report, then observe them
+                    msg = str(exc) if isinstance(exc, CcdeskError) else f"{type(exc).__name__}: {exc}"
+                    result["failed"] = {"index": i, "tool": name, "error": msg}
+                    break
+                done.append({"tool": name, **{k: v for k, v in out.items() if k not in ("window", "hint")}})
+                result["done"] = i + 1
+            if self._deferred is not None:  # one observation for the whole batch, into this result
+                self._deferred = (result, show_change)
+            return result
+
+        return self._act("batch", {"steps": logged}, do,
+                         loggable=lambda r: {k: r[k] for k in ("done", "failed") if k in r})
 
     def wait_for_change(self, region=None, timeout: float = 10, settle_ms: int = 500) -> dict:
         """Wait until the screen differs from how it looked right after the latest action (or, with
