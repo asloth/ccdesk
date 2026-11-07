@@ -420,6 +420,13 @@ class Desktop:
             windows = {}
         window = self._receiver(windows, point) if windows else None
         target = self._target
+        if target and not force and windows and target.id not in windows:
+            # The window we meant is gone, whoever would receive the input now (or nobody known):
+            # with an own pointer the keys would go to whatever the agent's focus fell back to.
+            who = (f"{'the pointer at %d,%d is over' % point if point else 'keyboard focus is on'} "
+                   f"{window.title!r} ({window.id}), and " if window is not None else "")
+            raise PolicyError(f"{who}the window from activate_window() ({target.title!r}, {target.id}) is "
+                              f"gone; call list_windows() and activate_window() again, or pass force=true")
         if (self.agent and target and not force and window is not None and target.id in windows
                 and not self._belongs_to_target(window)):
             # Another agent on this screen moved focus or raised its window over ours. We hold the
@@ -817,8 +824,9 @@ class Desktop:
         def do():
             limit = check_int("max_nodes", max_nodes, 1, 2000)
             q = (query or "").strip() or None
+            title = window or self._own_window_title()
             try:
-                result = self.a11y.tree(window or None, q, bool(page), limit)
+                result = self.a11y.tree(title or None, q, bool(page), limit)
             except WindowNotFound as exc:
                 why = self._a11y_diagnosis(window or None)
                 message = f"{exc}. {why}" if why else str(exc)
@@ -854,6 +862,19 @@ class Desktop:
                 "shot_fallback": shot_fallback}
         return self._act("ui_tree", args, do,
                          loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
+
+    def _own_window_title(self) -> str | None:
+        """With an own pointer, the title of the window the agent's keyboard is in. The helper's
+        default is the frame AT-SPI marks active, which follows the user's focus, not the agent's."""
+        if not self.backend.own_pointer:
+            return None
+        try:
+            wid = self.backend.active_window()
+            if not wid:
+                return None
+            return next((w.title for w in self.backend.list_windows() if w.id == wid and w.title), None)
+        except CcdeskError:
+            return None
 
     def _a11y_diagnosis(self, title: str | None) -> str | None:
         """Why ui_tree() found no window: which window is missing from the bus, and how to fix it."""
