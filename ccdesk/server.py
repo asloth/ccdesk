@@ -142,7 +142,9 @@ def build_server(desktop: Desktop) -> MCPServer:
                 return compact(fn(*args, **kw))
             except CcdeskError as exc:
                 # ToolError messages reach the model; other exceptions are masked by the SDK.
-                raise ToolError(str(exc)) from exc
+                # An error with a code leads with it, so the caller can act without parsing prose.
+                head = exc.prefix()
+                raise ToolError(f"{head}: {exc}" if head else str(exc)) from exc
 
         return server.tool(annotations=ANNOTATIONS[fn.__name__], structured_output=False)(reporting)
 

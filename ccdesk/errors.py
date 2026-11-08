@@ -5,7 +5,7 @@ class CcdeskError(Exception):
     """Base class for all errors reported back to the caller.
 
     Optional structured fields, for the caller to act on without parsing prose: `code` (e.g.
-    "stale_ref", "gui_frame_stale"), `input_emitted` (input reached the backend before the error)
+    "gui_frame_stale"), `input_emitted` (input reached the backend before the error)
     and `retry_same_request` (the identical call may succeed later). Anything else goes in `extra`.
     """
 
@@ -23,7 +23,8 @@ class CcdeskError(Exception):
         self.extra = extra
 
     def prefix(self) -> str | None:
-        """`code=stale_ref input_emitted=false retry_same_request=false`, or None without a code."""
+        """`code=gui_frame_stale input_emitted=false retry_same_request=false`, or None without a
+        code. The MCP server puts it in front of the message."""
         if not self.code:
             return None
         return (f"code={self.code} input_emitted={str(bool(self.input_emitted)).lower()} "
