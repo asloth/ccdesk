@@ -537,6 +537,11 @@ class Desktop:
         now = self._layout(windows)
         if now is None:
             return
+        if self._target is not None and now[2] == self._target.id:
+            # Focus came back to our own activate_window() window, e.g. another agent on this
+            # screen had it when the screenshot was taken and _guard just took it back: the
+            # receiver check already ensures the input lands there, so focus alone is no reason.
+            seen = (seen[0], seen[1], now[2], seen[3])
         if self._geometry(seen) == self._geometry(now):
             return
         what = describe_layout_change(seen, now)

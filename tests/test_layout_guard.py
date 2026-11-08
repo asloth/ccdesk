@@ -95,3 +95,27 @@ def test_activate_window_invalidates_the_old_frame(make_desk, fake):
     # Raising a window restacks by definition: the old screenshot cannot be trusted for it,
     # so the guard is off until the next capture.
     assert "clicked" in d.click(100, 100)
+
+
+def test_taking_our_window_back_is_not_a_layout_change(make_desk, fake):
+    """Another agent on the screen had focus when we took the screenshot; _guard takes our window
+    back before the click, and that alone must not make the screenshot stale."""
+    d = make_desk(agent="desk-1")
+    a, b = fake.windows[0], fake.windows[1]
+    d.activate_window(a.title)
+    fake.active = b.id
+    fake.under = None  # the receiver is the focused window (B), so _guard re-activates A
+    d.screenshot()
+    assert "clicked" in d.click(500, 400)
+    assert [c for c in fake.calls if c[0] == "click"]
+
+
+def test_focus_moving_to_another_window_still_counts(make_desk, fake):
+    d = make_desk()
+    a, b = fake.windows[0], fake.windows[1]
+    fake.active = a.id
+    d.screenshot()
+    fake.active = b.id
+    with pytest.raises(StaleFrameError, match="focus moved"):
+        d.click(500, 400)
+    assert not [c for c in fake.calls if c[0] == "click"]
