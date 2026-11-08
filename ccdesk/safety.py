@@ -14,7 +14,7 @@ from ccdesk.parsing import KeyCombo, is_destructive
 
 # Tools that change desktop state. --read-only disables all of them.
 INPUT_TOOLS = frozenset(
-    {"click", "click_element", "set_value", "move", "drag", "scroll", "type_text", "press_key", "activate_window", "manage_window", "launch", "clipboard_set"}
+    {"click", "click_element", "set_value", "move", "drag", "scroll", "type_text", "press_key", "activate_window", "manage_window", "launch", "clipboard_set", "batch"}
 )
 
 MAX_LOGGED_TEXT = 200
@@ -66,8 +66,9 @@ def _redact(args: dict) -> dict:
 class AuditLog:
     """Append-only JSONL log. Failures to write never break the action itself."""
 
-    def __init__(self, path: str | os.PathLike | None = None):
+    def __init__(self, path: str | os.PathLike | None = None, agent: str | None = None):
         self.path = Path(path).expanduser() if path else default_audit_path()
+        self.agent = agent  # with several agents on one screen, which one wrote the entry
         self._lock = threading.Lock()
 
     def record(self, tool: str, args: dict, status: str, result=None, error: str | None = None,
@@ -75,6 +76,7 @@ class AuditLog:
         entry = {
             "ts": datetime.now().astimezone().isoformat(timespec="milliseconds"),
             "pid": os.getpid(),
+            **({"agent": self.agent} if self.agent else {}),
             "tool": tool,
             "args": _redact(args),
             "status": status,

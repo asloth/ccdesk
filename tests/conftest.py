@@ -9,6 +9,7 @@ import pytest
 from ccdesk.a11y import A11y
 from ccdesk.backends.base import Backend
 from ccdesk.desktop import Desktop
+from ccdesk.seat import SeatLock
 from ccdesk.errors import CommandError, UnsupportedError
 from ccdesk.parsing import Window
 from ccdesk.safety import AuditLog, Policy
@@ -34,6 +35,7 @@ class FakeBackend(Backend):
         self.active: str | None = None  # id of the focused window; None: the backend cannot tell
         self.under: str | None = None  # id of the window under the pointer, for window_at
         self.transients: dict[str, str] = {}  # dialog id -> the window it belongs to
+        self.shells: dict[str, Window] = {}  # panels and other unlisted surfaces, for shell_window
         self.responses: dict[str, str] = {}  # command line -> output for run(); anything else fails
         self.ran: list[list[str]] = []
         self.slept: list[float] = []
@@ -173,6 +175,9 @@ class FakeBackend(Backend):
     def transient_for(self, wid):
         return self.transients.get(wid)
 
+    def shell_window(self, wid):
+        return self.shells.get(wid)
+
     def clipboard_get(self):
         return self.clip
 
@@ -243,11 +248,12 @@ def audit_path(tmp_path):
 
 @pytest.fixture
 def make_desk(fake, audit_path, tmp_path, helper):
-    def make(screen_diff=False, **policy):
+    def make(screen_diff=False, agent=None, **policy):
         # screen_diff is off by default so other tests see only the backend calls they make.
-        desk = Desktop(backend=fake, policy=Policy(**policy), audit=AuditLog(audit_path),
+        desk = Desktop(backend=fake, policy=Policy(**policy), audit=AuditLog(audit_path, agent=agent),
                        shots_dir=tmp_path / "shots", a11y=A11y(runner=helper, pythons=("/bin/sh",)),
-                       screen_diff=screen_diff)
+                       screen_diff=screen_diff, agent=agent,
+                       seat=SeatLock("test", directory=tmp_path / "locks"))
         desk.clock = fake.clock
         return desk
     return make

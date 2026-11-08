@@ -403,6 +403,8 @@ def parse_window_ref(value) -> tuple[str, str]:
         return "id", f"0x{int(text, 16):08x}"
     if text.isdigit():
         return "id", f"0x{int(text):08x}"
+    if re.fullmatch(r"\{[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}\}", text):
+        return "id", text  # KWin's window ids
     return "title", text
 
 

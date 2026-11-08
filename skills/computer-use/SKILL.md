@@ -1,6 +1,6 @@
 ---
 name: computer-use
-description: Drive the Linux desktop through the ccdesk MCP server - take screenshots, click, type, press keys, manage windows and the clipboard. Use when the user asks to open, look at, or operate a graphical app (Firefox, a GUI dialog, a desktop setting) instead of a shell command.
+description: Drive the Linux desktop through the ccdesk MCP server - read a window's accessibility tree or take a screenshot, click, type, press keys, manage windows and the clipboard. Use when the user asks to open, look at, or operate a graphical app (Firefox, a GUI dialog, a desktop setting) instead of a shell command.
 ---
 
 # Computer use with ccdesk
@@ -27,9 +27,16 @@ there; ask before working around that. Your clipboard is separate from theirs.
 2. Call `doctor()` once per session. Check `ready`, the backend (`x11` or `wayland`), the
    screen size, and `warnings`. If it isn't ready, stop and tell the user what is missing.
 3. On the user's own screen (not headless), call `ui_tree()` once on the app you will use.
-   If it fails, the error names the missing window and the fix (often a `busctl` command and
-   an app restart). Offer that fix to the user before you go pixel-only: without a tree every
+   If the window has no useful tree, the answer carries a small picture of it (`fallback_shot`)
+   and a `note` naming the missing window and the fix (often a `busctl` command and an app
+   restart). Offer that fix to the user before you go pixel-only: without a tree every
    check costs a screenshot. Don't run it yourself; it changes their session.
+4. **No tree and a web app: stop and ask before the pixel loop.** If the task is a web form
+   or page and step 3 found no tree, ask the user one question before your first click: attach a
+   browser tool (`ccdesk firefox` for firefox-devtools, see below), switch the accessibility
+   bus on, or go ahead with pixels. Going straight to pixels is the expensive mistake: three
+   web forms of the same shape once took 117 screenshots, 103 clicks and 86 fixed waits,
+   enough to fill the context, when firefox-devtools could have filled them as text.
 
 ## API before pixels
 
@@ -92,10 +99,15 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   one (`activated` in the result; the pointer does not move), else a click at its centre. A ref
   keeps pointing at the same element across `ui_tree()` calls; if it is gone or changed, the
   call says so.
-- **In a native app, fill a field with `set_value("e2", "text")`**: one call instead of a click
-  and a `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web
-  pages don't take it (tested on Firefox and Chromium): in a browser, use `click_element`, then
-  `type_text`.
+- **Fill a field with `set_value("e2", "text")`**: one call instead of a click and a
+  `type_text`, and it reads the value back. It also sets sliders and spin buttons. Web pages
+  ignore the direct write, so there it clicks the field, selects all and types (`typed: true`
+  in the answer); either way a success means the field holds the text. Don't fall back to
+  clicking fields by coordinates in a browser when you have their refs.
+- **Fill a whole form with one `batch` call**: `batch(steps=[{"tool":"set_value","ref":"e2",
+  "text":"Ana"}, {"tool":"click_element","ref":"e9"}])`. One request instead of one per field,
+  no other agent's input in between, and one `changes` at the end. It stops at the first
+  failing step and says which one; refs from a page that a step changed may be stale.
 - **Verify for free.** Once you have called `ui_tree()`, `click`, `click_element`,
   `type_text` and `press_key` return `changes`: the lines of that window that changed
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
@@ -110,21 +122,32 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
 ## The loop: look, act once, verify
 
 ```
-ui_tree() or screenshot()  ->  action  ->  its `changes`, or a screenshot  ->  ...
+ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
 ```
 
-- **Screenshot first.** Never click on coordinates you haven't just seen. Windows move,
-  pages scroll, and popups appear.
+- **Look before you click, and look with the tree first.** `ui_tree()` gives you the exact
+  target, so act on a ref (`click_element`, `set_value`) instead of coordinates. A raw
+  `click(x, y)` needs a screenshot you have just seen: windows move, pages scroll, and popups
+  appear.
+- **Screenshots are for verification and fallback**, not the default look: canvas, images,
+  video, games, apps that publish no tree, layout questions, or confirming that something
+  visual is right.
 - **The picture is in the answer.** `screenshot()` shows it to you directly, with `path`,
   `width` and `height`. Don't Read the path as well: that pays for it twice. Only when it says
   it is too big to show, or you passed `path=`, is the file all you have.
-- **One action, then verify.** After each click, keypress or typed string, take a new
-  screenshot and confirm the expected change happened before you continue. If it didn't,
-  work out why. Don't repeat the action blindly.
-- **Without a tree, read `screen_changed`.** Actions then report whether the receiving
-  window's pixels changed, and `changed_area` if they did. `false` after a click means it
-  did nothing yet: don't screenshot to find that out, and don't repeat the click blindly.
-  Screenshot just `changed_area` to see what happened.
+- **One action, then verify.** After each click, keypress or typed string, read its
+  `changes` (with a tree) or take a new screenshot, and confirm the expected change happened
+  before you continue. If it didn't, work out why. Don't repeat the action blindly.
+- **Without a tree, pass `show_change=true` and read `screen_changed`.** Actions then report
+  whether the receiving window's pixels changed, and `changed_area` if they did. `false` after
+  a click means it did nothing yet: don't screenshot to find that out, and don't repeat the
+  click blindly. With `show_change=true` (on `click`, `type_text`, `press_key`, `scroll` and
+  `drag`), the answer also shows `change_shot`, a capture of just that area (at most ~600
+  tokens), so you check the result with no screenshot at all. Screenshot only when it isn't
+  enough, and then just `changed_area`, never the whole monitor.
+- **A `hint` in a result means you overpaid.** ccdesk adds one to a screenshot that was much
+  bigger than what the last action changed, and to a `wait()` right after an action. Follow it
+  from the next call on, not just this once.
 - **Wait for slow things with `wait_for_change()`**, not fixed `wait()`s. It returns as soon
   as the screen has changed since your last action and gone still (`timeout` up to 300 s),
   including when the page finished while you were thinking. Then screenshot or `ui_tree()`.
@@ -151,7 +174,9 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
   is screen `(px/scale, py/scale)`, plus `origin` for a region.
 - **Act and verify with crops.** Once you know where you are working, screenshot a region
   just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
-  typed value or a toggled checkbox with a crop, not the whole monitor.
+  typed value or a toggled checkbox with `show_change=true` or a crop, not the whole monitor.
+  A half-scale monitor shot "just to check" is ~700 tokens; doing it after every click is
+  what makes a task expensive, because each one stays in context for every later turn.
 - **Full resolution only to read.** Use a full-scale monitor capture when you must read
   small text across the page. Prefer scrolling and cropping to repeated full captures.
 - **Text beats pixels.** To read a long page, `press_key("ctrl+a")`, `press_key("ctrl+c")`,

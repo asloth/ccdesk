@@ -8,6 +8,8 @@ from pathlib import Path
 
 from ccdesk import __version__, firefox
 from ccdesk.backends import Backend, detect_session
+from ccdesk.backends.kde import ydotoold_socket
+from ccdesk.backends.mpx import unavailable_reason
 from ccdesk.errors import CcdeskError
 from ccdesk.safety import Policy
 
@@ -22,7 +24,7 @@ def _mcp_version() -> str | None:
 
 
 def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None,
-                 headless=None) -> dict:
+                 headless=None, cursor=None) -> dict:
     env = backend.env
     problem = backend.available()
     tools = backend.tools_report()
@@ -44,6 +46,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "mcp": _mcp_version(),
         "policy": {"read_only": policy.read_only, "allow_launch": policy.allow_launch,
                    "confirm_keys": [str(c) for c in policy.confirm_keys], "yield_ms": policy.yield_ms},
+        "own_pointer": _own_pointer(backend),
         "user_idle_ms": None,
         "audit_log": str(audit_path),
         "headless": headless.info() if headless else None,
@@ -53,6 +56,8 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     warnings = report["warnings"]
     if headless:
         warnings.extend(headless.notes)
+    if cursor is not None and cursor.status():
+        warnings.append(cursor.status())
     if problem:
         warnings.append(problem)
     else:
@@ -84,11 +89,38 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         )
         if env.get("DISPLAY"):
             warnings.append("XWayland is available: set CCDESK_BACKEND=x11 to drive X11 apps only")
+    elif backend.name == "kde":
+        warnings.append(
+            "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
+            "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
+        )
+        if not tools.get("windows", {}).get("kdotool"):
+            warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "
+                            "`cargo install kdotool`). Without it clicks and drags are refused, because "
+                            "there is no way to place the pointer; screenshots and typing still work, there "
+                            "is no focus guard, and on a scaled display coordinates will be wrong")
+        if not backend.first_tool("magick", "convert"):
+            warnings.append("region screenshots and scaled displays on KDE need ImageMagick (magick or convert)")
+        try:
+            missing = backend.kwin_missing()
+        except CcdeskError as exc:
+            missing = None
+            warnings.append(f"kdotool is installed but could not run a KWin script ({exc}). It needs kdotool "
+                            "0.3 or newer: until then there is no window list or focus guard, and on a "
+                            "scaled display screenshot coordinates will be wrong")
+        if missing:
+            warnings.append(f"this KWin lacks {', '.join(missing)}: the window list may include panels, "
+                            "windows on other activities, or boxes off by the title bar. Please report it")
+        if tools.get("keyboard", {}).get("ydotool") and not ydotoold_socket(env):
+            warnings.append("ydotoold is not running: start it with `systemctl --user enable --now ydotool`")
     if backend.name == "x11" and not tools.get("windows", {}).get("wmctrl"):
         if tools.get("windows", {}).get("xprop"):
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
+    if backend.own_pointer and not backend.click_guard.active():
+        warnings.append("own pointer: your window manager is not bspwm, and a click by the agent may move "
+                        "your keyboard focus (the window manager's click-to-focus). Only bspwm is handled")
     report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
                                   run=backend.try_run)
     if report["firefox"]["automation"]:
@@ -102,6 +134,33 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             f"cua-driver found at {report['cua_driver']}; ccdesk works independently and does not use it"
         )
     return report
+
+
+def housekeeping(backend: Backend) -> dict:
+    """What a crashed own-pointer agent leaves behind, cleaned up: ccdesk-* master pairs whose agent
+    no longer runs, and a bspwm click_to_focus left at none. Only things proven stale are touched."""
+    done: dict = {"removed_devices": [], "restored_click_to_focus": None}
+    if backend.name != "x11" or not backend.which("xinput"):
+        return done
+    from ccdesk.backends.mpx import clean_leftovers
+    from ccdesk.wmguard import ClickGuard
+
+    try:
+        run = lambda *args: backend.run(["xinput", *args])  # noqa: E731
+        done["removed_devices"] = clean_leftovers(run, backend.env)
+    except CcdeskError as exc:
+        done["error"] = str(exc)
+    done["restored_click_to_focus"] = ClickGuard(backend.try_run, backend.env, which=backend.which).recover()
+    return done
+
+
+def _own_pointer(backend: Backend) -> dict:
+    """The agent's own pointer and keyboard (`ccdesk mcp --own-pointer`): their device ids when
+    in use, else whether it could be used here and, if not, why."""
+    if backend.own_pointer:
+        return {**backend.mpx.info(), "bspwm_click_guard": backend.click_guard.active()}
+    reason = unavailable_reason(backend.name, backend.which)
+    return {"enabled": False, "available": reason is None, "reason": reason}
 
 
 def _a11y_report(a11y, warnings: list[str], private: bool = False, run=None) -> dict:
@@ -122,6 +181,14 @@ def _a11y_report(a11y, warnings: list[str], private: bool = False, run=None) -> 
     if not any(n.lower() in ("firefox", "chromium", "google-chrome") for n in names) and not private:
         warnings.append(TOOLKIT_HINT)
     return {"ready": True, "apps": names, "bus_enabled": enabled}
+
+
+def _own_pointer_line(info: dict) -> str:
+    if info.get("enabled"):
+        ids = ", ".join(f"{role}={info[role]}" for role in
+                        ("master_pointer", "master_keyboard", "slave_pointer", "slave_keyboard") if role in info)
+        return f"on ({info['name']}: {ids})"
+    return "off (available with --own-pointer)" if info.get("available") else f"unavailable: {info.get('reason')}"
 
 
 def format_report(report: dict) -> str:
@@ -145,7 +212,7 @@ def format_report(report: dict) -> str:
     lines.append(f"  scale:               {scale_text}")
     for m in report["monitors"]:
         lines.append("  monitor:             {name} {width}x{height}+{x}+{y}{p}".format(
-            **m, p=" (primary)" if m["primary"] else ""))
+            **m, p=" (primary)" if m.get("primary") else ""))
     lines += ["", "Tools"]
     for cap, found in report["tools"].items():
         parts = [f"{name} ({path})" if path else f"{name} (missing)" for name, path in found.items()]
@@ -162,11 +229,17 @@ def format_report(report: dict) -> str:
         + ("; Claude's own Firefox is running" if report["firefox"].get("agent_running") else ""),
         f"policy:       read_only={report['policy']['read_only']} allow_launch={report['policy']['allow_launch']}"
         f" yield_ms={report['policy']['yield_ms']}",
+        "own pointer:  " + _own_pointer_line(report.get("own_pointer") or {"available": False, "reason": "unknown"}),
         f"user idle:    {'unknown (no xprintidle)' if report['user_idle_ms'] is None else str(report['user_idle_ms']) + ' ms'}",
         f"audit log:    {report['audit_log']}",
     ]
     if report["policy"]["confirm_keys"]:
         lines.insert(-1, f"confirm keys: {', '.join(report['policy']['confirm_keys'])} (plus the built-in list)")
+    cleanup = report.get("cleanup") or {}
+    if cleanup.get("removed_devices"):
+        lines.append("cleanup:      removed leftover devices: " + ", ".join(cleanup["removed_devices"]))
+    if cleanup.get("restored_click_to_focus"):
+        lines.append(f"cleanup:      put bspwm's click_to_focus back to {cleanup['restored_click_to_focus']!r}")
     if report["warnings"]:
         lines += ["", "Warnings"] + [f"  ! {w}" for w in report["warnings"]]
     return "\n".join(lines)

@@ -211,8 +211,8 @@ def test_only_stdlib_and_mcp_are_imported():
         mods = set(_imported_modules(path)) - allowed
         if path.name == "server.py":
             mods -= {"mcp"}
-        if path.name == "a11y_helper.py":
-            mods -= {"gi"}  # runs in a separate system Python, never imported by ccdesk
+        if path.name in ("a11y_helper.py", "cursor_helper.py"):
+            mods -= {"gi", "cairo"}  # runs in a separate system Python, never imported by ccdesk
         if mods:
             offenders[str(path.relative_to(ROOT))] = sorted(mods)
     assert offenders == {}
@@ -246,6 +246,12 @@ def test_install_forwards_headless(home, tmp_path, monkeypatch, capsys):
     log = fake_claude(tmp_path, monkeypatch)
     assert main(["install", "--headless", "--size", "1600x900"]) == 0
     assert log.read_text().splitlines()[1].endswith("mcp --headless --size 1600x900")
+
+
+def test_install_forwards_screen(home, tmp_path, monkeypatch, capsys):
+    log = fake_claude(tmp_path, monkeypatch)
+    assert main(["install", "--screen", "work"]) == 0
+    assert log.read_text().splitlines()[1].endswith("mcp --screen work")
 
 
 def test_peek_without_a_headless_server(tmp_path, monkeypatch, capsys):

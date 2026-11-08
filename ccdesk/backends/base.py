@@ -23,6 +23,7 @@ def interpolate(x0: int, y0: int, x1: int, y1: int, steps: int) -> list[tuple[in
 
 class Backend:
     name = "none"
+    own_pointer = False  # True: the agent has its own pointer and keyboard, not the user's
     # Tools this backend knows how to use, grouped by capability, for `doctor`.
     TOOLS: dict[str, tuple[str, ...]] = {}
 
@@ -148,6 +149,10 @@ class Backend:
     def type_text(self, text: str) -> None:
         self._unsupported("type_text")
 
+    def take_note(self) -> str | None:
+        """Something the model should know about what the last action did, once."""
+        return None
+
     def typing_warning(self, text: str) -> str | None:
         """What the model should know because this text may not arrive as sent."""
         return None
@@ -191,6 +196,11 @@ class Backend:
 
     def transient_for(self, window_id: str) -> str | None:
         """Id of the window a dialog belongs to, or None."""
+        return None
+
+    def shell_window(self, window_id: str) -> Window | None:
+        """A desktop surface list_windows leaves out but that takes input itself (a panel, the desktop,
+        a launcher popup), as a Window to name in a refusal; None if window_id is not one, or unknown."""
         return None
 
     def current_desktop(self) -> int | None:

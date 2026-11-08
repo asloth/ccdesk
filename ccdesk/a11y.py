@@ -6,11 +6,14 @@ it, ccdesk runs `a11y_helper.py` with a system Python that has it and reads JSON
 
 from __future__ import annotations
 
+import atexit
 import json
 import os
+import select
 import shutil
 import subprocess
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -20,6 +23,8 @@ HELPER = Path(__file__).with_name("a11y_helper.py")
 PYTHONS = ("/usr/bin/python3", "python3")
 MAX_CHANGES = 25
 ACTION_TIMEOUT = 5.0  # a dialog an action opens can hold the helper's reply back
+# Repeating these after the helper died is harmless; a click or a write may have run already.
+RETRY_OPS = frozenset({"apps", "tree", "resolve", "changes"})
 # Roles whose native action does what a left click does. Not fields: a click there is for focus.
 NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
                           "menu item", "check menu item", "radio menu item", "page tab", "switch"})
@@ -73,20 +78,76 @@ class Ref:
     dy: int = 0
 
 
-def _run_helper(argv: list[str], timeout: float, env: dict | None = None, stdin: str | None = None) -> str:
-    proc = subprocess.run(argv, capture_output=True, text=True, timeout=timeout, check=False, env=env, input=stdin)
-    if proc.returncode != 0:
-        raise CcdeskError(f"accessibility helper failed: {(proc.stderr or proc.stdout).strip()[-300:]}")
-    return proc.stdout
+class HelperProcess:
+    """A long-lived a11y_helper.py: one JSON request per line, one answer per line.
+
+    A fresh system Python plus `import gi` costs ~100 ms, which doubled the latency of a small
+    tree; this starts one helper per session instead. stdin closing (or `shutdown`) ends it, so
+    it cannot outlive ccdesk.
+    """
+
+    def __init__(self, argv: list[str], env: dict | None = None):
+        self.argv = argv
+        self.proc = subprocess.Popen(argv, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, bufsize=0, env=env)
+        self._buf = b""
+
+    def request(self, payload: str, timeout: float) -> str:
+        data = memoryview(payload.encode() + b"\n")
+        try:
+            while data:
+                data = data[self.proc.stdin.write(data):]
+        except (BrokenPipeError, ValueError) as exc:
+            raise EOFError(str(exc)) from None
+        deadline = time.monotonic() + timeout
+        while b"\n" not in self._buf:
+            left = deadline - time.monotonic()
+            if left <= 0:
+                raise subprocess.TimeoutExpired(self.argv, timeout)
+            ready, _, _ = select.select([self.proc.stdout], [], [], left)
+            if not ready:
+                raise subprocess.TimeoutExpired(self.argv, timeout)
+            chunk = os.read(self.proc.stdout.fileno(), 1 << 16)
+            if not chunk:
+                raise EOFError("the accessibility helper exited")
+            self._buf += chunk
+        line, _, self._buf = self._buf.partition(b"\n")
+        return line.decode("utf-8", "replace")
+
+    def close(self, kill: bool = False) -> None:
+        if self.proc.poll() is not None:
+            return
+        try:
+            if kill:
+                self.proc.kill()
+            else:
+                self.proc.stdin.close()
+            self.proc.wait(timeout=1)
+        except (OSError, subprocess.TimeoutExpired):
+            self.proc.kill()
+            try:
+                self.proc.wait(timeout=1)
+            except subprocess.TimeoutExpired:
+                pass
+
+
+def helper_pythons() -> tuple[str, ...]:
+    """The interpreters that may have PyGObject: CCDESK_A11Y_PYTHON if set, else the usual ones."""
+    override = os.environ.get("CCDESK_A11Y_PYTHON")
+    return (override,) if override else PYTHONS
 
 
 class A11y:
     def __init__(self, runner=None, pythons: tuple[str, ...] | None = None):
         # The helper talks to the accessibility bus of this env (a headless screen has its own).
         self.env: dict | None = None
-        self._runner = runner or (lambda argv, timeout, stdin=None: _run_helper(argv, timeout, self.env, stdin))
-        override = os.environ.get("CCDESK_A11Y_PYTHON")
-        self._pythons = pythons or ((override,) if override else PYTHONS)
+        # Tests (and anything that wants a one-shot process) pass a callable; otherwise one helper
+        # stays alive for the session, which is what makes a read cheap.
+        self._runner = runner
+        self._proc: HelperProcess | None = None
+        self._proc_python: str | None = None
+        self._io = threading.Lock()
+        self._pythons = pythons or helper_pythons()
         self._python: str | None = None
         self.refs: dict[str, Ref] = {}
         self._by_path: dict[str, str] = {}
@@ -95,28 +156,46 @@ class A11y:
         # (pid, title) -> screen position of that window's content, or None. Set by Desktop to the
         # backend's window_origin, for toolkits that report boxes relative to their window.
         self.locate = None
+        atexit.register(self.close)
 
     def call(self, request: dict, timeout: float = 20, private: bool = False,
              on_timeout: str = "accessibility helper timed out; the app may be busy") -> dict:
-        """private: the request goes through stdin, because it holds what the user's field will."""
+        """private: the request goes through stdin, because it holds what the user's field will.
+
+        One long-lived helper answers every call. If it died, a read is retried once on a fresh
+        one; a click or a write is never replayed, because it may have run before the crash."""
         errors = []
         payload = json.dumps(request)
-        for py in ([self._python] if self._python else self._pythons):
+        retryable = request.get("op") in RETRY_OPS
+        candidates = [self._python] if self._python else list(self._pythons)
+        for index, py in enumerate(candidates):
             exe = py if os.path.isabs(py) else shutil.which(py)
             if not exe or not os.path.exists(exe):
                 continue
             try:
-                if private:
-                    out = self._runner([exe, "-I", str(HELPER), "-"], timeout, payload)
-                else:
-                    out = self._runner([exe, "-I", str(HELPER), payload], timeout)
+                out = self._ask(exe, payload, timeout, private, request.get("op"))
             except subprocess.TimeoutExpired:
                 raise CcdeskError(on_timeout) from None
+            except OSError as exc:  # could not start it: a broken or vanished interpreter
+                self._died()
+                errors.append(f"{exe}: {exc}")
+                continue
+            except EOFError:
+                # An interpreter without PyGObject prints its error and exits, sometimes before it
+                # even reads the request: a read is safe on the next candidate, an action is not.
+                if retryable and index < len(candidates) - 1:
+                    errors.append(f"{exe}: stopped before answering")
+                    continue
+                what = ("" if retryable else
+                        ": the action may have run; check with ui_tree() or a screenshot, don't repeat it")
+                raise CcdeskError(f"the accessibility helper stopped before answering{what}") from None
             try:
                 result = json.loads(out)
             except ValueError:
+                self._died()
                 raise CcdeskError(f"accessibility helper printed non-JSON: {out[:200]!r}") from None
             if "PyGObject" in str(result.get("error", "")):
+                self._died()  # that helper exits right after saying so
                 errors.append(f"{exe}: {result['error']}")
                 continue
             self._python = py
@@ -128,6 +207,48 @@ class A11y:
             f"accessibility tree needs a system Python with PyGObject (Arch: python-gobject, Debian: "
             f"python3-gi, plus at-spi2-core); set CCDESK_A11Y_PYTHON to pick one ({hint})"
         )
+
+    def _ask(self, exe: str, payload: str, timeout: float, private: bool, op: str | None) -> str:
+        """Send one request to the helper, starting it first if there is none."""
+        if self._runner is not None:  # injected (tests): one process per request, as before
+            if private:
+                return self._runner([exe, "-I", str(HELPER), "-"], timeout, payload)
+            return self._runner([exe, "-I", str(HELPER), payload], timeout)
+        with self._io:
+            for attempt in (0, 1):
+                if self._proc is None or self._proc_python != exe:
+                    # An OSError here means it could not start: nothing was sent, so call() may
+                    # try the next interpreter. One raised by the request below is different.
+                    self._start(exe)
+                try:
+                    return self._proc.request(payload, timeout)
+                except subprocess.TimeoutExpired:
+                    # A late answer would arrive in the middle of the next request: drop the process.
+                    self._died(kill=True)
+                    raise
+                except OSError as exc:  # died while handling it: never replay the payload
+                    self._died()
+                    raise EOFError(str(exc)) from None
+                except EOFError:
+                    self._died()
+                    if attempt or op not in RETRY_OPS:
+                        raise
+        raise AssertionError("unreachable")
+
+    def _start(self, exe: str) -> None:
+        self._died()
+        self._proc = HelperProcess([exe, "-I", str(HELPER)], env=self.env)
+        self._proc_python = exe
+
+    def _died(self, kill: bool = False) -> None:
+        proc, self._proc, self._proc_python = self._proc, None, None
+        if proc is not None:
+            proc.close(kill=kill)
+
+    def close(self) -> None:
+        """End the helper: it exits when its stdin closes, and cannot outlive ccdesk."""
+        with self._io:
+            self._died()
 
     def apps(self) -> list[dict]:
         return self.call({"op": "apps"})["apps"]
@@ -181,13 +302,17 @@ class A11y:
                               f"pass a more specific title")
         return out
 
-    def changes(self) -> str | None:
+    def changes(self, settle: float = 0) -> str | None:
         """Re-read the window of the latest tree() and return the lines that changed, or None if
-        tree() was never called. Lets an action report its own effect without another ui_tree()."""
+        tree() was never called. Lets an action report its own effect without another ui_tree().
+
+        settle: seconds the helper watches the window for a change before answering, so a fast
+        app reports its effect at once instead of after a fixed pause."""
         with self._lock:
             if self._last is None:
                 return None
-            _, nodes = self._read(self._last["request"])
+            request = dict(self._last["request"], settle_ms=max(0, round(settle * 1000)))
+            _, nodes = self._read(request)
             before = self._last["lines"]
             after = {ref: format_node(ref, n, 0) for ref, n in nodes}
             self._last["lines"] = after
@@ -201,6 +326,21 @@ class A11y:
         if gone:
             changed.append("gone: " + " ".join(gone))
         return "\n".join(changed)
+
+    def refresh_secret(self) -> None:
+        """Re-read whether a password field is focused, keeping the lines changes() compares with:
+        a batch types after its own clicks, with no observation in between to learn it."""
+        with self._lock:
+            if self._last is None:
+                return
+            _, nodes = self._read(dict(self._last["request"], settle_ms=0))
+            self._last["secret"] = secret_focused(nodes)
+
+    def forget(self) -> None:
+        """Stop comparing with the latest tree: it was too thin to work from (or of another window),
+        so actions report pixel changes instead."""
+        with self._lock:
+            self._last = None
 
     def on_secret_field(self) -> bool:
         """Whether the latest read of the tree had a password field focused. Costs no extra read,

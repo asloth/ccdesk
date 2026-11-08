@@ -1,10 +1,12 @@
 """Accessibility tree tools against a fake helper (no AT-SPI bus needed)."""
 
 import json
+import subprocess
+import sys
 
 import pytest
 
-from ccdesk.a11y import A11y, format_node
+from ccdesk.a11y import A11y, HelperProcess, format_node
 from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError
 
 
@@ -84,6 +86,89 @@ def test_helper_python_fallback(tmp_path):
         bad.apps()
 
 
+def test_persistent_helper_starts_once(tmp_path, monkeypatch):
+    """One system Python for the session, not one per read: its start costs ~100 ms."""
+    starts = tmp_path / "starts"
+    script = tmp_path / "helper.py"
+    script.write_text(
+        "import json, sys\n"
+        f"open({str(starts)!r}, 'a').write('x')\n"
+        "for line in sys.stdin:\n"
+        "    print(json.dumps({'apps': [], 'op': json.loads(line)['op']}), flush=True)\n"
+    )
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    a = A11y(pythons=(sys.executable,))
+    try:
+        assert a.apps() == [] and a.apps() == []
+        assert starts.read_text() == "x"
+    finally:
+        a.close()
+
+
+def test_a_dead_helper_never_replays_an_action(tmp_path, monkeypatch):
+    """A crash after a click may have run it: say so and stop. A read is safe to repeat."""
+    starts = tmp_path / "starts"
+    script = tmp_path / "helper.py"
+    script.write_text(
+        "import sys\n"
+        f"open({str(starts)!r}, 'a').write('x')\n"
+        "sys.stdin.readline()\n"  # takes the request, dies without answering it
+    )
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    # Two candidates: an action must not be replayed on the second one either.
+    a = A11y(pythons=(sys.executable, sys.executable))
+    try:
+        with pytest.raises(CcdeskError, match="may have run"):
+            a.call({"op": "action", "path": "3.0.1", "names": ["click"]})
+        assert starts.read_text() == "x"  # no second process for an action
+        with pytest.raises(CcdeskError, match="stopped before answering"):
+            a.apps()  # retried on each candidate (two tries each), then it gives up
+        assert starts.read_text() == "xxxxx"  # 1 action + 2 tries on each of 2 candidates
+    finally:
+        a.close()
+
+
+def test_a_broken_interpreter_does_not_stop_a_read(tmp_path, monkeypatch):
+    """An interpreter that exits before answering (no PyGObject at all) is skipped for a read."""
+    script = tmp_path / "helper.py"
+    script.write_text("import json, sys\n"
+                      "for line in sys.stdin:\n"
+                      "    print(json.dumps({'apps': []}), flush=True)\n")
+    monkeypatch.setattr("ccdesk.a11y.HELPER", script)
+    broken = tmp_path / "broken-python"
+    broken.write_text("#!/bin/sh\nexit 1\n")
+    broken.chmod(0o755)
+    a = A11y(pythons=(str(broken), sys.executable))
+    try:
+        assert a.apps() == []
+    finally:
+        a.close()
+
+
+def test_helper_process_speaks_one_line_per_request():
+    proc = HelperProcess([sys.executable, "-c",
+                          "import sys, time\n"
+                          "for line in sys.stdin:\n"
+                          "    if 'slow' in line:\n"
+                          "        time.sleep(5)\n"
+                          "    print(line.strip(), flush=True)\n"])
+    try:
+        assert proc.request('{"op":"apps"}', 5) == '{"op":"apps"}'
+        with pytest.raises(subprocess.TimeoutExpired):
+            proc.request("slow", 0.05)  # a late answer must not land in the next request
+    finally:
+        proc.close(kill=True)
+
+
+def test_helper_process_reports_eof_when_it_dies():
+    proc = HelperProcess([sys.executable, "-c", "pass"])
+    try:
+        with pytest.raises(EOFError):
+            proc.request("{}", 5)
+    finally:
+        proc.close()
+
+
 def test_format_node_escapes():
     line = format_node("e9", {"role": "text", "name": 'say "hi"', "value": "a\nb"}, 1)
     assert line == '  e9 text "say \\"hi\\"" ="a\\nb"'
@@ -127,6 +212,15 @@ def test_actions_report_changes_after_ui_tree(make_desk, helper, no_settle):
     assert d.type_text("y")["changes"] == "gone: e2"
 
 
+def test_changes_asks_the_helper_to_watch_the_window(make_desk, helper):
+    """The settle window is spent in the helper, polling, not in a blind sleep in the client."""
+    d = make_desk()
+    d.ui_tree()
+    helper.nodes["3.0.29.2"]["value"] = "ana@example.org"
+    assert d.click_element("e2")["changes"]
+    assert helper.requests[-1]["op"] == "tree" and helper.requests[-1]["settle_ms"] == 300
+
+
 def test_many_changes_ask_for_a_new_tree(make_desk, helper, no_settle):
     d = make_desk()
     d.ui_tree()
@@ -145,9 +239,9 @@ def test_ui_tree_names_the_missing_window_and_the_fix(make_desk, helper, fake):
     helper.apps, helper.tree_error = OFF_BUS, "no active accessible window; pass window=... (windows: 'Telegram')"
     fake.active = "0x01e00003"
     fake.responses[IS_ENABLED] = "b false\n"
-    with pytest.raises(CcdeskError) as err:
-        make_desk().ui_tree(page=True)
-    msg = str(err.value)
+    result = make_desk().ui_tree(page=True)  # the diagnosis comes with a picture of the window
+    assert result["fallback_shot"]["path"]
+    msg = result["note"]
     assert "'Mozilla Firefox' (Navigator.firefox) is not on the accessibility bus" in msg
     assert "on the bus: Telegram" in msg
     assert "IsEnabled is false" in msg and ENABLE in msg and "restart" in msg
@@ -158,7 +252,7 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
     helper.apps, helper.tree_error = OFF_BUS, "no accessible window title contains 'termi'; windows: 'Telegram'"
     fake.responses[IS_ENABLED] = "b true\n"
     with pytest.raises(CcdeskError) as err:
-        make_desk().ui_tree(window="termi")
+        make_desk().ui_tree(window="termi", shot_fallback=False)
     msg = str(err.value)
     assert "'Terminal' (xterm.XTerm) is not on the accessibility bus" in msg and ENABLE not in msg
     assert "GNOME_ACCESSIBILITY=1" in msg
@@ -167,7 +261,7 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
     fake.active = "0x01e00003"
     helper.tree_error = "no active accessible window; pass window=..."
     with pytest.raises(CcdeskError, match="--force-renderer-accessibility"):
-        make_desk().ui_tree()
+        make_desk().ui_tree(shot_fallback=False)
 
 
 def test_ui_tree_diagnosis_without_a_known_window(make_desk, helper, fake):
@@ -340,3 +434,40 @@ def test_set_value_is_refused_by_read_only_and_for_another_window(make_desk, hel
     with pytest.raises(PolicyError, match="Terminal"):
         d.set_value("e2", "x")
     assert d.set_value("e2", "x", force=True)["verified"]
+
+
+def test_set_value_types_when_a_web_page_ignores_the_write(make_desk, helper, fake, no_settle, monkeypatch):
+    """Firefox takes set_text_contents on an <input> and keeps the old value."""
+    path = "3.0.29.2"
+    helper.values[path] = {"verified": False, "value": "me@x.org"}  # unchanged: ignored
+    typed = []
+
+    def type_text(text):
+        typed.append(text)
+        helper.nodes[path]["value"] = text
+
+    monkeypatch.setattr(fake, "type_text", type_text)
+    d = make_desk()
+    d.ui_tree()
+    r = d.set_value("e2", "Ana Torres")
+    assert r["verified"] is True and r["typed"] is True and "typed it" in r["note"]
+    assert ("click", 135 + 74, 179 + 10, 1, 1) in fake.calls  # the centre of the field
+    assert typed == ["Ana Torres"]
+
+
+def test_set_value_says_so_when_typing_does_not_take_either(make_desk, helper, fake, no_settle, monkeypatch):
+    helper.values["3.0.29.2"] = {"verified": False, "value": "me@x.org"}
+    monkeypatch.setattr(fake, "type_text", lambda text: None)
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(CcdeskError, match="ignored the direct write.*holds 'me@x.org'"):
+        d.set_value("e2", "Ana Torres")
+
+
+def test_set_value_does_not_type_over_a_value_the_app_changed(make_desk, helper, fake, no_settle):
+    helper.values["3.0.29.2"] = {"verified": False, "value": "ANA"}
+    d = make_desk()
+    d.ui_tree()
+    with pytest.raises(CcdeskError, match="holds 'ANA'"):
+        d.set_value("e2", "ana")
+    assert not any(c[0] == "click" for c in fake.calls)

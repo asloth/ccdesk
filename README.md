@@ -53,6 +53,9 @@ On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. 
 monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
 one monitor only.
 
+On KDE Plasma under Wayland, the X11 tools are not what you need: see
+[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
+
 ## Why it exists
 
 There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
@@ -195,6 +198,96 @@ does, like a web console or a chat you're signed in to. Keep your hands off the 
 Claude works on `ccdesk-screen`. Restart Claude Code after adding a server; it reads MCP
 servers only at startup.
 
+### Several agents on one screen
+
+A screen has one pointer and one keyboard focus. Every input action takes a lock on the display
+for the focus check and the clicks or keys, so two ccdesk servers on the same display take turns
+one action at a time and never interleave inside an action. Waiting for the app to settle and
+comparing the window afterwards only reads the screen, so it runs after the lock is released.
+A `batch` call holds the lock for all of its steps. Give each server
+a name with `--agent`:
+
+```sh
+ccdesk mcp --agent bot-1
+ccdesk mcp --agent bot-2
+```
+
+With `--agent`, when another agent has moved focus away from the window this agent activated,
+ccdesk activates that window again and sends the input. Without it, ccdesk refuses, because the
+one who moved focus is probably you. Audit entries carry the agent's name.
+
+Screenshots show the drawn cursors of every agent on the screen, this one's included. With
+`--yield-ms`, input that comes right after any agent's counts as that agent's, and an agent that
+waited in line for the screen checks once more that you are still away before it sends anything.
+
+On X11, each named agent also gets a drawn cursor: an arrow in the agent's colour with a small
+label holding its name. It moves to the point of each click, move, drag, scroll and click_element,
+and to the field set_value writes to. It is only a picture: the real pointer still does the
+clicking, and the overlay window takes no input and is left out of `list_windows`. It needs a
+system Python with PyGObject (the same one `ui_tree` uses); if that is missing the cursor turns
+itself off and `doctor` says so. The colour is picked from the name; set it with
+`--cursor-color '#RRGGBB'`, or turn the cursor off with `--no-cursor`.
+
+In a test on Xvfb, two agents typing 40 words each into two windows got their own text intact
+in 4.1 s. With no lock, both windows came out with letters from both agents.
+With two agents typing 15 words each and no `ui_tree`, comparing outside the lock cut the time an
+action holds it from 0.48 s to 0.13 s, and both finished in 7.4 s instead of 14.4 s (2026-11-07).
+Because another agent may act while this one compares, a `screen_changed` can now include that
+agent's drawn cursor or its window moving over this one.
+
+#### An own pointer and keyboard for each agent (X11)
+
+`ccdesk mcp --agent bot-1 --own-pointer` gives the agent its own pointer and keyboard focus, so it
+does not use yours and does not wait for the other agents. At startup it runs
+`xinput create-master ccdesk-bot-1`, which adds a master pointer and keyboard (with their XTEST
+devices) that only this agent drives. Moves, clicks, drags, scrolling, typing and key presses go
+through them; your pointer stays where it is and your keyboard focus does not change. It
+needs `xinput`, libX11, libXi and libXtst, and it is X11 only. It is refused without `--agent` and
+on other backends. Names must be unique on a screen: a second server with the name of a running
+one refuses to start ("use another --agent name"). The devices are removed when the server exits,
+also on SIGTERM and SIGINT. After a `kill -9` or a crash, the leftovers of dead agents (the ones
+whose name is not in use) are removed at the next own-pointer start or by `ccdesk doctor`, which
+lists what it removed.
+
+Window managers that grab clicks can move your keyboard focus when the agent clicks. bspwm does
+this on every unfocused window, so with bspwm each agent button press runs with
+`click_to_focus` set to `none` for a moment (under a lock shared by all agents on the screen) and
+the saved value is put back right after; `doctor` or the next start restores it if a process died
+in between. Other window managers are not handled, and `doctor` says so: an agent click there may
+move your keyboard focus.
+
+`activate_window` sets the agent's keyboard focus and leaves your window manager alone. Only a
+window that is not on screen (minimized, or on another desktop) goes through the normal
+activation, which does move your focus once; the answer says so in `note`. A window another
+window covers still receives no clicks: the click is refused, as before. The focus check
+compares against the agent's own focus and the click check against the window under the agent's
+pointer. Each own-pointer agent has its own input lock, so two of them type at the same time.
+`--yield-ms` is ignored: X counts every agent's input, own-pointer input included, as activity
+(it also resets screensavers and the idle timer other agents' `--yield-ms` reads), so own-pointer
+agents would wait on each other. The drawn cursor follows the agent's pointer.
+Characters that have no key in your keymap are typed through a spare keycode that is remapped
+for a moment, as xdotool does. `doctor` shows the device ids, or why they are unavailable.
+
+#### A named private screen for several agents
+
+Each `--headless` server starts its own private screen, so two of them never see each other's
+windows. To share one private screen, start it on its own and have the servers join it:
+
+```sh
+ccdesk screen start work [--size 1600x900] [--wm CMD]   # foreground; Ctrl-C or `screen stop` ends it
+ccdesk mcp --screen work --agent bot-1
+ccdesk mcp --screen work --agent bot-2
+ccdesk screen list
+ccdesk screen stop work
+```
+
+`screen start` prints how to watch it (`x11vnc -display :N -localhost`); `ccdesk peek` also
+lists named screens. `--screen` turns on `launch` like `--headless` and cannot be combined with
+it. A server that exits leaves the screen running. `ccdesk install --screen work` registers the
+server with that flag. The state file is `$XDG_RUNTIME_DIR/ccdesk/screens/NAME.json` (mode 0600,
+in a 0700 directory) and holds the display, size, window manager, pid and only the variables a
+joining server needs.
+
 ### Firefox for Claude, without the mouse (opt-in)
 
 For web pages, ccdesk can hand off to Mozilla's
@@ -232,23 +325,24 @@ while it is on.
 | Tool | What it does |
 | --- | --- |
 | `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1, force=false, expect_title?)` | Moves the pointer and clicks. `count=2` double-clicks. |
+| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change=true`: see [Without a tree](#without-a-tree). |
 | `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
-| `type_text(text, submit=false, replace=false, force=false, expect_title?)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
-| `press_key(key, modifiers=[], confirm=false, force=false, expect_title?)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false, show_change=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `type_text(text, submit=false, replace=false, force=false, expect_title?, show_change=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
+| `press_key(key, modifiers=[], confirm=false, force=false, expect_title?, show_change=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `manage_window(title_or_id, action, x?, y?, width?, height?)` | `move`, `resize`, `minimize`, `maximize` or `restore` a window. Returns `before`, `after`, `on_show` and `changed`, read back from the window system, so a request the window manager ignored shows as `changed: false`, as does a window that was already like that. |
 | `list_monitors()` | Each monitor's name and box, plus the size of the whole screen. |
 | `clipboard(action="get"\|"set", text?)` | Reads or replaces the clipboard. |
-| `wait(seconds)` | Sleeps, up to 300 s. |
+| `wait(seconds)` | Sleeps, up to 300 s. Right after an action, says `wait_for_change()` would have been the better call. |
 | `wait_for_change(region?, timeout=10, settle_ms=500)` | Waits (up to 300 s) until the screen differs from how it looked right after the last action, then until it is still for `settle_ms`. Returns `changed`, `settled`, `waited_ms` and `changed_area`. Needs ImageMagick. |
 | `doctor()` | Reports the session type, tools found, screen size, scale and policy. |
-| `ui_tree(window?, query?, page=false, max_nodes=300)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
+| `ui_tree(window?, query?, page=false, max_nodes=300, shot_fallback=true)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
-| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. For native apps: Firefox and Chromium web forms refuse or ignore it (it says so), so there use `click_element`, then `type_text`. |
+| `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. When the app ignores or refuses the write and keeps its old value, as Firefox and Chromium web forms do, it clicks the field, selects all and types the text, then reads it back (`typed: true`). |
+| `batch(steps, show_change=false)` | Runs 1 to 20 input steps (`click_element`, `set_value`, `type_text`, `press_key`, `click`, `scroll`, `move`, `drag`, `activate_window`, `wait` up to 5 s) in one call: the seat is taken once, every step keeps its own checks (destructive keys still need `confirm=true`) and audit entry, and only the final state is observed (`changes` or `screen_changed`). All steps are validated before the first one runs; it stops at the first failure and reports `done`, `steps` and `failed`. Use it to fill a form from one `ui_tree()`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -335,17 +429,26 @@ busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled 
 ```
 
 When `ui_tree()` finds no window, its error names the window that is missing from the bus,
-what is on the bus, and this fix, so Claude can ask you to apply it.
+what is on the bus, and this fix, so Claude can ask you to apply it. Together with that text,
+`ui_tree()` attaches a picture of the window (at most about 1500 tokens), so the model does not
+need another request for `screenshot()`. It does the same when the tree has fewer than 3 lines and
+none with a button, field or other role to act on (an Electron or canvas window). Not with
+`query=`, and `shot_fallback=false` turns it off.
 
 The tree is read by `ccdesk/a11y_helper.py`, which runs under a system Python with PyGObject
 (`python-gobject` on Arch, `python3-gi` on Debian, plus `at-spi2-core`), so ccdesk itself keeps
 no compiled dependencies. `CCDESK_A11Y_PYTHON` picks another interpreter. `ccdesk doctor`
-lists the apps that publish a tree.
+lists the apps that publish a tree. The helper stays alive for the session (one JSON request
+per line on stdin), so a read does not pay for a Python start and an AT-SPI handshake every
+time; it exits when ccdesk does.
 
 After the first `ui_tree()`, actions (`click`, `click_element`, `type_text`, `press_key`)
 return `changes`: only the lines of that window that changed, such as
 `e5 check box "I accept the terms" [checked]`. The model verifies from that instead of
-reading the tree or the screen again. Refs stay stable across calls.
+reading the tree or the screen again. Refs stay stable across calls. The helper watches the
+window for up to 0.3 s and answers the moment a line changes, so a fast app reports its effect
+at once instead of after a fixed pause: on the bench's GTK form a click went from 605 ms to
+22 ms (`bench/RESULTS.md`).
 
 Measured end to end (`bench/`, same form task, Claude Code's own usage numbers, 3 runs each):
 no ccdesk 89k input tokens, ccdesk with screenshots 118k, ccdesk with `ui_tree` and `changes`
@@ -360,6 +463,15 @@ instead of a wait and two screenshots, and `wait_for_change()` replaces fixed `w
 pages and dialogs. Each comparison costs about 0.2 s per capture (ImageMagick does the
 shrinking; without it the fields are left out).
 
+<a id="without-a-tree"></a>`show_change=true` on those same actions also puts a capture of
+`changed_area` (padded 24 px, scaled down to about 600 tokens at most) in the answer as
+`change_shot`, so the check needs no screenshot of its own. And when a screenshot taken right
+after an action is more than four times the size of what changed, or a `wait()` of a second
+or more follows an action, the result carries a `hint` naming the cheaper call. In a real
+session without a tree (filling three web forms of the same shape) most of the 117 screenshots were
+half-scale full-monitor checks of a click that changed a few hundred pixels, at ~700 tokens
+each, and 86 fixed `wait()`s did what `wait_for_change()` does.
+
 The skill tells Claude to orient at `scale=0.5`, then act and verify with small full-scale
 regions, and to pull long page text through the clipboard instead of reading it from pixels.
 
@@ -367,7 +479,7 @@ regions, and to pull long page text through the clipboard instead of reading it 
 
 ccdesk drives your real desktop with your user's privileges. The guardrails are:
 
-- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `click`, `click_element`, `set_value`, `move`,
+- **Read-only mode.** `ccdesk mcp --read-only` disables every input tool: `batch`, `click`, `click_element`, `set_value`, `move`,
   `drag`, `scroll`, `type_text`, `press_key`, `activate_window`, `manage_window`, `clipboard(set)` and
   `launch`. Screenshots, `list_windows`, `clipboard(get)`, `wait` and `doctor` still work.
 - **No launching by default.** `launch(command)` refuses unless the server was started with
@@ -437,7 +549,7 @@ compositor allows:
 - **Screenshots** need `grim`, which requires wlr-screencopy (sway, Hyprland, river, Wayfire).
   It runs as `grim -s 1`: logical pixels, so coordinates match, but on a scaled monitor the
   image is not at full physical resolution. GNOME falls back to `gnome-screenshot -f`, and only
-  for full-screen captures. KDE has neither.
+  for full-screen captures. KDE has neither; on Plasma `spectacle` does it (see below).
 - **Pointer input** on sway goes through sway itself (`swaymsg seat - cursor set/press/release`):
   exact positions, no root, nothing extra to install. Elsewhere ccdesk speaks the
   wlr-virtual-pointer protocol directly (`ccdesk/backends/vpointer.py`, standard library only):
@@ -465,20 +577,63 @@ compositor allows:
   compositors the result carries a note to verify with a screenshot.
 - **Windows** are listed and focused through `swaymsg` (sway) or `hyprctl` (Hyprland, with Lua
   `hl.dsp.focus`, falling back to the old `focuswindow` for versions before Lua; the fallback is
-  untested, and `press_key` and `manage_window` need a version with Lua). Elsewhere ccdesk falls back to XWayland via `xdotool`, which only sees X11 apps.
-- **Window control** (`manage_window`) is implemented on sway and Hyprland; other compositors
-  refuse with a clear error. On Hyprland, move and resize make a tiled window float, maximize
-  uses Hyprland's maximized state, minimize moves the window to a hidden special workspace, and
-  restore undoes those, brings a minimized window to the workspace on show, and re-tiles only
-  windows this ccdesk server floated (a restart forgets them). **Monitors** come from `swaymsg` or
-  `hyprctl`; on Hyprland they and the screen size are logical pixels. ccdesk's coordinates start at
-  0,0, so `doctor` warns about a monitor at a negative position.
+  untested, and `press_key` and `manage_window` need a version with Lua). On Plasma, `kdotool`
+  does it through KWin scripting. Elsewhere ccdesk falls back to XWayland via `xdotool`, which
+  only sees X11 apps.
+- **Window control** (`manage_window`) is implemented on sway, Hyprland and KDE Plasma; other
+  compositors refuse with a clear error. On Hyprland, move and resize make a tiled window float,
+  maximize uses Hyprland's maximized state, minimize moves the window to a hidden special
+  workspace, and restore undoes those, brings a minimized window to the workspace on show, and
+  re-tiles only windows this ccdesk server floated (a restart forgets them). On Plasma the moves
+  and sizes go to KWin, which decides what a tiled window does with them. **Monitors** come from
+  `swaymsg`, `hyprctl` or, on Plasma, KWin; on Hyprland they and the screen size are logical
+  pixels. ccdesk's coordinates start at 0,0, so `doctor` warns about a monitor at a negative
+  position.
   **Per-window screenshots** crop the window's box, which needs a compositor that lists windows.
 - **Clipboard** uses `wl-copy` / `wl-paste`.
 - If you only need to drive XWayland apps, `CCDESK_BACKEND=x11` (or `--backend x11`)
   forces the X11 backend.
 
 `ccdesk doctor` reports exactly which of these are present.
+
+### KDE Plasma (Wayland)
+
+Plasma on Wayland has its own backend, picked from `XDG_CURRENT_DESKTOP`. On X11 it uses the X11
+backend and needs none of this. Three tools do the work:
+
+```sh
+sudo pacman -S spectacle ydotool      # Arch; elsewhere: spectacle, ydotool
+paru -S kdotool                       # 0.3 or newer. AUR, or `cargo install kdotool`
+systemctl --user enable --now ydotool # the input daemon, as you, not root
+```
+
+- **Screenshots** go through `spectacle`, because KWin implements no wlr-screencopy and `grim`
+  exits with "the screen capture protocol is not supported". A region shot is cut out of a full
+  grab and needs ImageMagick. So does a scaled display, where the grab is brought down to logical
+  pixels to match windows and the pointer.
+- **Windows** come from `kdotool`, which loads a script into KWin over D-Bus and reads its answer
+  back. One script answers for every window, with its frame box, desktop and state, so
+  `list_windows`, `activate_window`, `manage_window` and the window-under-the-pointer check all
+  work. Without `kdotool`, screenshots and typing still work, but clicks and drags are refused
+  because there is no way to place the pointer, the window tools say what is missing, and
+  coordinates are wrong on a scaled display.
+  Panels, the desktop and other shell surfaces are left out of `list_windows`, but the focus
+  guard still sees them: a click on a panel, or typing into the open launcher, is refused like
+  any other window that is not the one you activated.
+- **Input** is `ydotool`, through `/dev/uinput`, with `ydotoold` running as your user (the Arch
+  package ships that user unit). Plasma offers neither the virtual-pointer nor the
+  virtual-keyboard protocol, so there is no unprivileged path. `ydotool --absolute` does not place
+  the pointer under KWin (every value lands in a corner), so ccdesk moves the pointer in relative
+  steps and corrects against the position KWin reports, which also absorbs the pointer
+  acceleration curve. A click that cannot be placed within a few pixels is refused rather than
+  sent somewhere else. `press_key` needs no `wtype`: ccdesk turns key names into the keycodes
+  `ydotool key` takes. Keys and `type_text` assume a US layout, and `ydotool` only types ASCII, so
+  paste anything else through the clipboard.
+- `ui_tree` works as everywhere else, once the accessibility bus is on (see above). With `kdotool`,
+  its boxes are moved to screen coordinates; without it, `ui_tree` says they may be relative to
+  the window.
+
+`ccdesk doctor` lists whichever of these is missing.
 
 ## Support matrix
 
@@ -489,7 +644,7 @@ compositor allows:
 | Wayland: sway | ✅ grim | ✅ swaymsg seat | ✅ wtype / ydotool | ⚠️ wtype (see above) | ✅ swaymsg | ✅ wl-clipboard |
 | Wayland: Hyprland | ✅ grim | ✅ virtual pointer | ✅ wtype / ydotool | ✅ hl.dsp.send_shortcut | ✅ hyprctl | ✅ wl-clipboard |
 | Wayland: GNOME | ⚠️ full screen only | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
-| Wayland: KDE Plasma | ❌ | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ❌ | ⚠️ XWayland apps only | ✅ wl-clipboard |
+| Wayland: KDE Plasma | ✅ spectacle | ⚠️ ydotool + ydotoold | ⚠️ ydotool | ✅ ydotool | ✅ kdotool | ✅ wl-clipboard |
 | Headless (`--headless`, any session) | ✅ | ✅ | ✅ | ✅ | ✅ | ✅ private clipboard |
 | No display (SSH, CI) | ❌ (doctor explains) | ❌ | ❌ | ❌ | ❌ | ❌ |
 
@@ -556,7 +711,7 @@ ccdesk/
   parsing.py      pure parsers: keys, regions, wmctrl/xdotool output, PNG header
   doctor.py       environment report
   install.py      Claude Code registration, shared skill copy and link
-  backends/       x11.py, wayland.py, vpointer.py, base.py
+  backends/       x11.py, x11_own.py, mpx.py, xgrab.py, xerror.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
 skills/computer-use/SKILL.md
 tests/
 ```
