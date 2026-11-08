@@ -54,6 +54,7 @@ MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) befor
 OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds the helper watches for a change before an action reports "no change"
+SETTLE_POLL = 0.03  # pause between direct captures while an action's pixel change settles
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
@@ -119,6 +120,22 @@ def describe_layout_change(old: tuple, new: tuple) -> str:
     return "; ".join(parts) or "the layout changed"
 
 
+def empty_page(text: str) -> bool:
+    """A browser window whose web page has no elements: a `document` line with nothing under it.
+    Firefox started before the accessibility bus was on publishes its toolbars and tabs but not
+    the page, so the tree looks full (tens of lines) while what the agent needs is missing."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    for i, ln in enumerate(lines):
+        parts = ln.split(None, 2)
+        if len(parts) < 2 or parts[1] != "document":
+            continue
+        depth = len(ln) - len(ln.lstrip())
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not nxt or len(nxt) - len(nxt.lstrip()) <= depth:
+            return True
+    return False
+
+
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
@@ -146,6 +163,7 @@ class Desktop:
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
         self._pending: tuple[Region | None, Grid] | None = None
+        self._grid_fast = False  # the latest _snapshot() read the display directly
         self._after: tuple[Region | None, Grid] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
@@ -314,8 +332,7 @@ class Desktop:
             before, self._pending = self._pending, None
             if before is not None:
                 region, grid = before
-                self.backend.sleep(SETTLE)
-                after = self._snapshot(region)
+                after = self._settled_snapshot(region, grid)
                 if after is not None:
                     self._after = (region, after)
                     box = changed_box(grid, after)
@@ -562,10 +579,32 @@ class Desktop:
             return None
         return Region(x0, y0, x1 - x0, y1 - y0)
 
+    def _settled_snapshot(self, region: Region | None, before: Grid) -> Grid | None:
+        """The screen after an action. With a direct capture (a few tens of ms), return as soon as
+        it differs from before and held still for one more capture, else after SETTLE; with the PNG
+        path (two hundred ms a capture), wait SETTLE and capture once."""
+        if not self._grid_fast:
+            self.backend.sleep(SETTLE)
+            return self._snapshot(region)
+        start, prev = self.clock(), None
+        while True:
+            self.backend.sleep(SETTLE_POLL)
+            cur = self._snapshot(region)
+            if cur is None or self.clock() - start >= SETTLE:
+                return cur
+            if prev is not None and cur.gray == prev.gray and changed_box(before, cur) is not None:
+                return cur
+            prev = cur
+
     def _snapshot(self, region: Region | None) -> Grid | None:
         """A grayscale copy of the screen at 1/DIFF_CELL size, or None (no ImageMagick, or it failed)."""
         if not self.screen_diff:
             return None
+        fast = self.backend.gray_grid(region, DIFF_CELL)
+        self._grid_fast = fast is not None
+        if fast is not None:
+            cols, rows, gray, origin = fast
+            return Grid(cols, rows, gray, origin, scale=(float(DIFF_CELL), float(DIFF_CELL)))
         fd, tmp = tempfile.mkstemp(prefix="ccdesk-diff-", suffix=".png")
         os.close(fd)
         try:
@@ -933,7 +972,12 @@ class Desktop:
             if self.backend.name in ("wayland", "kde") and "origin" not in result:
                 result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
                                   "not say where it is); verify with a screenshot")
-            if shot_fallback and not q and tree_is_empty(text):
+            thin = tree_is_empty(text)
+            blank_page = not thin and empty_page(text)
+            if shot_fallback and not q and (thin or blank_page):
+                why = ("the web page in it has no tree (a browser started before the accessibility "
+                       "bus was on shows only its toolbars; restarting the browser fixes it)"
+                       if blank_page else "the tree is nearly empty")
                 try:
                     result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
                 except (CcdeskError, OSError, ValueError):
@@ -941,7 +985,7 @@ class Desktop:
                 else:
                     self.a11y.forget()  # nothing to compare: actions report pixel changes instead
                     result["note"] = " ".join(filter(None, [result.get("note"),
-                                                            f"the tree is nearly empty. {TREE_SHOT_NOTE}"]))
+                                                            f"{why}. {TREE_SHOT_NOTE}"]))
             return result
 
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
