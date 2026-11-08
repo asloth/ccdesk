@@ -58,11 +58,12 @@ def bus_enabled(run) -> bool | None:
     return None
 
 
-def missing_hint(wm_class: str, enabled: bool | None) -> str:
-    """How to get a window that is not on the accessibility bus onto it."""
+def missing_hint(wm_class: str, enabled: bool | None, role: str | None = None) -> str:
+    """How to get a window that is not on the accessibility bus onto it. role: its WM_WINDOW_ROLE,
+    "browser-window" on every Chromium and Electron window whatever its class."""
     if enabled is False:
         return BUS_OFF_HINT
-    if any(k in wm_class.lower() for k in ("chrom", "electron")):
+    if role == "browser-window" or any(k in wm_class.lower() for k in ("chrom", "electron")):
         return "Chromium and Electron apps publish a tree only when started with --force-renderer-accessibility"
     return ("GTK apps and Firefox publish one only if accessibility was on when they started: "
             "`gsettings set org.gnome.desktop.interface toolkit-accessibility true` or GNOME_ACCESSIBILITY=1, "

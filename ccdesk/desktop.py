@@ -894,7 +894,7 @@ class Desktop:
         # A headless screen has its own bus, and the apps on it are started with accessibility on.
         enabled = bus_enabled(self.backend.try_run) if self.headless is None else None
         return (f"{win.title!r} ({win.wm_class}) is not on the accessibility bus (on the bus: {on_bus}): "
-                f"{missing_hint(win.wm_class, enabled)}. Until then, work from screenshots")
+                f"{missing_hint(win.wm_class, enabled, self.backend.window_role(win.id))}. Until then, work from screenshots")
 
     def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False,
                       expect_title: str | None = None) -> dict:

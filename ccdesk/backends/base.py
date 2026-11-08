@@ -207,6 +207,11 @@ class Backend:
         """The workspace on show (as Window.desktop numbers them), or None if unknown."""
         return None
 
+    def window_role(self, window_id: str) -> str | None:
+        """The window's WM_WINDOW_ROLE, or None if unknown. Chromium and every Electron app set
+        "browser-window", also when their class says neither (Obsidian: md.obsidian.Obsidian)."""
+        return None
+
     def idle_ms(self) -> int | None:
         """Milliseconds since the last mouse or keyboard input on this screen (ccdesk's own
         included), or None if unknown."""
