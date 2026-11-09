@@ -1,0 +1,48 @@
+name: CI
+run-name: Test ${{ github.ref_name }} (${{ github.event_name }})
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Python ${{ matrix.python }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    strategy:
+      fail-fast: false
+      matrix:
+        # Oldest supported (pyproject requires-python) and the newest release.
+        python: ["3.10", "3.14"]
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: ${{ matrix.python }}
+          enable-cache: true
+
+      # --locked keeps the exact versions someone tested; master does not have
+      # uv.lock yet, so resolve there instead of failing.
+      - name: Install
+        run: if [ -f uv.lock ]; then uv sync --locked; else uv sync; fi
+
+      # The display tests click and type on a real screen: they skip themselves
+      # here. `xvfb-run -a pytest -q` runs them locally (see README, Development).
+      - name: Unit tests
+        run: uv run --extra test pytest -q -m "not display"
+
+      - name: Build the wheel and the sdist
+        run: uv build

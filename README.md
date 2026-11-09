@@ -37,7 +37,7 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
 
 ```sh
 sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils   # Debian/Ubuntu, X11
-pipx install .
+pipx install ccdesk  # from PyPI; from a checkout, pipx install .
 ccdesk doctor        # session type, helper tools, screen size, accessibility bus
 ccdesk install       # register the MCP server with Claude Code and install the skill
 ```
@@ -713,6 +713,28 @@ ccdesk/
 skills/computer-use/SKILL.md
 tests/
 ```
+
+### Releasing
+
+A release is a tag. `v0.2.0` publishes that commit to PyPI and opens the GitHub Release with the
+wheel and the sdist attached. The version lives in `ccdesk/__init__.py`; hatch reads it from there
+and the tag has to match it.
+
+```sh
+scripts/release.sh 0.2.0     # unit tests, version bump, commit, tag, push
+```
+
+The script won't run off `master`, with a dirty tree, or with a version that doesn't go up.
+`.github/workflows/release.yml` builds, runs the tests again on the tagged commit, uploads to PyPI
+with trusted publishing and writes the notes from the commits since the last tag. `uv.lock` has to
+be committed: the workflow installs with `--locked` when it finds one.
+
+The PyPI upload needs a trusted publisher once, at
+<https://pypi.org/manage/account/publishing/>: project `ccdesk`, owner `asloth`, repository
+`ccdesk`, workflow `release.yml`, environment `pypi`. No token is stored anywhere.
+
+If a run fails halfway, fix it and re-run the workflow from the Actions tab with the same tag: the
+PyPI upload skips versions that already exist and the release assets are replaced.
 
 ## License
 

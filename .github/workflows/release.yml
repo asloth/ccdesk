@@ -1,0 +1,98 @@
+name: Release
+run-name: Release ${{ inputs.tag || github.ref_name }}
+
+# Tag-driven: pushing v0.2.0 publishes that commit to PyPI and to GitHub
+# Releases. `scripts/release.sh 0.2.0` does the version bump, the commit, the
+# tag and the push. Re-running this workflow for a tag already released
+# finishes whatever failed: the PyPI upload skips versions that exist and the
+# release assets are replaced.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v0.2.0 (it must already exist)"
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+# Never release two versions at once, and never cancel one halfway through.
+concurrency:
+  group: release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Publish
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    environment: pypi
+    permissions:
+      contents: write # create the GitHub Release and upload its assets
+      id-token: write # PyPI trusted publishing
+    env:
+      TAG: ${{ inputs.tag || github.ref_name }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          ref: ${{ inputs.tag || github.ref }}
+          fetch-depth: 0 # the release notes list every commit since the last tag
+          persist-credentials: false
+
+      - uses: astral-sh/setup-uv@v10
+        with:
+          python-version: "3.14"
+          enable-cache: true
+
+      - name: The tag is v<pair> and matches ccdesk.__version__
+        run: |
+          set -euo pipefail
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([abc][0-9]+|rc[0-9]+)?$ ]] \
+            || { echo "::error::'$TAG' is not a version tag like v0.2.0"; exit 1; }
+          version=$(python3 - <<'PY'
+          import pathlib, re
+          text = pathlib.Path("ccdesk/__init__.py").read_text()
+          print(re.search(r'^__version__ = "([^"]+)"', text, re.M).group(1))
+          PY
+          )
+          [[ "$TAG" == "v$version" ]] \
+            || { echo "::error::tag $TAG but ccdesk/__init__.py says $version: bump the version first"; exit 1; }
+          echo "VERSION=$version" >> "$GITHUB_ENV"
+
+      - name: Unit tests on the tagged commit
+        run: |
+          if [ -f uv.lock ]; then uv sync --locked; else uv sync; fi
+          uv run --extra test pytest -q -m "not display"
+
+      - name: Build
+        run: uv build
+
+      - name: Check the metadata
+        run: uvx --from twine twine check --strict dist/*
+
+      # First run of this workflow needs a trusted publisher on PyPI:
+      # pypi.org > Your projects > Publishing, or the pending-publisher form at
+      # https://pypi.org/manage/account/publishing/ with asloth/ccdesk,
+      # release.yml and the "pypi" environment. No token is stored anywhere.
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          skip-existing: true
+
+      - name: GitHub Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            gh release upload "$TAG" dist/* --clobber
+          else
+            gh release create "$TAG" dist/* \
+              --title "ccdesk $VERSION" \
+              --generate-notes \
+              --verify-tag
+          fi
+          gh release view "$TAG" --json tagName,isDraft,url
