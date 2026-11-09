@@ -128,6 +128,8 @@ class Desktop:
         # this one, for the "wait_for_change instead of wait" hint.
         self._last_area: Region | None = None
         self._prev_tool: str | None = None
+        # Said once, when the first screenshot pays for the whole screen before any tree was read.
+        self._tree_hinted = False
         self.clock = time.monotonic
         self._own_input: float | None = None  # clock() when ccdesk's latest input action finished
         self._yielded = 0  # ms the current action waited for the user (--yield-ms)
@@ -552,9 +554,24 @@ class Desktop:
             hint = self._crop_hint(reg, result["approx_tokens"])
             if hint:
                 result["hint"] = hint
+            tree_hint = self._tree_hint(reg, factor, result["approx_tokens"])
+            if tree_hint:
+                result["hint"] = tree_hint if not hint else hint + "; " + tree_hint
             return result
 
         return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
+
+    def _tree_hint(self, reg: Region | None, factor: float, tokens: int) -> str | None:
+        """A whole screen at full scale before any tree was read: the first shot is where the
+        cheap path should have started, so say what it costs and what the alternative costs.
+        Once per session: an agent that needs pixels after reading it has already chosen."""
+        if reg is not None or factor < 1 or self.a11y._last is not None or self._tree_hinted:
+            return None
+        self._tree_hinted = True
+        return (f"~{tokens} tokens for the whole screen, and ui_tree() has not been read yet: it returns "
+                "a window that publishes an accessibility tree as lines of text for a few hundred tokens, "
+                "and every action after it reports only the lines that changed. Pass region= or scale= "
+                "when a picture is what you need")
 
     def _crop_hint(self, reg: Region | None, tokens: int) -> str | None:
         """Taken right after an action that changed a small area, a wide screenshot mostly pays

@@ -199,3 +199,25 @@ def test_no_crop_hint_when_the_crop_saves_little(make_desk, fake):
     fake.effects = [(100, 50, 600, 500, WHITE)]  # ~470 tokens to crop; the half-scale shot is ~690
     d.click(250, 320)
     assert "hint" not in d.screenshot(scale=0.5)
+
+
+def test_a_cold_whole_screen_shot_points_to_the_tree_first(make_desk):
+    """The first screenshot should be where the cheap path starts: ui_tree is a few hundred
+    tokens, a full screen is thousands, and everything after a tree is a diff."""
+    d = make_desk()
+    hint = d.screenshot()["hint"]
+    assert "whole screen" in hint and "ui_tree()" in hint and "region= or scale=" in hint
+    assert "hint" not in d.screenshot()  # said once, not on every shot
+
+
+def test_no_tree_hint_once_a_tree_was_read(make_desk):
+    d = make_desk()
+    d.ui_tree()
+    assert "hint" not in d.screenshot()
+
+
+def test_no_tree_hint_for_a_crop(make_desk):
+    d = make_desk()
+    assert "hint" not in d.screenshot(region="10,10,400,300")
+    assert "hint" not in d.screenshot(window="Firefox")
+    assert "hint" not in d.screenshot(scale=0.5)
