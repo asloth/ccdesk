@@ -3,7 +3,7 @@ run-name: Test ${{ github.ref_name }} (${{ github.event_name }})
 
 on:
   push:
-    branches: [master]
+    branches: [master, develop]
   pull_request:
   workflow_dispatch:
 

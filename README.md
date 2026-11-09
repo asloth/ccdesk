@@ -37,7 +37,7 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
 
 ```sh
 sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils   # Debian/Ubuntu, X11
-pipx install ccdesk  # from PyPI; from a checkout, pipx install .
+pipx install ccdesk  # from PyPI; today the wheel on the Releases page, or pipx install . in a checkout
 ccdesk doctor        # session type, helper tools, screen size, accessibility bus
 ccdesk install       # register the MCP server with Claude Code and install the skill
 ```
