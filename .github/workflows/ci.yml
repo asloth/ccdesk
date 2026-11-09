@@ -46,3 +46,20 @@ jobs:
 
       - name: Build the wheel and the sdist
         run: uv build
+
+  # master is what gets published, so the only way in is the branch that has
+  # already been running on develop. A hotfix goes to develop first.
+  master-takes-develop:
+    name: master only takes develop
+    if: github.event_name == 'pull_request' && github.base_ref == 'master'
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: The pull request comes from develop
+        env:
+          HEAD_REF: ${{ github.head_ref }}
+        run: |
+          if [ "$HEAD_REF" != "develop" ]; then
+            echo "::error::master only takes pull requests from develop, and this one comes from '$HEAD_REF'"
+            exit 1
+          fi
