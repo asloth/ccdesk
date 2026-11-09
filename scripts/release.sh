@@ -29,15 +29,23 @@ branch=$(git rev-parse --abbrev-ref HEAD)
 [ -z "$(git status --porcelain)" ] || { echo "the working tree has changes; commit or stash them" >&2; exit 1; }
 
 current=$(python3 -c 'import pathlib,re;print(re.search(r"^__version__ = \"([^\"]+)\"", pathlib.Path("ccdesk/__init__.py").read_text(), re.M).group(1))')
-python3 - "$current" "$version" <<'PY' || { echo "ccdesk is already at $current; a release only goes up" >&2; exit 1; }
+
+tag="v$version"
+git rev-parse -q --verify "refs/tags/$tag" >/dev/null && { echo "$tag already exists" >&2; exit 1; }
+
+# The version goes up, or it stays where it is for a version nobody released
+# yet (the first release of 0.1.0 tags master as it stands, no bump commit).
+if [ "$version" = "$current" ]; then
+  git ls-remote --exit-code --tags origin "refs/tags/$tag" >/dev/null 2>&1 \
+    && { echo "$tag is already released; the next one needs a higher version" >&2; exit 1; }
+else
+  python3 - "$current" "$version" <<'PY' || { echo "ccdesk is at $current; a release only goes up" >&2; exit 1; }
 import sys
 cur, new = sys.argv[1], sys.argv[2]
 key = lambda v: tuple(int(x) for x in v.split("."))
 raise SystemExit(0 if key(new) > key(cur) else 1)
 PY
-
-tag="v$version"
-git rev-parse -q --verify "refs/tags/$tag" >/dev/null && { echo "$tag already exists" >&2; exit 1; }
+fi
 
 echo "updating the remote"
 git fetch --quiet origin master
@@ -59,7 +67,8 @@ uv run --extra test pytest -q -m "not display"
 other=$(git status --porcelain || true)
 [ -z "$other" ] || { echo "the tests changed the tree, commit that and retry:" >&2; echo "$other" >&2; exit 1; }
 
-python3 - "$version" <<'PY'
+if [ "$version" != "$current" ]; then
+  python3 - "$version" <<'PY'
 import pathlib, re, sys
 path = pathlib.Path("ccdesk/__init__.py")
 text, count = re.subn(r'^__version__ = "[^"]+"', f'__version__ = "{sys.argv[1]}"', path.read_text(), count=1, flags=re.M)
@@ -67,9 +76,10 @@ if count != 1:
     raise SystemExit("could not find the __version__ line in ccdesk/__init__.py")
 path.write_text(text)
 PY
+  git add ccdesk/__init__.py
+  git commit --quiet -m "Release $tag"
+fi
 
-git add ccdesk/__init__.py
-git commit --quiet -m "Release $tag"
 git tag -a "$tag" -m "ccdesk $version"
 git push --quiet origin "refs/heads/master" "refs/tags/$tag"
 

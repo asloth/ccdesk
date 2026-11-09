@@ -724,7 +724,9 @@ and the tag has to match it.
 scripts/release.sh 0.2.0     # unit tests, version bump, commit, tag, push
 ```
 
-The script won't run off `master`, with a dirty tree, or with a version that doesn't go up.
+The script won't run off `master`, with a dirty tree, or with a version that doesn't go up. A
+version that was never released can be tagged as it stands, so `0.1.0` of an unreleased repo goes
+out without a bump commit.
 `.github/workflows/release.yml` builds, runs the tests again on the tagged commit, uploads to PyPI
 with trusted publishing and writes the notes from the commits since the last tag. `uv.lock` has to
 be committed: the workflow installs with `--locked` when it finds one.
