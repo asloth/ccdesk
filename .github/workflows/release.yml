@@ -52,7 +52,7 @@ jobs:
       - name: The tag is v<pair> and matches ccdesk.__version__
         run: |
           set -euo pipefail
-          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([abc][0-9]+|rc[0-9]+)?$ ]] \
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.dev[0-9]+)?$ ]] \
             || { echo "::error::'$TAG' is not a version tag like v0.2.0"; exit 1; }
           version=$(python3 - <<'PY'
           import pathlib, re
@@ -75,11 +75,10 @@ jobs:
       - name: Check the metadata
         run: uvx --from twine twine check --strict dist/*
 
-      # First run of this workflow needs a trusted publisher on PyPI:
-      # pypi.org > Your projects > Publishing, or the pending-publisher form at
-      # https://pypi.org/manage/account/publishing/ with asloth/ccdesk,
-      # release.yml and the "pypi" environment. No token is stored anywhere.
+      # PyPI needs the trusted publisher set up once; until then, set the repo
+      # variable PYPI_PUBLISH to false and tags keep publishing GitHub Releases.
       - name: Publish to PyPI
+        if: vars.PYPI_PUBLISH != 'false'
         uses: pypa/gh-action-pypi-publish@release/v1
         with:
           skip-existing: true
@@ -89,12 +88,20 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
+          # A suffix (0.1.1b1) is a pre-release: public, but never "Latest", and
+          # pip ignores it unless asked. A plain 0.1.1 becomes the latest release.
+          pre=""
+          case "$VERSION" in
+            *a[0-9]*|*b[0-9]*|*rc[0-9]*|*dev[0-9]*) pre="--prerelease" ;;
+          esac
           if gh release view "$TAG" >/dev/null 2>&1; then
             gh release upload "$TAG" dist/* --clobber
+            [ -z "$pre" ] || gh release edit "$TAG" "$pre"
           else
             gh release create "$TAG" dist/* \
               --title "ccdesk $VERSION" \
               --generate-notes \
-              --verify-tag
+              --verify-tag \
+              $pre
           fi
-          gh release view "$TAG" --json tagName,isDraft,url
+          gh release view "$TAG" --json tagName,isPrerelease,isDraft,url
