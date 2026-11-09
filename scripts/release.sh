@@ -63,8 +63,9 @@ echo "unit tests"
 uv run --extra test pytest -q -m "not display"
 
 # uv may have refreshed uv.lock or written bytecode in the tree it was given;
-# the release commit is the version bump and nothing else.
-other=$(git status --porcelain || true)
+# the release commit is the version bump and nothing else. An uv.lock that did
+# not exist before (a checkout that never ran uv) is left alone, untracked.
+other=$(git status --porcelain | grep -v -e '^?? uv.lock$' || true)
 [ -z "$other" ] || { echo "the tests changed the tree, commit that and retry:" >&2; echo "$other" >&2; exit 1; }
 
 if [ "$version" != "$current" ]; then
