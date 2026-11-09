@@ -282,6 +282,13 @@ class X11Backend(Backend):
                       self.try_run(["xprop", "-root", "_NET_CURRENT_DESKTOP"]) or "")
         return int(m.group(1)) if m else None
 
+    def window_role(self, window_id: str) -> str | None:
+        if not self.which("xprop"):
+            return None
+        m = re.search(r'WM_WINDOW_ROLE\(STRING\) = "([^"]*)"',
+                      self.try_run(["xprop", "-id", window_id, "WM_WINDOW_ROLE"]) or "")
+        return m.group(1) if m else None
+
     def idle_ms(self) -> int | None:
         # The MIT-SCREEN-SAVER extension's idle counter; xdotool's synthetic events reset it too.
         out = (self.try_run(["xprintidle"], timeout=5) or "").strip() if self.which("xprintidle") else ""

@@ -264,6 +264,30 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
         make_desk().ui_tree(shot_fallback=False)
 
 
+def test_ui_tree_diagnosis_knows_electron_by_its_window_role(make_desk, helper, fake, monkeypatch):
+    """Obsidian (a Flatpak) has class md.obsidian.Obsidian: only WM_WINDOW_ROLE says Electron."""
+    helper.apps, helper.tree_error = OFF_BUS, "no accessible window title contains 'Obsidian'; windows: 'Telegram'"
+    fake.responses[IS_ENABLED] = "b true\n"
+    fake.windows[0].title, fake.windows[0].wm_class = "Vault - Obsidian 1.15.0", "md.obsidian.obsidian.md.obsidian.Obsidian"
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(window="Obsidian", shot_fallback=False)
+    assert "GNOME_ACCESSIBILITY" in str(err.value)  # nothing in the class says Electron
+    monkeypatch.setattr(fake, "window_role", lambda wid: "browser-window", raising=False)
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(window="Obsidian", shot_fallback=False)
+    assert "--force-renderer-accessibility" in str(err.value) and "GNOME_ACCESSIBILITY" not in str(err.value)
+
+
+def test_x11_window_role_reads_xprop():
+    from ccdesk.backends.x11 import X11Backend
+    out = {"xprop -id 0x02400004 WM_WINDOW_ROLE": 'WM_WINDOW_ROLE(STRING) = "browser-window"\n',
+           "xprop -id 0x02000016 WM_WINDOW_ROLE": "WM_WINDOW_ROLE:  not found.\n"}
+    b = X11Backend(env={"DISPLAY": ":99"}, runner=lambda argv, **kw: out[" ".join(argv)],
+                   which=lambda n: f"/usr/bin/{n}")
+    assert b.window_role("0x02400004") == "browser-window"
+    assert b.window_role("0x02000016") is None
+
+
 def test_ui_tree_diagnosis_without_a_known_window(make_desk, helper, fake):
     helper.apps, helper.tree_error = [], "no app has a window on the accessibility bus"
     with pytest.raises(CcdeskError) as err:
