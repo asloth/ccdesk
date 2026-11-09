@@ -1,5 +1,7 @@
 name: Release
-run-name: Release ${{ inputs.tag || github.ref_name }}
+# `inputs` only exists for workflow_dispatch; github.event.inputs carries the
+# same values and is empty on a tag push, where github.ref is the tag itself.
+run-name: Release ${{ github.event.inputs.tag || github.ref_name }}
 
 # Tag-driven: pushing v0.2.0 publishes that commit to PyPI and to GitHub
 # Releases. `scripts/release.sh 0.2.0` does the version bump, the commit, the
@@ -34,11 +36,11 @@ jobs:
       contents: write # create the GitHub Release and upload its assets
       id-token: write # PyPI trusted publishing
     env:
-      TAG: ${{ inputs.tag || github.ref_name }}
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@v7
         with:
-          ref: ${{ inputs.tag || github.ref }}
+          ref: ${{ github.event.inputs.tag || github.ref }}
           fetch-depth: 0 # the release notes list every commit since the last tag
           persist-credentials: false
 
