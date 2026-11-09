@@ -675,7 +675,7 @@ your `PATH`, `doctor` mentions it, but ccdesk never calls it.
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
-pip install -e '.[test]'
+pip install -e '.[test]'      # or, with uv: uv run pytest -q
 xvfb-run -a pytest -q        # unit tests + Tk integration test on a virtual X server
 pytest -q                    # without a display the integration tests are skipped
 xvfb-run -a ccdesk doctor

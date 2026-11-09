@@ -23,6 +23,10 @@ classifiers = [
 [project.optional-dependencies]
 test = ["pytest>=7"]
 
+# `uv run pytest` installs this group by default; pip users keep the `test` extra.
+[dependency-groups]
+dev = ["pytest>=7"]
+
 [project.scripts]
 ccdesk = "ccdesk.cli:main"
 
