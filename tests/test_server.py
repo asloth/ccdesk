@@ -246,3 +246,23 @@ def test_ui_tree_fallback_shot_becomes_a_picture(make_desk, helper, fake):
     blocks = anyio.run(call).content
     assert any(isinstance(b, ImageContent) for b in blocks)
     assert "fallback_shot" in blocks[0].text and "_picture" not in blocks[0].text
+
+
+def test_an_error_with_a_code_leads_with_it(make_desk, fake):
+    """gui_frame_stale reaches the model as `code=... input_emitted=... retry_same_request=...: message`."""
+    import anyio
+
+    desk = make_desk()
+    server = build_server(desk)
+    desk.screenshot()
+    fake.windows[1].x += 40
+
+    async def call():
+        return await server.call_tool("click", {"x": 100, "y": 100})
+
+    with pytest.raises(Exception) as err:
+        anyio.run(call)
+    # The SDK puts "Error executing tool click: " in front of our message.
+    assert ("click: code=gui_frame_stale input_emitted=false retry_same_request=false: "
+            "the window layout changed") in str(err.value)
+    assert not [c for c in fake.calls if c[0] == "click"]

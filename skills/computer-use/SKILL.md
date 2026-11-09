@@ -113,6 +113,12 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   (`e2 entry "Email" ="ana@example.org"`, `e5 check box "Terms" [checked]`, `gone: e9`).
   Read it instead of calling `ui_tree()` again. Call `ui_tree()` when it says
   "no change yet" on a slow app (after `wait(1)`), or that the view moved on.
+- **Coordinates expire.** Every screenshot records the window layout (screen size, each window's
+  geometry and stacking order, the active window). `click`, `drag` and `scroll` at pixels compare
+  against it first: if anything moved, opened, closed or restacked since that picture, nothing is
+  sent, the call fails with `code=gui_frame_stale`, and the message names a fresh screenshot to
+  plan from. Read that one instead of retrying the old numbers. `force=true` skips the check, and
+  `click_element` does not need it because it resolves the ref against the live tree.
 - Independent actions (filling several fields) can go in one turn; check each `changes`.
 - Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
