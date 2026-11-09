@@ -90,3 +90,36 @@ def test_a_table_that_manages_its_descendants_is_not_walked(helper):
     assert "Save" in nodes and "A0" not in nodes
     assert Node.visits < 20  # the frame, the table and the button, not 5000 cells
     assert out["truncated"] is False
+
+
+class TextNode(Node):
+    """A node whose content is text, the way Firefox exposes a bare span or a role="alert" body."""
+
+    def __init__(self, role, text, name="", states=("SHOWING", "ENABLED"), kids=()):
+        super().__init__(role, name, states, kids)
+        self.text = text
+
+    def get_text_iface(self):
+        return object()
+
+
+def test_text_in_an_unnamed_container_is_not_lost(helper):
+    """Firefox wraps a role="alert" list and a bare span in an unnamed section whose text is the
+    whole message. Reporting the fields of a form and not the error is what sends an agent to
+    screenshots: a PyPI register page shipped "This username is already being used" that way."""
+    mod, atspi = helper
+    atspi.Text = types.SimpleNamespace(
+        get_character_count=lambda o: len(getattr(o, "text", "")),
+        get_text=lambda o, start, end: o.text[start:end],
+    )
+    message = "• This username is already being used by another account"
+    alert = Node("alert", kids=[TextNode("section", message)])
+    decoration = Node("section", kids=[TextNode("section", "￼")])  # object replacement only
+    frame = Node("frame", "Register — Firefox", ("SHOWING", "ENABLED", "ACTIVE"), [alert, decoration])
+    app = Node("application", "firefox", kids=[frame])
+    atspi.get_desktop = lambda _i: Node("desktop", kids=[app])
+    out = mod.read_tree({"max_nodes": 300})
+    values = [n.get("value") for n in out["nodes"]]
+    assert message in values
+    # The ￼-only wrapper adds no line of its own: it carries no text.
+    assert values.count(None) == 1  # just the frame, which has a name and no value

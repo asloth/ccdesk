@@ -180,7 +180,11 @@ def interesting(node):
     if UNLISTED in node.get("states", ()):
         return True  # the only sign of what is inside
     role, name = node["role"], node["name"]
-    if role in NOISE and not name:
+    # A bare container is depth, unless it is what carries the text: Firefox wraps the
+    # contents of a `role="alert"` list or a `span` in an unnamed section whose only
+    # content is the message ("This username is already being used"). Dropping it on the
+    # role alone hid the reason a form had failed.
+    if role in NOISE and not name and not node.get("value"):
         return False
     return bool(name or node.get("value") or role in ACTIONABLE)
 
