@@ -75,7 +75,7 @@ class Pixman:
             if not s:
                 raise OSError("pixman: cannot wrap the frame")
             images.append(s)
-            d = p.pixman_image_create_bits(R8G8B8_BYTES, out_width, out_height, C.cast(dst, C.c_void_p), out_stride)
+            d = p.pixman_image_create_bits(R8G8B8_BYTES, out_width, out_height, C.addressof(dst), out_stride)
             if not d:
                 raise OSError("pixman: cannot create the output image")
             images.append(d)
