@@ -8,7 +8,11 @@ which sends every pixel through the socket) and 8x8 blocks are averaged in about
 extension or the segment is not there (a remote display, a server without it, no libXext) it falls
 back to XGetImage, and when even that fails callers use the PNG tools.
 
-libX11 and libXext through ctypes (stdlib only), with argtypes on every call, one Display per
+A single window's own pixels, also while other windows cover it, come from XComposite (window_frame):
+the window is redirected once (automatic mode, so the screen looks the same) and a fresh named
+pixmap is read per capture.
+
+libX11, libXext and libXcomposite through ctypes (stdlib only), with argtypes on every call, one Display per
 process and one lock around it: tool calls run on worker threads.
 """
 
@@ -22,9 +26,13 @@ import threading
 from dataclasses import dataclass
 
 from ccdesk.backends import xerror
+from ccdesk.backends.xquery import _Attrs
 
 ZPIXMAP = 2
 ALL_PLANES = 0xFFFFFFFF
+IS_VIEWABLE = 2
+COMPOSITE_REDIRECT_AUTOMATIC = 0
+MAX_DEPTH = 64  # parents to walk up from a window to the root
 
 
 class _XImage(C.Structure):
@@ -165,6 +173,12 @@ class XGrab:
         self.use_shm = shm
         self.shm_note: str | None = None  # why MIT-SHM is not in use, when it is not
         self._shm = None  # (image, segment, address, capacity in bytes, view)
+        self._xc = None  # libXcomposite, once it was found and the server has the extension
+        self._xc_note: str | None = None  # why window capture is not possible at all
+        self._xc_tried = False
+        self._root_checked = False
+        self._redirected: set[int] = set()  # top-level windows this connection redirected
+        self.window_note: str | None = None  # why the last window capture gave nothing
 
     def _open(self) -> None:
         name = ctypes.util.find_library("X11") or "libX11.so.6"
@@ -185,6 +199,10 @@ class XGrab:
         sig(x.XFree, i, v)
         sig(x.XSync, i, v, i)
         sig(x.XSetErrorHandler, v, v)
+        sig(x.XQueryTree, i, v, ul, C.POINTER(ul), C.POINTER(ul), C.POINTER(C.POINTER(ul)), C.POINTER(u))
+        sig(x.XGetWindowAttributes, i, v, ul, C.POINTER(_Attrs))
+        sig(x.XTranslateCoordinates, i, v, ul, ul, i, i, C.POINTER(i), C.POINTER(i), C.POINTER(ul))
+        sig(x.XFreePixmap, i, v, ul)
         dpy = x.XOpenDisplay(self.display.encode())
         if not dpy:
             raise OSError(f"cannot open display {self.display}")
@@ -295,44 +313,261 @@ class XGrab:
         try:
             if self._dpy is None:
                 self._open()
-            x, dpy = self._x, self._dpy
             rx, ry, rw, rh, sw, sh = self._clip(region)
             if rw < 1 or rh < 1:
                 return None
-            self._error = None
-            shm = self._shm_for(max(sw * sh * 4, rw * rh * 4))
-            if shm:
-                image, _seg, address, _cap, view = shm
-                im = _XImage.from_address(image)
-                im.width, im.height, im.bytes_per_line = rw, rh, rw * 4
-                if self._e.XShmGetImage(dpy, self._root, image, rx, ry, ALL_PLANES) and not self._error:
-                    if self._unusual(im):
-                        return None
-                    return Frame(view[:rw * rh * 4], address, rw, rh, rw * 4, rx, ry)
-                self._error = None  # this once: XGetImage below
-            p = x.XGetImage(dpy, self._root, rx, ry, rw, rh, ALL_PLANES, ZPIXMAP)
-            if not p:
-                x.XSync(dpy, 0)
-                return None
-            im = _XImage.from_address(p)
-            data = im.data
-            try:
-                if self._unusual(im):
-                    return None
-                bpl, width, height = im.bytes_per_line, im.width, im.height
-                buf = C.string_at(data, bpl * height)
-            finally:
-                # XDestroyImage is a macro in Xlib.h: free the pixels, then the struct, by hand.
-                x.XFree(C.c_void_p(data))
-                x.XFree(C.c_void_p(p))
-            return Frame(memoryview(buf), C.cast(C.c_char_p(buf), C.c_void_p).value, width, height, bpl, rx, ry)
+            return self._read(self._root, rx, ry, rw, rh, rx, ry, max(sw * sh * 4, rw * rh * 4))
         except Exception as exc:  # ctypes.ArgumentError too: never break an action, use the PNG path
             self.broken = f"{type(exc).__name__}: {exc}"
             return None
 
-    def _unusual(self, im) -> bool:
+    def _read(self, drawable: int, dx: int, dy: int, rw: int, rh: int, fx: int, fy: int,
+              capacity: int, pixmap: bool = False) -> Frame | None:
+        """Pixels of rw x rh at (dx, dy) of a window or pixmap, as a Frame placed at screen (fx, fy).
+        None on an X error (self._error says which) or an unusual pixel format. The caller holds the
+        lock and catches exceptions."""
+        x, dpy = self._x, self._dpy
+        self._error = None
+        shm = self._shm_for(capacity)
+        if shm:
+            image, _seg, address, _cap, view = shm
+            im = _XImage.from_address(image)
+            im.width, im.height, im.bytes_per_line = rw, rh, rw * 4
+            if self._e.XShmGetImage(dpy, drawable, image, dx, dy, ALL_PLANES) and not self._error:
+                if self._unusual(im, pixmap):
+                    return None
+                return Frame(view[:rw * rh * 4], address, rw, rh, rw * 4, fx, fy)
+            self._error = None  # this once: XGetImage below
+        p = x.XGetImage(dpy, drawable, dx, dy, rw, rh, ALL_PLANES, ZPIXMAP)
+        if not p:
+            x.XSync(dpy, 0)
+            return None
+        im = _XImage.from_address(p)
+        data = im.data
+        try:
+            if self._unusual(im, pixmap):
+                return None
+            bpl, width, height = im.bytes_per_line, im.width, im.height
+            buf = C.string_at(data, bpl * height)
+        finally:
+            # XDestroyImage is a macro in Xlib.h: free the pixels, then the struct, by hand.
+            x.XFree(C.c_void_p(data))
+            x.XFree(C.c_void_p(p))
+        return Frame(memoryview(buf), C.cast(C.c_char_p(buf), C.c_void_p).value, width, height, bpl, fx, fy)
+
+    # -- one window's own pixels (XComposite) ---------------------------------------
+
+    def _composite(self) -> bool:
+        """libXcomposite loaded and the server has the extension (0.2 or newer: NameWindowPixmap)."""
+        if self._xc_tried:
+            return self._xc is not None
+        self._xc_tried = True
+        try:
+            xc = C.CDLL(ctypes.util.find_library("Xcomposite") or "libXcomposite.so.1")
+        except OSError:
+            self._xc_note = "libXcomposite is not installed"
+            return False
+        v, i, ul = C.c_void_p, C.c_int, C.c_ulong
+        for name, res, args in (("XCompositeQueryExtension", i, [v, C.POINTER(i), C.POINTER(i)]),
+                                ("XCompositeQueryVersion", i, [v, C.POINTER(i), C.POINTER(i)]),
+                                ("XCompositeRedirectWindow", None, [v, ul, i]),
+                                ("XCompositeUnredirectWindow", None, [v, ul, i]),
+                                ("XCompositeNameWindowPixmap", ul, [v, ul])):
+            fn = getattr(xc, name)
+            fn.restype, fn.argtypes = res, args
+        a, b = C.c_int(), C.c_int()
+        if not xc.XCompositeQueryExtension(self._dpy, C.byref(a), C.byref(b)):
+            self._xc_note = "the X server has no Composite extension"
+            return False
+        major, minor = C.c_int(), C.c_int()
+        xc.XCompositeQueryVersion(self._dpy, C.byref(major), C.byref(minor))
+        if (major.value, minor.value) < (0, 2):
+            self._xc_note = f"the X server's Composite is {major.value}.{minor.value}, 0.2 is needed"
+            return False
+        self._xc = xc
+        return True
+
+    def _parent(self, win: int) -> int | None:
+        """Parent of win; 0 for the root; None when win is gone."""
+        root, parent, kids, n = C.c_ulong(), C.c_ulong(), C.POINTER(C.c_ulong)(), C.c_uint()
+        self._error = None
+        if not self._x.XQueryTree(self._dpy, win, C.byref(root), C.byref(parent), C.byref(kids), C.byref(n)) \
+                or self._error:
+            return None
+        if kids:
+            self._x.XFree(kids)
+        return parent.value
+
+    def _attrs(self, win: int) -> _Attrs | None:
+        a = _Attrs()
+        self._error = None
+        if not self._x.XGetWindowAttributes(self._dpy, win, C.byref(a)) or self._error:
+            return None
+        return a
+
+    def _toplevel(self, win: int) -> int | None:
+        """The ancestor of win (or win itself) that is a direct child of the root: the window manager's
+        frame when it reparents, the window otherwise. None when win is gone or is the root."""
+        for _ in range(MAX_DEPTH):
+            parent = self._parent(win)
+            if parent is None or parent == 0:
+                return None
+            if parent == self._root:
+                return win
+            win = parent
+        return None
+
+    def _window_rect(self, wid: int, top: int, region) -> tuple | str:
+        """(x, y, w, h inside the pixmap named for `top`, then the screen x, y) of the wanted part of
+        window wid, or the reason there is nothing to read."""
+        x, dpy = self._x, self._dpy
+        a, t = self._attrs(wid), self._attrs(top)
+        if a is None or t is None:
+            return "the window is gone"
+        if a.map_state != IS_VIEWABLE or t.map_state != IS_VIEWABLE:
+            return "the window is not shown (minimized, hidden or on another desktop): it has no pixels to read"
+        ox, oy, child = C.c_int(), C.c_int(), C.c_ulong()
+        self._error = None
+        if not x.XTranslateCoordinates(dpy, wid, self._root, 0, 0, C.byref(ox), C.byref(oy), C.byref(child)) \
+                or self._error:
+            return "the window is gone"
+        scr = x.XDefaultScreen(dpy)
+        sw, sh = x.XDisplayWidth(dpy, scr), x.XDisplayHeight(dpy, scr)
+        # The window's inside, the wanted region and the screen; the pixmap of `top` covers its border too.
+        x0, y0 = max(0, ox.value), max(0, oy.value)
+        x1, y1 = min(sw, ox.value + a.width), min(sh, oy.value + a.height)
+        if region is not None:
+            x0, y0 = max(x0, region.x), max(y0, region.y)
+            x1, y1 = min(x1, region.x + region.width), min(y1, region.y + region.height)
+        x1, y1 = min(x1, t.x + t.width + 2 * t.border_width), min(y1, t.y + t.height + 2 * t.border_width)
+        x0, y0 = max(x0, t.x), max(y0, t.y)
+        if x1 <= x0 or y1 <= y0:
+            return "the requested area does not overlap the window on screen"
+        return x0 - t.x, y0 - t.y, x1 - x0, y1 - y0, x0, y0
+
+    def _name_pixmap(self, top: int) -> int | str:
+        """A fresh pixmap holding the window's current contents, redirecting it first when this
+        connection has not. The reason, as a str, when that cannot be done."""
+        xc, x, dpy = self._xc, self._x, self._dpy
+        for attempt in (0, 1):
+            if top not in self._redirected:
+                self._error = None
+                xc.XCompositeRedirectWindow(dpy, top, COMPOSITE_REDIRECT_AUTOMATIC)
+                x.XSync(dpy, 0)
+                if self._error:
+                    return f"the window cannot be redirected ({self._error})"
+                if len(self._redirected) > 256:
+                    self._forget_gone()
+                self._redirected.add(top)
+            self._error = None
+            pix = xc.XCompositeNameWindowPixmap(dpy, top)
+            x.XSync(dpy, 0)
+            if pix and not self._error:
+                return pix
+            # BadMatch: the window was hidden just now, or the redirect is gone (the id was reused).
+            self._redirected.discard(top)
+            if attempt:
+                return f"the window's pixels cannot be named ({self._error or 'no pixmap'}); it may have just been hidden"
+        return "no pixmap"
+
+    def _forget_gone(self) -> None:
+        for top in list(self._redirected):
+            if self._attrs(top) is None:
+                self._redirected.discard(top)
+
+    @contextlib.contextmanager
+    def window_frame(self, window: int, region=None):
+        """Frame of the window's own content, also when other windows cover it, or None (and
+        `window_note` says why: not shown on screen, no Composite, an X error...). `region` is in screen
+        coordinates and is clipped to the window's box (the client area, not the window manager's
+        frame) and to the screen; the Frame's x, y are the screen coordinates of its top-left pixel.
+        Never raises. Holds the display lock until the block ends, like frame()."""
+        with self._lock:
+            yield self._capture_window(window, region)
+
+    def _capture_window(self, window: int, region) -> Frame | None:
+        self.window_note = None
+        if self.broken:
+            self.window_note = f"in-process capture is off ({self.broken})"
+            return None
+        pix = 0
+        try:
+            if self._dpy is None:
+                self._open()
+            if not self._composite():
+                self.window_note = self._xc_note
+                return None
+            if not self._root_checked:
+                # The root's pixel layout is validated by a read of it; pixmaps are read as that layout.
+                if self._read(self._root, 0, 0, 1, 1, 0, 0, self._screen_bytes()) is None:
+                    self.window_note = f"in-process capture is off ({self.broken or self._error})"
+                    return None
+                self._root_checked = True
+            top = self._toplevel(window)
+            if top is None:
+                self.window_note = "the window is gone"
+                return None
+            rect = self._window_rect(window, top, region)
+            if isinstance(rect, str):
+                self.window_note = rect
+                return None
+            px, py, rw, rh, sx, sy = rect
+            pix = self._name_pixmap(top)
+            if isinstance(pix, str):
+                self.window_note, pix = pix, 0
+                return None
+            frame = self._read(pix, px, py, rw, rh, sx, sy, max(self._screen_bytes(), rw * rh * 4), pixmap=True)
+            if frame is None and not self.broken:
+                self.window_note = f"the window's pixels could not be read ({self._error or 'X error'})"
+            return frame
+        except Exception as exc:
+            self.broken = f"{type(exc).__name__}: {exc}"
+            self.window_note = f"in-process capture failed ({self.broken})"
+            return None
+        finally:
+            if pix:
+                self._x.XFreePixmap(self._dpy, pix)
+                self._x.XSync(self._dpy, 0)
+
+    def _screen_bytes(self) -> int:
+        scr = self._x.XDefaultScreen(self._dpy)
+        return self._x.XDisplayWidth(self._dpy, scr) * self._x.XDisplayHeight(self._dpy, scr) * 4
+
+    def window_gray(self, window: int, region, cell: int):
+        """(cols, rows, gray, (x, y)) of the window's own content, like gray(); None with window_note."""
+        with self.window_frame(window, region) as f:
+            if f is None:
+                return None
+            if f.width < cell or f.height < cell:
+                self.window_note = "the area is smaller than one comparison cell"
+                return None
+            try:
+                cols, rows, gray = average_cells(f.view, f.bpl, f.width, f.height, cell)
+            except Exception as exc:
+                self.broken = f"{type(exc).__name__}: {exc}"
+                self.window_note = f"in-process capture failed ({self.broken})"
+                return None
+            return cols, rows, gray, (f.x, f.y)
+
+    def close(self) -> None:
+        """Give back the redirects and the shared segment (the server does too when we disconnect)."""
+        with self._lock:
+            try:
+                if self._xc is not None and self._dpy is not None:
+                    for top in list(self._redirected):
+                        self._xc.XCompositeUnredirectWindow(self._dpy, top, COMPOSITE_REDIRECT_AUTOMATIC)
+                    self._x.XSync(self._dpy, 0)
+            except Exception:
+                pass
+            self._redirected.clear()
+            self._drop_shm()
+
+    def _unusual(self, im, pixmap: bool = False) -> bool:
+        masks = (im.red_mask, im.green_mask, im.blue_mask)
+        # A pixmap has no visual, so Xlib leaves the masks 0: it is laid out like the root window,
+        # whose masks the first window capture checks.
         if im.bits_per_pixel != 32 or im.depth not in (24, 32) or im.byte_order != 0 \
-                or (im.red_mask, im.green_mask, im.blue_mask) != (0xFF0000, 0xFF00, 0xFF) \
+                or masks != (0xFF0000, 0xFF00, 0xFF) and not (pixmap and masks == (0, 0, 0)) \
                 or sys.byteorder != "little":
             self.broken = f"unusual pixel format ({im.bits_per_pixel} bpp, depth {im.depth})"
             return True
