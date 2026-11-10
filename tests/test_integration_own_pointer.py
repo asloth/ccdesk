@@ -161,7 +161,7 @@ def test_bspwm_does_not_move_the_users_focus_on_agent_clicks(screen, tmp_path):
             own.click(win_a.x + win_a.width // 2, win_a.y + win_a.height // 2, 1, 1)
             time.sleep(0.15)
             assert core_focus(env) == user_focus
-            assert bspc(env, "query", "-N", "-n", "focused") == b
+            assert bspc(env, "query", "-N", "-n", "focused").lower() == b  # bspc prints hex digits in capitals
             assert bspc(env, "config", "click_to_focus") == original
         time.sleep(0.3)
         assert files[0].read_text() == "CLICKED 10"
