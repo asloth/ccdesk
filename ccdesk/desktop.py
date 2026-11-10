@@ -163,7 +163,11 @@ class Desktop:
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
         self._pending: tuple[Region | None, Grid] | None = None
-        self._grid_fast = False  # the latest _snapshot() read the display directly
+        self._grid_fast: bool | None = None  # the latest _snapshot() read the display directly (None: no snapshot yet)
+        # Whether the current action reports pixels (it landed outside the tree's window) rather than
+        # the tree's lines, and whether the latest tree re-read failed (until ui_tree() works again).
+        self._pixel_report = False
+        self._tree_unreadable = False
         self._after: tuple[Region | None, Grid] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
@@ -326,33 +330,47 @@ class Desktop:
         return self._observe(result, show_change)
 
     def _observe(self, result: dict, show_change: bool = False) -> dict:
-        """After ui_tree() has been used, add what the action changed in that window. Without a
-        tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
-        with show_change, attach a small capture of that area so no screenshot is needed to see it."""
+        """What the action changed. With a tree of the window it landed in, the lines that changed;
+        otherwise (no tree, another window than the tree's, or a tree that can no longer be read)
+        whether the receiving window's pixels changed (see _guard and screendiff), and with
+        show_change, a small capture of that area so no screenshot is needed to see it."""
         self._last_area = None
-        if self.a11y._last is None:
-            before, self._pending = self._pending, None
-            if before is not None:
-                region, grid = before
-                after = self._settled_snapshot(region, grid)
-                if after is not None:
-                    self._after = (region, after)
-                    box = changed_box(grid, after)
-                    result["screen_changed"] = box is not None
-                    if box:
-                        result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
-                        self._last_area = Region(*box)
-                        if show_change:
-                            result["change_shot"] = self._change_shot(Region(*box))
-            if show_change and "change_shot" not in result and "screen_changed" not in result:
+        before, self._pending = self._pending, None
+        pixels, self._pixel_report = self._pixel_report, False
+        tree = self.a11y._last is not None
+        if before is None and not tree:
+            if show_change:
                 result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
             return result
+        if before is not None and (pixels or not tree):
+            return self._observe_pixels(result, before, show_change)
         try:
             changes = self.a11y.changes(settle=SETTLE)
         except CcdeskError as exc:
-            changes = f"could not re-read the window: {exc}"
+            self._tree_unreadable = True  # the next actions compare pixels, until ui_tree() reads again
+            if before is not None:
+                return self._observe_pixels(result, before, show_change)
+            result["note"] = f"could not re-read the window: {exc}. Take a screenshot to see the result"
+            return result
+        self._tree_unreadable = False
         if changes is not None:
             result["changes"] = changes
+        return result
+
+    def _observe_pixels(self, result: dict, before: tuple, show_change: bool) -> dict:
+        region, grid = before
+        after = self._settled_snapshot(region, grid)
+        if after is not None:
+            self._after = (region, after)
+            box = changed_box(grid, after)
+            result["screen_changed"] = box is not None
+            if box:
+                result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
+                self._last_area = Region(*box)
+                if show_change:
+                    result["change_shot"] = self._change_shot(Region(*box))
+        if show_change and "change_shot" not in result and "screen_changed" not in result:
+            result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
         return result
 
     def _padded(self, box: Region) -> Region:
@@ -500,14 +518,28 @@ class Desktop:
         self._after = None  # wait_for_change() compares with the screen after this action, not before
         if layout and not force:
             self._check_layout(list(windows.values()) if windows else None, window or target)
+        # The tree answers for an action only when it lands in the tree's window and can be read;
+        # anything else is reported from the pixels, so a stale tree never hides the result.
+        pixels = self.a11y._last is None or self._tree_unreadable or not self._in_trees_window(window)
+        self._pixel_report = (self._pixel_report or pixels) if self._batching else pixels  # a batch: any step
         if self._batching and self._pending is not None:
             return window  # a batch is compared with the screen before its first step
         self._pending = None
-        if self.a11y._last is None:
+        # With a tree of the right window the baseline is only the fallback for a failed re-read:
+        # skip it where a capture is known to be slow.
+        if pixels or self._grid_fast is not False:
             region = self._window_region(window)
             grid = self._snapshot(region)
             self._pending = (region, grid) if grid is not None else None
         return window
+
+    def _in_trees_window(self, window: Window | None) -> bool:
+        """Whether an action on this window is covered by the latest ui_tree(). The titles come from
+        the window manager and the accessibility bus, which do not always spell them the same, so one
+        containing the other counts. An unknown window or title: as before, the tree answers."""
+        tree = (self.a11y.tree_window() or "").casefold().strip()
+        title = (window.title if window is not None else "").casefold().strip()
+        return not tree or not title or tree in title or title in tree
 
     def _layout(self, windows: list[Window] | None = None) -> tuple | None:
         """A fingerprint of what is on screen: its size, every window's id, title, geometry and
@@ -987,6 +1019,7 @@ class Desktop:
                         self.a11y.forget()  # a tree of another window: actions compare pixels now
                         return {"fallback_shot": shot, "note": f"{message}. {TREE_SHOT_NOTE}"}
                 raise CcdeskError(message) from None
+            self._tree_unreadable = False
             text = result["tree"]
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
@@ -1087,6 +1120,7 @@ class Desktop:
         self._after = None
         if not self._batching:
             self._pending = None
+            self._pixel_report = False
 
     def _in_tree_window(self, result: dict) -> dict:
         if self._yielded:
@@ -1226,7 +1260,7 @@ class Desktop:
         def do():
             done: list[dict] = []
             result: dict = {"done": 0, "steps": done}
-            self._batching, self._pending = True, None
+            self._batching, self._pending, self._pixel_report = True, None, False
             try:
                 self._run_steps(checked, result, done)
             finally:
