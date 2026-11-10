@@ -105,6 +105,46 @@ class X11Backend(Backend):
         grab = self._grab()
         return grab.gray(region, cell) if grab else None
 
+    # -- one window's own pixels (XComposite) ----------------------------------
+
+    def _wid(self, window_id: str) -> int | None:
+        try:
+            return int(window_id, 16)
+        except (TypeError, ValueError):
+            self.window_note = f"{window_id!r} is not a window id"
+            return None
+
+    def window_gray_grid(self, window_id: str, region: Region | None, cell: int):
+        grab, wid = self._grab(), self._wid(window_id)
+        if wid is None:
+            return None
+        if grab is None:
+            self.window_note = "capturing one window is not supported here (no direct display access)"
+            return None
+        result = grab.window_gray(wid, region, cell)
+        self.window_note = None if result else grab.window_note
+        return result
+
+    def window_screenshot(self, path: str, window_id: str, region: Region | None = None) -> bool:
+        grab, wid = self._grab(), self._wid(window_id)
+        if wid is None:
+            return False
+        if grab is None:
+            self.window_note = "capturing one window is not supported here (no direct display access)"
+            return False
+        ok = self._screenshot_inprocess(path, None, frames=lambda: grab.window_frame(wid, region), big_ok=True)
+        self.window_note = None if ok else (grab.window_note or "the picture could not be written")
+        return ok
+
+    def window_covered(self, window_id: str) -> bool | None:
+        xq = self._xq()
+        if xq is None:
+            return None
+        try:
+            return xq.window_covered(int(window_id, 16))
+        except (XQueryUnavailable, ValueError):
+            return None
+
     def screenshot(self, path: str, region: Region | None) -> None:
         if self._screenshot_inprocess(path, region):
             return
@@ -133,20 +173,26 @@ class X11Backend(Backend):
 
     _last_shot = None  # (path, size, mtime_ns, xshot.Shot) of the last in-process screenshot, for scale_png
 
-    def _screenshot_inprocess(self, path: str, region: Region | None) -> bool:
-        """Capture and write the PNG here (xshot.py); False on any failure, then scrot/import run."""
+    def _screenshot_inprocess(self, path: str, region: Region | None, frames=None, big_ok: bool = False) -> bool:
+        """Capture and write the PNG here (xshot.py); False on any failure, then scrot/import run.
+        `frames` is a callable giving the frame's context manager (default: the screen region);
+        with big_ok a picture over MAX_FAST_PNG is compressed harder instead of refused, because a
+        window capture has no tool to fall back to."""
         grab = self._grab()
         if grab is None:
             return False
         try:
             from ccdesk.backends import xshot
-            with grab.frame(region) as frame:
+            with (frames() if frames else grab.frame(region)) as frame:
                 if frame is None:
                     return False
                 shot = xshot.shot_of_frame(frame)
             xshot.write_png(path, shot)
             st = os.stat(path)
-            if st.st_size > MAX_FAST_PNG:
+            if st.st_size > MAX_FAST_PNG and big_ok:
+                xshot.write_png(path, shot, level=9)
+                st = os.stat(path)
+            elif st.st_size > MAX_FAST_PNG:
                 # Photos and video barely shrink with the fast writer: scrot/import filter each row.
                 self._last_shot = None
                 return False

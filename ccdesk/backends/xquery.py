@@ -344,6 +344,56 @@ class XQuery:
             return self._root
         return self._call(go)
 
+    def _toplevel(self, win: int) -> int | None:
+        """The ancestor of win (or win itself) that is a direct child of the root, None when gone."""
+        for _ in range(64):
+            kids = self._tree_parent(win)
+            if kids is None or kids == 0:
+                return None
+            if kids == self._root:
+                return win
+            win = kids
+        return None
+
+    def _tree_parent(self, win: int) -> int | None:
+        root, parent, kids, n = C.c_ulong(), C.c_ulong(), C.POINTER(C.c_ulong)(), C.c_uint()
+        self._error = None
+        if not self._x.XQueryTree(self._dpy, win, C.byref(root), C.byref(parent), C.byref(kids), C.byref(n)) \
+                or self._error:
+            return None
+        if kids:
+            self._x.XFree(kids)
+        return parent.value
+
+    def window_covered(self, window: int) -> bool | None:
+        """Whether another viewable window overlaps the window's box (as list_windows reports it)
+        from above in the stacking order. None when the window is not on screen or is gone. The
+        agents' drawn cursors do not count; neither do windows that take no pixels (InputOnly)."""
+        def go():
+            top = self._toplevel(window)
+            a = self._attrs(window)
+            if top is None or a is None or a.map_state != IS_VIEWABLE:
+                return None
+            box = self._box(window)
+            if box is None:
+                return None
+            bx, by, bw, bh = box
+            stack = self._children(self._root) or []
+            if top not in stack:
+                return None
+            for other in stack[stack.index(top) + 1:]:
+                o = self._attrs(other)
+                if o is None or o.map_state != IS_VIEWABLE or o.cls != INPUT_OUTPUT:
+                    continue
+                span = 2 * o.border_width
+                if o.x >= bx + bw or o.x + o.width + span <= bx or o.y >= by + bh or o.y + o.height + span <= by:
+                    continue
+                if self._title(other).startswith(TITLE_PREFIX) or self._title(self._client(other)).startswith(TITLE_PREFIX):
+                    continue
+                return True
+            return False
+        return self._call(go)
+
     def idle_ms(self) -> int:
         """Milliseconds since the last input, from the MIT-SCREEN-SAVER extension (libXss)."""
         def go():
