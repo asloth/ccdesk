@@ -24,6 +24,9 @@ from ccdesk.parsing import (
     parse_xwininfo_size,
 )
 
+# A bigger in-process PNG is written again by scrot/import; the server shows pictures up to 3.5 MB.
+MAX_FAST_PNG = 3_000_000
+
 # X button numbers for the scroll wheel.
 WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT = 4, 5, 6, 7
 
@@ -143,6 +146,10 @@ class X11Backend(Backend):
                 shot = xshot.shot_of_frame(frame)
             xshot.write_png(path, shot)
             st = os.stat(path)
+            if st.st_size > MAX_FAST_PNG:
+                # Photos and video barely shrink with the fast writer: scrot/import filter each row.
+                self._last_shot = None
+                return False
             self._last_shot = (path, st.st_size, st.st_mtime_ns, shot)
             return True
         except Exception:
