@@ -6,6 +6,7 @@ Everything the MCP server exposes is a method here, so it can be tested without 
 from __future__ import annotations
 
 import inspect
+import math
 import os
 import re
 import shlex
@@ -14,6 +15,7 @@ import subprocess
 import tempfile
 import threading
 import time
+from collections import OrderedDict
 from datetime import datetime
 from pathlib import Path
 
@@ -55,6 +57,7 @@ OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds the helper watches for a change before an action reports "no change"
 SETTLE_POLL = 0.03  # pause between direct captures while an action's pixel change settles
+MAX_SETTLE = 1.5  # seconds an action that changed the screen waits for it to stop moving
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
@@ -68,6 +71,7 @@ SHOT_PAD = 24  # screen pixels around changed_area in a change_shot
 SHOT_MAX_TOKENS = 600  # a bigger change_shot is scaled down to about this
 TREE_SHOT_MAX_TOKENS = 1500  # the picture ui_tree attaches when the window has no useful tree
 HINT_MIN_TOKENS = 400  # a screenshot cheaper than this gets no "crop it" hint
+MAX_SHOTS = 32  # pictures whose origin and scale are remembered, for shot=
 DIFF_TOOLS = frozenset({"click", "drag", "scroll", "type_text", "press_key"})  # report screen_changed
 
 
@@ -78,7 +82,7 @@ def shown(value) -> str:
 
 
 TREE_SHOT_NOTE = ("A picture of the window is attached: work from it. Screen pixel = "
-                  "origin + pixel/scale")
+                  "origin + pixel/scale, or pass its `shot` id as shot= with the picture's own pixels")
 # Roles that count as something to act on (the same idea as ACTIONABLE in a11y_helper.py).
 ACTIONABLE_ROLES = frozenset({
     "push button", "toggle button", "button", "entry", "password text", "text", "check box",
@@ -163,7 +167,12 @@ class Desktop:
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
         self._pending: tuple[Region | None, Grid] | None = None
-        self._grid_fast = False  # the latest _snapshot() read the display directly
+        self._grid_fast: bool | None = None  # the latest _snapshot() read the display directly (None: no snapshot yet)
+        # Whether the current action reports pixels (it landed outside the tree's window) rather than
+        # the tree's lines, and whether the latest tree re-read failed (until ui_tree() works again).
+        self._pixel_report = False
+        self._tree_unreadable = False
+        self._moving = False  # the latest _settled_snapshot() ended with the screen still changing
         self._after: tuple[Region | None, Grid] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
@@ -179,10 +188,15 @@ class Desktop:
         self._busy = threading.RLock()  # one input action of this server at a time, observation included
         self._batching = False  # inside batch(): steps keep the first baseline and re-check password focus
         self._deferring = False  # inside an input action: _changes() leaves the observing to _act
-        self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
+        self._deferred: tuple[dict, bool | None] | None = None  # what _act observes once the seat is free
         # The window layout when the latest screenshot was delivered (see _layout): coordinates
         # taken from that screenshot only hold while it is unchanged. None: nothing to compare with.
         self._layout_seen: tuple | None = None
+        # The latest MAX_SHOTS pictures handed out: id -> (origin x, y, scale x, y, width, height), so
+        # click(shot=...) can turn a picture's own pixels into screen pixels.
+        self._shots: OrderedDict[str, tuple] = OrderedDict()
+        self._shot_count = 0
+        self._shots_lock = threading.Lock()
 
     # -- plumbing -------------------------------------------------------------
 
@@ -317,7 +331,7 @@ class Desktop:
                 self._flush_cursor()
         return result
 
-    def _changes(self, result: dict, show_change: bool = False) -> dict:
+    def _changes(self, result: dict, show_change: bool | None = None) -> dict:
         """What an action changed, filled in by _observe(). Inside an input action it runs after
         _act has released the seat lock; the result dict is filled in place then."""
         if self._deferring:
@@ -325,34 +339,89 @@ class Desktop:
             return result
         return self._observe(result, show_change)
 
-    def _observe(self, result: dict, show_change: bool = False) -> dict:
-        """After ui_tree() has been used, add what the action changed in that window. Without a
-        tree, say whether the receiving window's pixels changed (see _guard and screendiff), and
-        with show_change, attach a small capture of that area so no screenshot is needed to see it."""
+    def _observe(self, result: dict, show_change: bool | None = None) -> dict:
+        """What the action changed. With a tree of the window it landed in, the lines that changed;
+        otherwise (no tree, another window than the tree's, or a tree that can no longer be read)
+        whether the receiving window's pixels changed (see _guard and screendiff), and with
+        show_change, a small capture of that area so no screenshot is needed to see it."""
         self._last_area = None
-        if self.a11y._last is None:
-            before, self._pending = self._pending, None
-            if before is not None:
-                region, grid = before
-                after = self._settled_snapshot(region, grid)
-                if after is not None:
-                    self._after = (region, after)
-                    box = changed_box(grid, after)
-                    result["screen_changed"] = box is not None
-                    if box:
-                        result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
-                        self._last_area = Region(*box)
-                        if show_change:
-                            result["change_shot"] = self._change_shot(Region(*box))
-            if show_change and "change_shot" not in result and "screen_changed" not in result:
+        before, self._pending = self._pending, None
+        pixels, self._pixel_report = self._pixel_report, False
+        tree = self.a11y._last is not None
+        if before is None and not tree:
+            if show_change:
                 result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
             return result
+        if before is not None and (pixels or not tree):
+            return self._observe_pixels(result, before, show_change)
         try:
             changes = self.a11y.changes(settle=SETTLE)
         except CcdeskError as exc:
-            changes = f"could not re-read the window: {exc}"
+            self._tree_unreadable = True  # the next actions compare pixels, until ui_tree() reads again
+            if before is not None:
+                return self._observe_pixels(result, before, show_change)
+            result["note"] = f"could not re-read the window: {exc}. Take a screenshot to see the result"
+            return result
+        self._tree_unreadable = False
         if changes is not None:
             result["changes"] = changes
+        return result
+
+    def _observe_pixels(self, result: dict, before: tuple, show_change: bool | None) -> dict:
+        """show_change None (the default): attach the capture of what changed; True: as None, and
+        say so when it cannot be done; False: never."""
+        region, grid = before
+        after = self._settled_snapshot(region, grid)
+        if after is not None:
+            self._after = (region, after)
+            box = changed_box(grid, after)
+            result["screen_changed"] = box is not None
+            if box:
+                result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
+                self._last_area = Region(*box)
+                if self._moving:
+                    result["settled"] = False  # still changing: wait_for_change() waits for it to stop
+                if show_change is not False:
+                    result["change_shot"] = self._change_shot(Region(*box))
+        if show_change and "change_shot" not in result and "screen_changed" not in result:
+            result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
+        return result
+
+    def _remember_shot(self, origin: tuple[int, int], size: tuple[int, int], shown: tuple[int, int]) -> str:
+        """Give a picture an id and keep what turns its pixels into screen pixels. size is the
+        capture's size on screen, shown the size of the picture handed out."""
+        with self._shots_lock:
+            self._shot_count += 1
+            sid = f"s{self._shot_count}"
+            self._shots[sid] = (*origin, shown[0] / size[0], shown[1] / size[1], *shown)
+            while len(self._shots) > MAX_SHOTS:
+                self._shots.popitem(last=False)
+        return sid
+
+    def _from_shot(self, shot, x, y) -> tuple[int, int]:
+        """Screen pixel of pixel (x, y) in a picture this server handed out: origin + pixel / scale."""
+        x, y = check_int("x", x), check_int("y", y)
+        with self._shots_lock:
+            known = self._shots.get(shot) if isinstance(shot, str) else None
+        if known is None:
+            raise ValidationError(f"unknown or expired shot {shot!r} (the latest {MAX_SHOTS} are kept): "
+                                  f"take a new screenshot and use its shot id")
+        ox, oy, sx, sy, width, height = known
+        if not (0 <= x < width and 0 <= y < height):
+            raise ValidationError(f"({x},{y}) is outside shot {shot}, which is {width}x{height}: pass pixels "
+                                  f"of that picture, or take a new screenshot")
+        return math.floor(ox + x / sx + 0.5), math.floor(oy + y / sy + 0.5)
+
+    def _screen_point(self, shot, x, y) -> tuple[int, int]:
+        """x, y as screen pixels: with shot, pixels of that picture, converted; else as given."""
+        if shot is not None:
+            x, y = self._from_shot(shot, x, y)
+        return self._point(x, y)
+
+    @staticmethod
+    def _from(result: dict, shot) -> dict:
+        if shot is not None:
+            result["from_shot"] = shot
         return result
 
     def _padded(self, box: Region) -> Region:
@@ -380,13 +449,14 @@ class Desktop:
         Returns the shot (path, width, height, approx_tokens, origin) and the scale factor used."""
         out = self._shot_path(None)
         self.backend.screenshot(str(out), reg)
-        width, height = png_size(out)
+        full = width, height = png_size(out)
         factor = min(1.0, (max_tokens * 750 / (width * height)) ** 0.5)
         if factor < 1:
             self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
             width, height = png_size(out)
+        sid = self._remember_shot((reg.x, reg.y), full, (width, height))
         return ({"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
-                 "origin": {"x": reg.x, "y": reg.y}}, factor)
+                 "origin": {"x": reg.x, "y": reg.y}, "shot": sid}, factor)
 
     def _tree_fallback_shot(self, title: str | None) -> dict:
         """A picture of one window for ui_tree() when it has no useful tree. Raises CcdeskError if
@@ -500,14 +570,28 @@ class Desktop:
         self._after = None  # wait_for_change() compares with the screen after this action, not before
         if layout and not force:
             self._check_layout(list(windows.values()) if windows else None, window or target)
+        # The tree answers for an action only when it lands in the tree's window and can be read;
+        # anything else is reported from the pixels, so a stale tree never hides the result.
+        pixels = self.a11y._last is None or self._tree_unreadable or not self._in_trees_window(window)
+        self._pixel_report = (self._pixel_report or pixels) if self._batching else pixels  # a batch: any step
         if self._batching and self._pending is not None:
             return window  # a batch is compared with the screen before its first step
         self._pending = None
-        if self.a11y._last is None:
+        # With a tree of the right window the baseline is only the fallback for a failed re-read:
+        # skip it where a capture is known to be slow.
+        if pixels or self._grid_fast is not False:
             region = self._window_region(window)
             grid = self._snapshot(region)
             self._pending = (region, grid) if grid is not None else None
         return window
+
+    def _in_trees_window(self, window: Window | None) -> bool:
+        """Whether an action on this window is covered by the latest ui_tree(). The titles come from
+        the window manager and the accessibility bus, which do not always spell them the same, so one
+        containing the other counts. An unknown window or title: as before, the tree answers."""
+        tree = (self.a11y.tree_window() or "").casefold().strip()
+        title = (window.title if window is not None else "").casefold().strip()
+        return not tree or not title or tree in title or title in tree
 
     def _layout(self, windows: list[Window] | None = None) -> tuple | None:
         """A fingerprint of what is on screen: its size, every window's id, title, geometry and
@@ -564,7 +648,11 @@ class Desktop:
         if not out.exists():
             return None
         self._layout_seen = layout
-        return str(out)
+        try:
+            size = png_size(out)
+        except (CcdeskError, OSError, ValueError):
+            return str(out)
+        return f"{out} (shot {self._remember_shot((0, 0), size, size)})"
 
     def _with_window(self, result: dict, window: Window | None) -> dict:
         if window:
@@ -587,9 +675,11 @@ class Desktop:
         return Region(x0, y0, x1 - x0, y1 - y0)
 
     def _settled_snapshot(self, region: Region | None, before: Grid) -> Grid | None:
-        """The screen after an action. With a direct capture (a few tens of ms), return as soon as
-        it differs from before and held still for one more capture, else after SETTLE; with the PNG
-        path (two hundred ms a capture), wait SETTLE and capture once."""
+        """The screen after an action. With a direct capture (a few tens of ms): nothing changed by
+        SETTLE, return it; something changed, keep capturing until two captures in a row are equal,
+        up to MAX_SETTLE, and say in self._moving if it was still moving then. With the PNG path
+        (two hundred ms a capture), wait SETTLE and capture once."""
+        self._moving = False
         if not self._grid_fast:
             self.backend.sleep(SETTLE)
             return self._snapshot(region)
@@ -597,9 +687,16 @@ class Desktop:
         while True:
             self.backend.sleep(SETTLE_POLL)
             cur = self._snapshot(region)
-            if cur is None or self.clock() - start >= SETTLE:
+            if cur is None:
                 return cur
-            if prev is not None and cur.gray == prev.gray and changed_box(before, cur) is not None:
+            elapsed = self.clock() - start
+            if changed_box(before, cur) is None:
+                if elapsed >= SETTLE:
+                    return cur
+            elif prev is not None and cur.gray == prev.gray:
+                return cur
+            elif elapsed >= MAX_SETTLE:
+                self._moving = True
                 return cur
             prev = cur
 
@@ -658,24 +755,22 @@ class Desktop:
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
             # Coordinates measured on this picture are only valid while the layout holds.
             self._layout_seen = self._layout()
-            width, height = png_size(out)
+            full = width, height = png_size(out)
             if factor < 1:
                 self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
                 width, height = png_size(out)
+            sid = self._remember_shot((reg.x, reg.y) if reg else (0, 0), full, (width, height))
             # Image input costs about width*height/750 tokens once the model reads it.
-            result = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750)}
+            result = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
+                      "shot": sid}
             if factor < 1:
                 result["scale"] = factor
             if shot_of:
                 result["window"] = {"id": shot_of.id, "title": shot_of.title}
             if reg:
                 result["origin"] = {"x": reg.x, "y": reg.y}
-            if reg and factor < 1:
-                result["note"] = "pixel (px,py) in this image is screen (origin.x+px/scale, origin.y+py/scale)"
-            elif reg:
-                result["note"] = "pixel (px,py) in this image is screen (origin.x+px, origin.y+py)"
-            elif factor < 1:
-                result["note"] = "pixel (px,py) in this image is screen (px/scale, py/scale)"
+            if reg or factor < 1:
+                result["note"] = f'pass shot="{sid}" with this picture\'s own pixel coordinates'
             if unchecked:
                 result["warning"] = ("could not check that this window is on show (on X11, install xwininfo); "
                                      "if the image shows something else, activate_window() it first")
@@ -713,7 +808,7 @@ class Desktop:
             return None
         return (f"the last action changed only {area.x},{area.y},{area.width},{area.height}: "
                 f'region="{crop.x},{crop.y},{crop.width},{crop.height}" shows it for ~{cost} tokens '
-                f"(this one: ~{tokens}), and show_change=true on the action shows it with no screenshot at all")
+                f"(this one: ~{tokens}); the action's own answer shows it already, unless show_change=false")
 
     def _shot_path(self, path: str | None) -> Path:
         if path:
@@ -736,53 +831,56 @@ class Desktop:
                 pass
 
     def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False,
-              expect_title: str | None = None, show_change: bool = False) -> dict:
+              expect_title: str | None = None, show_change: bool | None = None, shot: str | None = None) -> dict:
         def do():
             self._ready()
-            px, py = self._point(x, y)
+            px, py = self._screen_point(shot, x, y)
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             window = self._guard(force, (px, py), expect_title, layout=True)
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
-            return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
-                                                   window), show_change)
+            return self._changes(self._from(self._with_window(
+                {"clicked": {"x": px, "y": py}, "button": button, "count": n}, window), shot), show_change)
 
-        return self._act("click", {"x": x, "y": y, "button": button, "count": count, "force": force,
-                                     "expect_title": expect_title, "show_change": show_change}, do)
+        args = {"x": x, "y": y, "button": button, "count": count, "force": force,
+                "expect_title": expect_title, "show_change": show_change}
+        return self._act("click", args | ({"shot": shot} if shot is not None else {}), do)
 
-    def move(self, x: int, y: int) -> dict:
+    def move(self, x: int, y: int, shot: str | None = None) -> dict:
         def do():
             self._ready()
-            px, py = self._point(x, y)
+            px, py = self._screen_point(shot, x, y)
             self._yielded = self._yield_to_user()
             self.backend.move(px, py)
             self._show_cursor(px, py)
-            return self._with_window({"moved": {"x": px, "y": py}}, None)
+            return self._from(self._with_window({"moved": {"x": px, "y": py}}, None), shot)
 
-        return self._act("move", {"x": x, "y": y}, do)
+        return self._act("move", {"x": x, "y": y} | ({"shot": shot} if shot is not None else {}), do)
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
-             force: bool = False, show_change: bool = False) -> dict:
+             force: bool = False, show_change: bool | None = None, shot: str | None = None) -> dict:
         def do():
             self._ready()
-            x0, y0 = self._point(from_x, from_y)
-            x1, y1 = self._point(to_x, to_y)
+            x0, y0 = self._screen_point(shot, from_x, from_y)
+            x1, y1 = self._screen_point(shot, to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
             window = self._guard(force, (x0, y0), layout=True)
             self.backend.drag(x0, y0, x1, y1, ms)
             self._show_cursor(x1, y1)
-            return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
-                                                    "duration_ms": ms}, window), show_change)
+            return self._changes(self._from(self._with_window(
+                {"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1}, "duration_ms": ms}, window), shot),
+                show_change)
 
         args = {"from_x": from_x, "from_y": from_y, "to_x": to_x, "to_y": to_y, "duration_ms": duration_ms,
                 "force": force, "show_change": show_change}
-        return self._act("drag", args, do)
+        return self._act("drag", args | ({"shot": shot} if shot is not None else {}), do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False,
+               show_change: bool | None = None, shot: str | None = None) -> dict:
         def do():
             self._ready()
-            px, py = self._point(x, y)
+            px, py = self._screen_point(shot, x, y)
             sx = check_int("dx", dx, -50, 50)
             sy = check_int("dy", dy, -50, 50)
             if not sx and not sy:
@@ -791,12 +889,14 @@ class Desktop:
             window = self._guard(force, (px, py), layout=True)
             self.backend.scroll(px, py, sx, sy)
             self._show_cursor(px, py)
-            return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), show_change)
+            return self._changes(self._from(self._with_window(
+                {"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), shot), show_change)
 
-        return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}, do)
+        args = {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}
+        return self._act("scroll", args | ({"shot": shot} if shot is not None else {}), do)
 
     def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
@@ -834,7 +934,7 @@ class Desktop:
                                          "expect_title": expect_title, "show_change": show_change}, do)
 
     def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
-                  force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
+                  force: bool = False, expect_title: str | None = None, show_change: bool | None = None) -> dict:
         def do():
             combo = parse_key_combo(key, modifiers or [])
             self.policy.check_key(combo, bool(confirm))
@@ -987,6 +1087,7 @@ class Desktop:
                         self.a11y.forget()  # a tree of another window: actions compare pixels now
                         return {"fallback_shot": shot, "note": f"{message}. {TREE_SHOT_NOTE}"}
                 raise CcdeskError(message) from None
+            self._tree_unreadable = False
             text = result["tree"]
             result["approx_tokens"] = len(text) // 4
             if result["truncated"]:
@@ -1087,6 +1188,7 @@ class Desktop:
         self._after = None
         if not self._batching:
             self._pending = None
+            self._pixel_report = False
 
     def _in_tree_window(self, result: dict) -> dict:
         if self._yielded:
@@ -1203,6 +1305,14 @@ class Desktop:
                 inspect.signature(getattr(self, name)).bind(**args)
             except TypeError as exc:
                 raise ValidationError(f"step {i} ({name}): {exc}") from None
+            if args.get("shot") is not None:  # a picture that is unknown or too small stops the batch before step 1
+                ends = ([(args["from_x"], args["from_y"]), (args["to_x"], args["to_y"])] if name == "drag"
+                        else [(args["x"], args["y"])])
+                try:
+                    for px, py in ends:
+                        self._from_shot(args["shot"], px, py)
+                except ValidationError as exc:
+                    raise ValidationError(f"step {i} ({name}): {exc}") from None
             if name == "wait":
                 try:
                     ok = 0 <= float(args["seconds"]) <= MAX_BATCH_WAIT
@@ -1217,7 +1327,7 @@ class Desktop:
             raise ValidationError(f"a batch types at most {MAX_TEXT} characters in all, got {typed}")
         return checked
 
-    def batch(self, steps: list[dict], show_change: bool = False) -> dict:
+    def batch(self, steps: list[dict], show_change: bool | None = None) -> dict:
         """Run several input steps in one call, holding the seat for all of them, and observe only
         the end state. Stops at the first step that fails."""
         checked = self._batch_steps(steps)
@@ -1226,7 +1336,7 @@ class Desktop:
         def do():
             done: list[dict] = []
             result: dict = {"done": 0, "steps": done}
-            self._batching, self._pending = True, None
+            self._batching, self._pending, self._pixel_report = True, None, False
             try:
                 self._run_steps(checked, result, done)
             finally:

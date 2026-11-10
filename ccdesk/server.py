@@ -29,10 +29,11 @@ that window): verify with it instead of another look. Refs stay valid across ui_
 When a window has no useful tree, ui_tree() attaches a small picture of it (fallback_shot).
 Fall back to screenshot() for canvas, images, video, apps that publish none,
 to read layout, or to double-check something visual: the picture is in its answer. Coordinates
-are screen pixels in the image (origin top-left); for a region add the returned origin.
+are screen pixels; for a picture's own pixels (scaled or cropped) pass its shot id as shot=.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
-Without a tree, actions return screen_changed (and changed_area): if false, the action did
-nothing yet. Pass show_change=true to see the changed area in the answer, with no screenshot after.
+Without a tree, actions return screen_changed, changed_area and, if it changed, a picture of that
+area (change_shot): do not screenshot() or wait() to see the result. If false, the action did nothing
+yet. settled=false: still moving, call wait_for_change(). show_change=false skips the picture.
 wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
@@ -153,7 +154,7 @@ def build_server(desktop: Desktop) -> MCPServer:
                    window: str | None = None) -> dict:
         """Capture the screen (or region "x,y,width,height") and show it in this answer, with path,
         width, height and approx_tokens (what it costs). scale=0.5 halves each side for ~4x fewer
-        tokens; then divide image pixels by scale to get screen pixels. path: only save it there.
+        tokens. Its `shot` id lets click, move, scroll and drag take pixels of this picture. path: only save it there.
         window: capture only that window, by id or title. It is a crop of the screen, so anything
         covering the window shows too: activate_window() it first."""
         result = desktop.screenshot(region=region, path=path, scale=scale, window=window)
@@ -161,34 +162,38 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-              force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
+              force: bool = False, expect_title: str | None = None, show_change: bool | None = None,
+              shot: str | None = None) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
+        shot="s3": x, y are pixels of that screenshot or change_shot, converted for you.
         After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
         expect_title: refuse unless the receiving window's title contains it (a browser tab).
-        show_change=true: without a ui_tree, also show a small capture of what changed (~600 tokens at most)."""
+        show_change=false: no capture of what changed (without a ui_tree it comes with the answer, ~600 tokens)."""
         return with_change_shot(desktop.click(x, y, button=button, count=count, force=force,
-                                       expect_title=expect_title, show_change=show_change))
+                                       expect_title=expect_title, show_change=show_change, shot=shot))
 
     @tool
-    def move(x: int, y: int) -> dict:
-        """Move the pointer to (x, y) without clicking (e.g. to reveal a hover menu or tooltip)."""
-        return desktop.move(x, y)
+    def move(x: int, y: int, shot: str | None = None) -> dict:
+        """Move the pointer to (x, y) without clicking (e.g. to reveal a hover menu or tooltip). shot: as in click."""
+        return desktop.move(x, y, shot=shot)
 
     @tool
     def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False,
-             show_change: bool = False) -> dict:
-        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release. show_change: as in click."""
-        return with_change_shot(desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force, show_change=show_change))
+             show_change: bool | None = None, shot: str | None = None) -> dict:
+        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release. show_change, shot: as in click."""
+        return with_change_shot(desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force,
+                                             show_change=show_change, shot=shot))
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool | None = None,
+               shot: str | None = None) -> dict:
         """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks.
-        show_change: as in click."""
-        return with_change_shot(desktop.scroll(x, y, dx=dx, dy=dy, force=force, show_change=show_change))
+        show_change, shot: as in click."""
+        return with_change_shot(desktop.scroll(x, y, dx=dx, dy=dy, force=force, show_change=show_change, shot=shot))
 
     @tool
     def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
         replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
         submit=true presses Return afterwards (a trailing newline does the same).
@@ -201,7 +206,7 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
         Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
         refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text.
@@ -267,7 +272,7 @@ def build_server(desktop: Desktop) -> MCPServer:
         return desktop.set_value(ref, text, force=force)
 
     @tool
-    def batch(steps: list[dict], show_change: bool = False) -> dict:
+    def batch(steps: list[dict], show_change: bool | None = None) -> dict:
         """Several input steps in one call, e.g. a form from one ui_tree(): steps=[{"tool":"set_value","ref":"e3",
         "text":"Ana"},{"tool":"click_element","ref":"e7"}]. Each step takes that tool's arguments. Stops at the
         first failure; returns the changes after the last step. Other agents wait while it runs."""
