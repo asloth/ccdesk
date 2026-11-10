@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import replace
 
@@ -68,16 +69,24 @@ class X11Backend(Backend):
             return []
         return parse_xrandr_monitors(self.try_run(["xrandr", "--listmonitors"]) or "")
 
-    def gray_grid(self, region: Region | None, cell: int):
+    def _grab(self):
+        """The in-process screen reader for this backend's display, or None under unit tests (injected
+        runner) and without a DISPLAY."""
         if not self._real_tools or not self.env.get("DISPLAY"):
             return None
         grab = getattr(self, "_xgrab", None)
         if grab is None:
             from ccdesk.backends.xgrab import XGrab
             grab = self._xgrab = XGrab(self.env["DISPLAY"])
-        return grab.gray(region, cell)
+        return grab
+
+    def gray_grid(self, region: Region | None, cell: int):
+        grab = self._grab()
+        return grab.gray(region, cell) if grab else None
 
     def screenshot(self, path: str, region: Region | None) -> None:
+        if self._screenshot_inprocess(path, region):
+            return
         attempts = []
         if self.which("scrot"):
             argv = ["scrot", "-o", "-z"]
@@ -100,6 +109,42 @@ class X11Backend(Backend):
             except CommandError as exc:
                 errors.append(str(exc))
         raise CommandError("; ".join(errors))
+
+    _last_shot = None  # (path, size, mtime_ns, xshot.Shot) of the last in-process screenshot, for scale_png
+
+    def _screenshot_inprocess(self, path: str, region: Region | None) -> bool:
+        """Capture and write the PNG here (xshot.py); False on any failure, then scrot/import run."""
+        grab = self._grab()
+        if grab is None:
+            return False
+        try:
+            from ccdesk.backends import xshot
+            with grab.frame(region) as frame:
+                if frame is None:
+                    return False
+                shot = xshot.shot_of_frame(frame)
+            xshot.write_png(path, shot)
+            st = os.stat(path)
+            self._last_shot = (path, st.st_size, st.st_mtime_ns, shot)
+            return True
+        except Exception:
+            self._last_shot = None
+            return False
+
+    def scale_png(self, path: str, width: int, height: int) -> None:
+        """Area-averaged in-process from the picture screenshot() just wrote, when that is the file
+        (libpixman); ImageMagick otherwise."""
+        last, self._last_shot = self._last_shot, None
+        if last and last[0] == path:
+            try:
+                st = os.stat(path)
+                if (st.st_size, st.st_mtime_ns) == last[1:3]:
+                    from ccdesk.backends import xshot
+                    xshot.write_png(path, xshot.rescale(last[3], width, height))
+                    return
+            except Exception:
+                pass
+        super().scale_png(path, width, height)
 
     def move(self, x: int, y: int) -> None:
         self._xdotool("mousemove", str(x), str(y))
