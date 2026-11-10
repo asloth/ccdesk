@@ -6,6 +6,7 @@ import re
 from dataclasses import replace
 
 from ccdesk.backends.base import Backend, interpolate
+from ccdesk.backends.xquery import XQuery, XQueryUnavailable
 from ccdesk.cursor import TITLE_PREFIX
 from ccdesk.errors import CommandError
 from ccdesk.parsing import (
@@ -46,7 +47,24 @@ class X11Backend(Backend):
         self.need("input", "xdotool")
         return self.run(["xdotool", *args], **kw)
 
+    def _xq(self) -> XQuery | None:
+        """The in-process connection for window questions, or None when it should not be used:
+        under tests (a fake runner), without DISPLAY, or after it broke. Callers then run the
+        subprocess path, which gives the same answers."""
+        if not self._real_tools or not self.env.get("DISPLAY"):
+            return None
+        xq = getattr(self, "_xquery", None)
+        if xq is None:
+            xq = self._xquery = XQuery(self.env["DISPLAY"])
+        return None if xq.broken else xq
+
     def screen_size(self) -> tuple[int, int]:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return xq.screen_size()
+            except XQueryUnavailable:
+                pass
         # The root window spans every monitor. Recent xdotool releases report only one
         # monitor from getdisplaygeometry, which would make the others unclickable.
         if self.which("xwininfo"):
@@ -146,7 +164,41 @@ class X11Backend(Backend):
         # The agents' drawn cursors are windows too; they are not something to work with.
         return [w for w in self._all_windows() if not w.title.startswith(TITLE_PREFIX)]
 
+    def _inproc_windows(self, xq: XQuery) -> list[Window]:
+        """What wmctrl -lGx (then xwininfo) or xdotool tell, read over the connection. With wmctrl
+        installed and a window manager that publishes _NET_CLIENT_LIST, the answer has wmctrl's
+        spelling ("N/A" for a missing title or class, -1 for no desktop); in every other case it
+        has the xdotool path's: named windows only, "" for no class, None for no desktop."""
+        ids = xq.client_list()
+        if ids is not None and self.which("wmctrl"):
+            windows = []
+            for wid in ids:
+                info = xq.window_info(wid)
+                if info is None:
+                    continue  # closed while we looked
+                desktop = info["desktop"]
+                x, y, w, h = info["box"]
+                windows.append(Window(
+                    id=f"0x{wid:08x}", title=info["title"] or "N/A", wm_class=info["wm_class"] or "N/A", x=x, y=y,
+                    width=w, height=h, desktop=-1 if desktop is None or desktop == 0xFFFFFFFF else desktop))
+            return windows
+        windows = []
+        for wid in dict.fromkeys(ids or xq.visible_named()):
+            info = xq.window_info(wid)
+            if info is None or not info["title"]:
+                continue
+            x, y, w, h = info["box"]
+            windows.append(Window(id=f"0x{wid:08x}", title=info["title"], wm_class=info["wm_class"] or "",
+                                  x=x, y=y, width=w, height=h, desktop=info["desktop"]))
+        return windows
+
     def _all_windows(self) -> list[Window]:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return self._inproc_windows(xq)
+            except XQueryUnavailable:
+                pass
         if self.which("wmctrl"):
             out = self.try_run(["wmctrl", "-lGx"])
             if out is not None:
@@ -268,11 +320,24 @@ class X11Backend(Backend):
         self.activate_window(window)
 
     def window_on_show(self, window_id: str) -> bool | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return xq.on_show(int(window_id, 16))
+            except (XQueryUnavailable, ValueError):
+                pass
         out = self.try_run(["xwininfo", "-id", window_id]) if self.which("xwininfo") else None
         m = re.search(r"Map State:\s*(\w+)", out or "")
         return m.group(1) == "IsViewable" if m else None
 
     def active_window(self) -> str | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                wid = xq.active_window()
+                return f"0x{wid:08x}" if wid else None
+            except XQueryUnavailable:
+                pass
         # _NET_ACTIVE_WINDOW: without an EWMH window manager this fails and focus is unknown.
         out = (self.try_run(["xdotool", "getactivewindow"]) or "").strip() if self.which("xdotool") else ""
         return f"0x{int(out):08x}" if out.isdigit() else None
@@ -280,11 +345,24 @@ class X11Backend(Backend):
     def window_at(self, x: int, y: int) -> str | None:
         # xdotool resolves the window under the pointer to its client (the one with WM_STATE),
         # so a window manager's frame or a toolkit's child window maps back to the app window.
+        # In process this is a walk of the window tree: the pointer does not move to answer.
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return f"0x{xq.window_at(x, y):08x}"
+            except XQueryUnavailable:
+                pass
         out = self._xdotool("mousemove", str(x), str(y), "getmouselocation", "--shell")
         wid = parse_shell_vars(out).get("WINDOW", "")
         return f"0x{int(wid):08x}" if wid.isdigit() else None
 
     def current_desktop(self) -> int | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return xq.current_desktop()
+            except XQueryUnavailable:
+                pass
         if not self.which("xprop"):
             return None
         m = re.search(r"_NET_CURRENT_DESKTOP\(CARDINAL\) = (\d+)",
@@ -292,6 +370,12 @@ class X11Backend(Backend):
         return int(m.group(1)) if m else None
 
     def window_role(self, window_id: str) -> str | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return xq.window_role(int(window_id, 16))
+            except (XQueryUnavailable, ValueError):
+                pass
         if not self.which("xprop"):
             return None
         m = re.search(r'WM_WINDOW_ROLE\(STRING\) = "([^"]*)"',
@@ -299,11 +383,24 @@ class X11Backend(Backend):
         return m.group(1) if m else None
 
     def idle_ms(self) -> int | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                return xq.idle_ms()
+            except XQueryUnavailable:
+                pass  # no libXss: xprintidle below
         # The MIT-SCREEN-SAVER extension's idle counter; xdotool's synthetic events reset it too.
         out = (self.try_run(["xprintidle"], timeout=5) or "").strip() if self.which("xprintidle") else ""
         return int(out) if out.isdigit() else None
 
     def transient_for(self, window_id: str) -> str | None:
+        xq = self._xq()
+        if xq is not None:
+            try:
+                wid = xq.transient_for(int(window_id, 16))
+                return f"0x{wid:08x}" if wid else None
+            except (XQueryUnavailable, ValueError):
+                pass
         if not self.which("xprop"):
             return None
         out = self.try_run(["xprop", "-id", window_id, "WM_TRANSIENT_FOR"]) or ""
