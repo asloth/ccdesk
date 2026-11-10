@@ -254,3 +254,25 @@ def test_scaled_screenshot_click(app, desk):
     px, py = center(button)
     desk.click(round(px / result["scale"]), round(py / result["scale"]))
     assert app.wait_for(lambda s: s["label"] == "clicked")["label"] == "clicked"
+
+
+@pytest.mark.skipif(not (shutil.which("magick") or shutil.which("convert")), reason="ImageMagick not installed")
+def test_click_with_the_pixels_of_a_scaled_window_picture(app, desk):
+    """The picture is half-size and cropped to the window: its pixels are neither screen pixels nor
+    window pixels, and shot= turns them into screen pixels. Tk has no accessibility tree, so the
+    click comes back with the picture of what it changed."""
+    desk.activate_window("ccdesk-test")
+    result = desk.screenshot(window="ccdesk-test", scale=0.5)
+    assert result["scale"] == 0.5 and result["origin"]["x"] == 40 and result["shot"]
+    img = read_png(result["path"])
+    button = img.find_color(MAGENTA)
+    assert button, "button not visible in the half-size window picture"
+    px, py = center(button)
+    r = desk.click(px, py, shot=result["shot"])
+    assert app.wait_for(lambda s: s["label"] == "clicked")["label"] == "clicked"
+    tx, ty, tw, th = app.state()["button"]
+    assert tx <= r["clicked"]["x"] < tx + tw and ty <= r["clicked"]["y"] < ty + th
+    assert r["from_shot"] == result["shot"]
+    assert r["screen_changed"] is True and r["change_shot"]["shot"] != result["shot"]
+    after = read_png(r["change_shot"]["path"])
+    assert after.find_color(GREEN), "the change_shot should show the label that turned green"

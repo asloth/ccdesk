@@ -177,8 +177,8 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 1920x1080 capture is ~2,800 tokens; 960x540 is ~700; a 600x300 crop is ~240.
 
 - **Orient cheaply.** For a first look at a screen or page, use `scale=0.5` (a quarter of
-  the tokens). It is enough to find windows, sections and buttons. Image pixel `(px, py)`
-  is screen `(px/scale, py/scale)`, plus `origin` for a region.
+  the tokens). It is enough to find windows, sections and buttons. Click on what you see
+  with `click(px, py, shot="s1")`: no arithmetic (see Coordinate rules).
 - **Act and verify with crops.** Once you know where you are working, screenshot a region
   just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
   typed value or a toggled checkbox with the action's own `change_shot` or a crop, not the whole monitor.
@@ -195,12 +195,15 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 
 ## Coordinate rules
 
-- Coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They match a
-  full-scale screenshot pixel for pixel. If the result has `scale`, divide by it.
-- If the screenshot you are reading was shown to you downscaled, convert back with
-  `screen = seen * (width / displayed_width)`, using `width`/`height` from the tool result.
-- For a **region** screenshot, the result includes `origin`: screen point is
-  `(origin.x + px, origin.y + py)`.
+- **Every picture has a `shot` id** (`screenshot`, `change_shot`, `fallback_shot`). Pass it as
+  `shot="s3"` to `click`, `move`, `scroll`, `drag` (and the same steps in `batch`) and give
+  `x`, `y` as pixels of that picture, scaled or cropped as it is: ccdesk converts them. The
+  result reports the screen point used (`clicked`) and `from_shot`. A point outside the
+  picture, or an id older than the latest 32, is refused: take a new screenshot.
+- Without `shot`, coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They
+  match a full-scale, full-screen screenshot pixel for pixel.
+- If the screenshot was shown to you downscaled by the host (not by `scale=`), convert back
+  with `screen = seen * (width / displayed_width)`, using `width`/`height` from the result.
 - Click the **center** of a target, not its edge. For a text field, click inside the box,
   well away from the border.
 - `list_windows()` gives window geometry. Use it to sanity-check that a target lies inside
