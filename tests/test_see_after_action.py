@@ -5,6 +5,7 @@ from __future__ import annotations
 import pytest
 
 from ccdesk.errors import ValidationError  # noqa: F401  (used by the shot= tests below)
+from tests.pngutil import read_png
 from tests.test_screen_changes import FIREFOX, WHITE  # noqa: F401
 
 TERMINAL = "0x02000001"
@@ -95,3 +96,119 @@ def test_a_failed_re_read_keeps_the_password_guard(make_desk, fake, helper):
     from ccdesk.errors import PolicyError
     with pytest.raises(PolicyError, match="password"):
         d.type_text("hunter2")
+
+
+# -- a pixel action shows what it changed, once the screen has settled ----------------------------
+
+
+def test_a_pixel_action_that_changed_the_screen_carries_the_picture(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    r = d.click(250, 320)
+    shot = r["change_shot"]
+    assert shot["origin"] == {"x": 176, "y": 280} and shot["approx_tokens"] <= 610
+    assert read_png(shot["path"]).pixel(24, 24) == WHITE
+
+
+def test_no_picture_when_nothing_changed(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    r = d.click(5, 5)
+    assert r["screen_changed"] is False and "change_shot" not in r and "note" not in r
+
+
+@pytest.mark.parametrize("act", [
+    lambda d: d.click(250, 320, show_change=False),
+    lambda d: d.drag(210, 310, 250, 330, show_change=False),
+    lambda d: d.scroll(250, 320, dy=3, show_change=False),
+    lambda d: d.type_text("x", show_change=False),
+    lambda d: d.press_key("Tab", show_change=False),
+    lambda d: d.batch([{"tool": "click", "x": 250, "y": 320}], show_change=False),
+])
+def test_show_change_false_never_attaches_it(make_desk, fake, act):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    r = act(d)
+    assert r["screen_changed"] is True and "change_shot" not in r
+
+
+@pytest.mark.parametrize("act", [
+    lambda d: d.click(250, 320),
+    lambda d: d.drag(210, 310, 250, 330),
+    lambda d: d.scroll(250, 320, dy=3),
+    lambda d: d.type_text("x"),
+    lambda d: d.press_key("Tab"),
+    lambda d: d.batch([{"tool": "click", "x": 250, "y": 320}, {"tool": "press_key", "key": "Tab"}]),
+])
+def test_every_pixel_action_attaches_it_by_default(make_desk, fake, act):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    assert "change_shot" in act(d)
+
+
+def test_on_the_tree_path_there_is_no_picture(make_desk, fake, helper):
+    d = make_desk(screen_diff=True)
+    d.ui_tree()
+    fake.under = FIREFOX
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    helper.nodes["3.0.29.2"]["value"] = "ana@example.org"
+    r = d.click(250, 320)
+    assert "changes" in r and "change_shot" not in r and "screen_changed" not in r
+
+
+def test_the_picture_is_not_stored_in_the_audit_log(make_desk, fake, read_audit):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    d.click(250, 320)
+    entry = read_audit()[-1]
+    assert entry["args"]["show_change"] is None
+    assert set(entry["result"]["change_shot"]) == {"path", "width", "height", "approx_tokens", "origin"}
+    assert len(str(entry)) < 1500
+
+
+def moving_screen(fake, moving_for):
+    """A direct capture that, once the click has painted, changes on each of the next moving_for calls."""
+    state = {"n": 0}
+
+    def gray_grid(region, cell):
+        if not fake.rects:
+            return 10, 4, bytes(40), (0, 0)
+        state["n"] += 1
+        value = 100 if state["n"] > moving_for else (160 if state["n"] % 2 else 120)  # never the same twice
+        gray = bytearray(40)
+        for i in (11, 12, 13):
+            gray[i] = value
+        return 10, 4, bytes(gray), (0, 0)
+
+    fake.gray_grid = gray_grid
+
+
+def test_a_screen_still_moving_at_the_cap_says_so(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    moving_screen(fake, moving_for=10_000)
+    d.click(5, 5, show_change=False)  # learns that captures are direct
+    fake.effects = [(0, 0, 10, 10, WHITE)]
+    r = d.click(5, 5)
+    assert r["screen_changed"] is True and r["settled"] is False and "change_shot" in r
+
+
+def test_a_screen_that_stops_does_not_say_it_is_moving(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    moving_screen(fake, moving_for=20)
+    d.click(5, 5, show_change=False)
+    fake.effects = [(0, 0, 10, 10, WHITE)]
+    r = d.click(5, 5)
+    assert r["screen_changed"] is True and "settled" not in r
+
+
+def test_settling_runs_after_the_seat_is_released(make_desk, fake):
+    from tests.test_seat import RecordingSeat
+
+    d = make_desk(screen_diff=True)
+    seat = d.seat = RecordingSeat()
+    moving_screen(fake, moving_for=10_000)
+    d.click(5, 5, show_change=False)
+    fake.effects = [(0, 0, 10, 10, WHITE)]
+    held, real = [], fake.sleep
+    fake.sleep = lambda s: (held.append(seat.held), real(s))[1]
+    d.click(5, 5)
+    assert len(held) > 30 and not any(held[-30:])  # the long settling poll holds no seat

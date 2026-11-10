@@ -144,13 +144,14 @@ ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
 - **One action, then verify.** After each click, keypress or typed string, read its
   `changes` (with a tree) or take a new screenshot, and confirm the expected change happened
   before you continue. If it didn't, work out why. Don't repeat the action blindly.
-- **Without a tree, pass `show_change=true` and read `screen_changed`.** Actions then report
-  whether the receiving window's pixels changed, and `changed_area` if they did. `false` after
-  a click means it did nothing yet: don't screenshot to find that out, and don't repeat the
-  click blindly. With `show_change=true` (on `click`, `type_text`, `press_key`, `scroll` and
-  `drag`), the answer also shows `change_shot`, a capture of just that area (at most ~600
-  tokens), so you check the result with no screenshot at all. Screenshot only when it isn't
-  enough, and then just `changed_area`, never the whole monitor.
+- **Without a tree, the answer already shows what the action did.** Actions report whether
+  the receiving window's pixels changed (`screen_changed`, and `changed_area` if they did)
+  and attach `change_shot`, a capture of just that area (at most ~600 tokens), taken once the
+  screen has stopped moving. Read it instead of taking a screenshot or a `wait()`. `false`
+  after a click means it did nothing yet: don't repeat it blindly. `settled: false` means the
+  screen was still changing after 1.5 s: call `wait_for_change()`. `show_change=false` (on
+  `click`, `type_text`, `press_key`, `scroll`, `drag`, `batch`) skips the picture. Screenshot
+  only when it isn't enough, and then just `changed_area`, never the whole monitor.
 - **A `hint` in a result means you overpaid.** ccdesk adds one to a screenshot that was much
   bigger than what the last action changed, and to a `wait()` right after an action. Follow it
   from the next call on, not just this once.
@@ -180,7 +181,7 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
   is screen `(px/scale, py/scale)`, plus `origin` for a region.
 - **Act and verify with crops.** Once you know where you are working, screenshot a region
   just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
-  typed value or a toggled checkbox with `show_change=true` or a crop, not the whole monitor.
+  typed value or a toggled checkbox with the action's own `change_shot` or a crop, not the whole monitor.
   A half-scale monitor shot "just to check" is ~700 tokens; doing it after every click is
   what makes a task expensive, because each one stays in context for every later turn.
 - **Full resolution only to read.** Use a full-scale monitor capture when you must read

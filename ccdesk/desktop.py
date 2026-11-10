@@ -55,6 +55,7 @@ OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds the helper watches for a change before an action reports "no change"
 SETTLE_POLL = 0.03  # pause between direct captures while an action's pixel change settles
+MAX_SETTLE = 1.5  # seconds an action that changed the screen waits for it to stop moving
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
@@ -168,6 +169,7 @@ class Desktop:
         # the tree's lines, and whether the latest tree re-read failed (until ui_tree() works again).
         self._pixel_report = False
         self._tree_unreadable = False
+        self._moving = False  # the latest _settled_snapshot() ended with the screen still changing
         self._after: tuple[Region | None, Grid] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
@@ -183,7 +185,7 @@ class Desktop:
         self._busy = threading.RLock()  # one input action of this server at a time, observation included
         self._batching = False  # inside batch(): steps keep the first baseline and re-check password focus
         self._deferring = False  # inside an input action: _changes() leaves the observing to _act
-        self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
+        self._deferred: tuple[dict, bool | None] | None = None  # what _act observes once the seat is free
         # The window layout when the latest screenshot was delivered (see _layout): coordinates
         # taken from that screenshot only hold while it is unchanged. None: nothing to compare with.
         self._layout_seen: tuple | None = None
@@ -321,7 +323,7 @@ class Desktop:
                 self._flush_cursor()
         return result
 
-    def _changes(self, result: dict, show_change: bool = False) -> dict:
+    def _changes(self, result: dict, show_change: bool | None = None) -> dict:
         """What an action changed, filled in by _observe(). Inside an input action it runs after
         _act has released the seat lock; the result dict is filled in place then."""
         if self._deferring:
@@ -329,7 +331,7 @@ class Desktop:
             return result
         return self._observe(result, show_change)
 
-    def _observe(self, result: dict, show_change: bool = False) -> dict:
+    def _observe(self, result: dict, show_change: bool | None = None) -> dict:
         """What the action changed. With a tree of the window it landed in, the lines that changed;
         otherwise (no tree, another window than the tree's, or a tree that can no longer be read)
         whether the receiving window's pixels changed (see _guard and screendiff), and with
@@ -357,7 +359,9 @@ class Desktop:
             result["changes"] = changes
         return result
 
-    def _observe_pixels(self, result: dict, before: tuple, show_change: bool) -> dict:
+    def _observe_pixels(self, result: dict, before: tuple, show_change: bool | None) -> dict:
+        """show_change None (the default): attach the capture of what changed; True: as None, and
+        say so when it cannot be done; False: never."""
         region, grid = before
         after = self._settled_snapshot(region, grid)
         if after is not None:
@@ -367,7 +371,9 @@ class Desktop:
             if box:
                 result["changed_area"] = dict(zip(("x", "y", "width", "height"), box))
                 self._last_area = Region(*box)
-                if show_change:
+                if self._moving:
+                    result["settled"] = False  # still changing: wait_for_change() waits for it to stop
+                if show_change is not False:
                     result["change_shot"] = self._change_shot(Region(*box))
         if show_change and "change_shot" not in result and "screen_changed" not in result:
             result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
@@ -619,9 +625,11 @@ class Desktop:
         return Region(x0, y0, x1 - x0, y1 - y0)
 
     def _settled_snapshot(self, region: Region | None, before: Grid) -> Grid | None:
-        """The screen after an action. With a direct capture (a few tens of ms), return as soon as
-        it differs from before and held still for one more capture, else after SETTLE; with the PNG
-        path (two hundred ms a capture), wait SETTLE and capture once."""
+        """The screen after an action. With a direct capture (a few tens of ms): nothing changed by
+        SETTLE, return it; something changed, keep capturing until two captures in a row are equal,
+        up to MAX_SETTLE, and say in self._moving if it was still moving then. With the PNG path
+        (two hundred ms a capture), wait SETTLE and capture once."""
+        self._moving = False
         if not self._grid_fast:
             self.backend.sleep(SETTLE)
             return self._snapshot(region)
@@ -629,9 +637,16 @@ class Desktop:
         while True:
             self.backend.sleep(SETTLE_POLL)
             cur = self._snapshot(region)
-            if cur is None or self.clock() - start >= SETTLE:
+            if cur is None:
                 return cur
-            if prev is not None and cur.gray == prev.gray and changed_box(before, cur) is not None:
+            elapsed = self.clock() - start
+            if changed_box(before, cur) is None:
+                if elapsed >= SETTLE:
+                    return cur
+            elif prev is not None and cur.gray == prev.gray:
+                return cur
+            elif elapsed >= MAX_SETTLE:
+                self._moving = True
                 return cur
             prev = cur
 
@@ -745,7 +760,7 @@ class Desktop:
             return None
         return (f"the last action changed only {area.x},{area.y},{area.width},{area.height}: "
                 f'region="{crop.x},{crop.y},{crop.width},{crop.height}" shows it for ~{cost} tokens '
-                f"(this one: ~{tokens}), and show_change=true on the action shows it with no screenshot at all")
+                f"(this one: ~{tokens}); the action's own answer shows it already, unless show_change=false")
 
     def _shot_path(self, path: str | None) -> Path:
         if path:
@@ -768,7 +783,7 @@ class Desktop:
                 pass
 
     def click(self, x: int, y: int, button: str = "left", count: int = 1, force: bool = False,
-              expect_title: str | None = None, show_change: bool = False) -> dict:
+              expect_title: str | None = None, show_change: bool | None = None) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -795,7 +810,7 @@ class Desktop:
         return self._act("move", {"x": x, "y": y}, do)
 
     def drag(self, from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400,
-             force: bool = False, show_change: bool = False) -> dict:
+             force: bool = False, show_change: bool | None = None) -> dict:
         def do():
             self._ready()
             x0, y0 = self._point(from_x, from_y)
@@ -811,7 +826,7 @@ class Desktop:
                 "force": force, "show_change": show_change}
         return self._act("drag", args, do)
 
-    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
+    def scroll(self, x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool | None = None) -> dict:
         def do():
             self._ready()
             px, py = self._point(x, y)
@@ -828,7 +843,7 @@ class Desktop:
         return self._act("scroll", {"x": x, "y": y, "dx": dx, "dy": dy, "force": force, "show_change": show_change}, do)
 
     def type_text(self, text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str) or not text:
@@ -866,7 +881,7 @@ class Desktop:
                                          "expect_title": expect_title, "show_change": show_change}, do)
 
     def press_key(self, key: str, modifiers: list[str] | None = None, confirm: bool = False,
-                  force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
+                  force: bool = False, expect_title: str | None = None, show_change: bool | None = None) -> dict:
         def do():
             combo = parse_key_combo(key, modifiers or [])
             self.policy.check_key(combo, bool(confirm))
@@ -1251,7 +1266,7 @@ class Desktop:
             raise ValidationError(f"a batch types at most {MAX_TEXT} characters in all, got {typed}")
         return checked
 
-    def batch(self, steps: list[dict], show_change: bool = False) -> dict:
+    def batch(self, steps: list[dict], show_change: bool | None = None) -> dict:
         """Run several input steps in one call, holding the seat for all of them, and observe only
         the end state. Stops at the first step that fails."""
         checked = self._batch_steps(steps)
