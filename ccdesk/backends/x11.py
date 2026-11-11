@@ -30,6 +30,8 @@ MAX_FAST_PNG = 3_000_000
 # X button numbers for the scroll wheel.
 WHEEL_UP, WHEEL_DOWN, WHEEL_LEFT, WHEEL_RIGHT = 4, 5, 6, 7
 
+TYPE_DELAY_MS = 12  # xdotool type: milliseconds between typed characters
+
 
 class X11Backend(Backend):
     name = "x11"
@@ -204,7 +206,7 @@ class X11Backend(Backend):
                 self._xdotool("key", "--clearmodifiers", "Return")
             if line:
                 # Through stdin: arguments can be read by any process of this user, in /proc/PID/cmdline.
-                self._xdotool("type", "--clearmodifiers", "--delay", "12", "--file", "-", input=line,
+                self._xdotool("type", "--clearmodifiers", "--delay", str(TYPE_DELAY_MS), "--file", "-", input=line,
                               timeout=max(15, len(line) * 0.05 + 5))
 
     def press_key(self, combo: KeyCombo) -> None:
