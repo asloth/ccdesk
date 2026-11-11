@@ -19,7 +19,7 @@ from pathlib import Path
 
 from ccdesk.a11y import NATIVE_ROLES, A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
-from ccdesk.errors import CcdeskError, PolicyError, UnsupportedError, ValidationError
+from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError, UnsupportedError, ValidationError
 from ccdesk.parsing import (
     KeyCombo,
     Region,
@@ -54,6 +54,7 @@ MAX_YIELD = 15.0  # seconds input waits for the user to pause (--yield-ms) befor
 OWN_INPUT_SLACK_MS = 150  # xdotool's events can land this long after it returns
 KEEP_SCREENSHOTS = 200
 SETTLE = 0.3  # seconds the helper watches for a change before an action reports "no change"
+SETTLE_POLL = 0.03  # pause between direct captures while an action's pixel change settles
 KEY_SETTLE = 0.15  # between select-all, the text and Return in type_text
 FOCUS_SETTLE = 0.3  # after a shortcut that moves focus (ctrl+t, ctrl+l, ...)
 SELECT_ALL = KeyCombo("a", ("ctrl",))
@@ -96,6 +97,45 @@ def tree_is_empty(text: str) -> bool:
     return not any(ln.startswith(role + " ") or ln == role for ln in lines for role in ACTIONABLE_ROLES)
 
 
+def describe_layout_change(old: tuple, new: tuple) -> str:
+    """What differs between two _layout() fingerprints, in words a model can act on."""
+    before = {r[0]: r for r in old[1]}
+    after = {r[0]: r for r in new[1]}
+    parts = []
+    if old[0] != new[0]:
+        parts.append(f"screen {old[0]} -> {new[0]}")
+    for label, wids in (("opened", [w for w in after if w not in before]),
+                        ("closed", [w for w in before if w not in after]),
+                        ("moved or restacked", [w for w in after if w in before and before[w][2:] != after[w][2:]]),
+                        ("retitled", [w for w in after if w in before and before[w][1] != after[w][1]
+                                      and before[w][2:] == after[w][2:]])):
+        if wids:
+            rows = [(after.get(w) or before[w]) for w in wids]
+            parts.append(f"{label}: " + ", ".join(f"{r[1]!r} ({r[0]})" for r in rows[:3])
+                         + (f" and {len(rows) - 3} more" if len(rows) > 3 else ""))
+    if old[2] != new[2]:
+        parts.append(f"focus moved to {new[2]}")
+    if old[3] != new[3]:
+        parts.append(f"desktop {old[3]} -> {new[3]}")
+    return "; ".join(parts) or "the layout changed"
+
+
+def empty_page(text: str) -> bool:
+    """A browser window whose web page has no elements: a `document` line with nothing under it.
+    Firefox started before the accessibility bus was on publishes its toolbars and tabs but not
+    the page, so the tree looks full (tens of lines) while what the agent needs is missing."""
+    lines = [ln for ln in text.splitlines() if ln.strip()]
+    for i, ln in enumerate(lines):
+        parts = ln.split(None, 2)
+        if len(parts) < 2 or parts[1] != "document":
+            continue
+        depth = len(ln) - len(ln.lstrip())
+        nxt = lines[i + 1] if i + 1 < len(lines) else ""
+        if not nxt or len(nxt) - len(nxt.lstrip()) <= depth:
+            return True
+    return False
+
+
 class Desktop:
     def __init__(self, backend: Backend | None = None, policy: Policy | None = None,
                  audit: AuditLog | None = None, shots_dir: str | os.PathLike | None = None,
@@ -123,6 +163,7 @@ class Desktop:
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
         self._pending: tuple[Region | None, Grid] | None = None
+        self._grid_fast = False  # the latest _snapshot() read the display directly
         self._after: tuple[Region | None, Grid] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
@@ -139,6 +180,9 @@ class Desktop:
         self._batching = False  # inside batch(): steps keep the first baseline and re-check password focus
         self._deferring = False  # inside an input action: _changes() leaves the observing to _act
         self._deferred: tuple[dict, bool] | None = None  # what _act observes once the seat is free
+        # The window layout when the latest screenshot was delivered (see _layout): coordinates
+        # taken from that screenshot only hold while it is unchanged. None: nothing to compare with.
+        self._layout_seen: tuple | None = None
 
     # -- plumbing -------------------------------------------------------------
 
@@ -290,8 +334,7 @@ class Desktop:
             before, self._pending = self._pending, None
             if before is not None:
                 region, grid = before
-                self.backend.sleep(SETTLE)
-                after = self._snapshot(region)
+                after = self._settled_snapshot(region, grid)
                 if after is not None:
                     self._after = (region, after)
                     box = changed_box(grid, after)
@@ -407,10 +450,12 @@ class Desktop:
         return False
 
     def _guard(self, force: bool, point: tuple[int, int] | None = None,
-               expect_title: str | None = None) -> Window | None:
+               expect_title: str | None = None, layout: bool = False) -> Window | None:
         """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
         because the user switched to their terminal, or when the receiving window's title lacks
         expect_title (a browser tab: the window stays the same when the user switches tabs).
+        With layout=True (input at coordinates taken from a screenshot), also refuse when the
+        window layout changed since that screenshot.
         Returns the receiving window for the result, and keeps a small copy of it for _changes()
         to compare with afterwards."""
         if expect_title is not None and (not isinstance(expect_title, str) or not expect_title.strip()):
@@ -453,6 +498,8 @@ class Desktop:
                 raise PolicyError(f"{window.title!r} ({window.id}) does not contain {expect_title.strip()!r}: "
                                   f"the user may have switched tabs. Take a screenshot, switch back, then retry")
         self._after = None  # wait_for_change() compares with the screen after this action, not before
+        if layout and not force:
+            self._check_layout(list(windows.values()) if windows else None, window or target)
         if self._batching and self._pending is not None:
             return window  # a batch is compared with the screen before its first step
         self._pending = None
@@ -461,6 +508,63 @@ class Desktop:
             grid = self._snapshot(region)
             self._pending = (region, grid) if grid is not None else None
         return window
+
+    def _layout(self, windows: list[Window] | None = None) -> tuple | None:
+        """A fingerprint of what is on screen: its size, every window's id, title, geometry and
+        place in the backend's list, the active window and the desktop. None if the backend
+        cannot tell (then nothing is checked)."""
+        try:
+            if windows is None:
+                windows = self.backend.list_windows()
+            active = self.backend.active_window()
+            desktop = self.backend.current_desktop()
+        except (CcdeskError, AttributeError):
+            return None
+        rows = tuple(sorted((w.id, w.title, w.x, w.y, w.width, w.height, i) for i, w in enumerate(windows)))
+        return (self.screen_size(), rows, active, desktop)
+
+    @staticmethod
+    def _geometry(layout: tuple) -> tuple:
+        """The layout without any title: pages retitle their window as they load, and that does not
+        move a single pixel, so it must not invalidate coordinates."""
+        size, rows, active, desktop = layout
+        return (size, tuple((r[0], *r[2:]) for r in rows), active, desktop)
+
+    def _check_layout(self, windows: list[Window] | None, receiver: Window | None) -> None:
+        """Refuse coordinate input, before sending anything, when the windows moved, opened, closed,
+        restacked or changed focus since the latest screenshot. A fresh screenshot comes with it."""
+        seen = self._layout_seen
+        if seen is None or windows is None:
+            return
+        now = self._layout(windows)
+        if now is None:
+            return
+        if self._target is not None and now[2] == self._target.id:
+            # Focus came back to our own activate_window() window, e.g. another agent on this
+            # screen had it when the screenshot was taken and _guard just took it back: the
+            # receiver check already ensures the input lands there, so focus alone is no reason.
+            seen = (seen[0], seen[1], now[2], seen[3])
+        if self._geometry(seen) == self._geometry(now):
+            return
+        what = describe_layout_change(seen, now)
+        fresh = self._fresh_screenshot(now)
+        see = (f"Read the fresh screenshot {fresh} and plan again" if fresh
+               else "Take a screenshot and plan again")
+        raise StaleFrameError(f"the window layout changed since the latest screenshot ({what}), so its "
+                              f"coordinates may now hit something else. {see} (do not reuse the old "
+                              f"coordinates), or pass force=true to send it anyway")
+
+    def _fresh_screenshot(self, layout: tuple) -> str | None:
+        """Full-screen screenshot for a gui_frame_stale refusal; it becomes the latest delivered one."""
+        try:
+            out = self._shot_path(None)
+            self.backend.screenshot(str(out), None)
+        except (CcdeskError, OSError):
+            return None
+        if not out.exists():
+            return None
+        self._layout_seen = layout
+        return str(out)
 
     def _with_window(self, result: dict, window: Window | None) -> dict:
         if window:
@@ -482,10 +586,32 @@ class Desktop:
             return None
         return Region(x0, y0, x1 - x0, y1 - y0)
 
+    def _settled_snapshot(self, region: Region | None, before: Grid) -> Grid | None:
+        """The screen after an action. With a direct capture (a few tens of ms), return as soon as
+        it differs from before and held still for one more capture, else after SETTLE; with the PNG
+        path (two hundred ms a capture), wait SETTLE and capture once."""
+        if not self._grid_fast:
+            self.backend.sleep(SETTLE)
+            return self._snapshot(region)
+        start, prev = self.clock(), None
+        while True:
+            self.backend.sleep(SETTLE_POLL)
+            cur = self._snapshot(region)
+            if cur is None or self.clock() - start >= SETTLE:
+                return cur
+            if prev is not None and cur.gray == prev.gray and changed_box(before, cur) is not None:
+                return cur
+            prev = cur
+
     def _snapshot(self, region: Region | None) -> Grid | None:
         """A grayscale copy of the screen at 1/DIFF_CELL size, or None (no ImageMagick, or it failed)."""
         if not self.screen_diff:
             return None
+        fast = self.backend.gray_grid(region, DIFF_CELL)
+        self._grid_fast = fast is not None
+        if fast is not None:
+            cols, rows, gray, origin = fast
+            return Grid(cols, rows, gray, origin, scale=(float(DIFF_CELL), float(DIFF_CELL)))
         fd, tmp = tempfile.mkstemp(prefix="ccdesk-diff-", suffix=".png")
         os.close(fd)
         try:
@@ -530,6 +656,8 @@ class Desktop:
             self.backend.screenshot(str(out), reg)
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
+            # Coordinates measured on this picture are only valid while the layout holds.
+            self._layout_seen = self._layout()
             width, height = png_size(out)
             if factor < 1:
                 self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
@@ -614,7 +742,7 @@ class Desktop:
             px, py = self._point(x, y)
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
-            window = self._guard(force, (px, py), expect_title)
+            window = self._guard(force, (px, py), expect_title, layout=True)
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "button": button, "count": n},
@@ -641,7 +769,7 @@ class Desktop:
             x0, y0 = self._point(from_x, from_y)
             x1, y1 = self._point(to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
-            window = self._guard(force, (x0, y0))
+            window = self._guard(force, (x0, y0), layout=True)
             self.backend.drag(x0, y0, x1, y1, ms)
             self._show_cursor(x1, y1)
             return self._changes(self._with_window({"from": {"x": x0, "y": y0}, "to": {"x": x1, "y": y1},
@@ -660,7 +788,7 @@ class Desktop:
             if not sx and not sy:
                 raise ValidationError("dx and dy are both 0; nothing to scroll. Pass dy=3 to scroll down, dy=-3 up, "
                                       "dx=3 right (there is no direction or amount argument)")
-            window = self._guard(force, (px, py))
+            window = self._guard(force, (px, py), layout=True)
             self.backend.scroll(px, py, sx, sy)
             self._show_cursor(px, py)
             return self._changes(self._with_window({"at": {"x": px, "y": py}, "dx": sx, "dy": sy}, window), show_change)
@@ -755,6 +883,8 @@ class Desktop:
             self._yielded = self._yield_to_user()
             self.backend.activate_window(window)
             self._target = window  # input tools now refuse to go anywhere else (see _guard)
+            # Raising a window restacks and refocuses: any screenshot taken before this is stale.
+            self._layout_seen = None
             result = self._with_window({"activated": window.to_dict()}, None)
             note = self.backend.take_note()
             if note:
@@ -864,7 +994,12 @@ class Desktop:
             if self.backend.name in ("wayland", "kde") and "origin" not in result:
                 result["note"] = ("on Wayland, @x,y may be relative to the window (this compositor does "
                                   "not say where it is); verify with a screenshot")
-            if shot_fallback and not q and tree_is_empty(text):
+            thin = tree_is_empty(text)
+            blank_page = not thin and empty_page(text)
+            if shot_fallback and not q and (thin or blank_page):
+                why = ("the web page in it has no tree (a browser started before the accessibility "
+                       "bus was on shows only its toolbars; restarting the browser fixes it)"
+                       if blank_page else "the tree is nearly empty")
                 try:
                     result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
                 except (CcdeskError, OSError, ValueError):
@@ -872,7 +1007,7 @@ class Desktop:
                 else:
                     self.a11y.forget()  # nothing to compare: actions report pixel changes instead
                     result["note"] = " ".join(filter(None, [result.get("note"),
-                                                            f"the tree is nearly empty. {TREE_SHOT_NOTE}"]))
+                                                            f"{why}. {TREE_SHOT_NOTE}"]))
             return result
 
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
@@ -911,7 +1046,7 @@ class Desktop:
         # A headless screen has its own bus, and the apps on it are started with accessibility on.
         enabled = bus_enabled(self.backend.try_run) if self.headless is None else None
         return (f"{win.title!r} ({win.wm_class}) is not on the accessibility bus (on the bus: {on_bus}): "
-                f"{missing_hint(win.wm_class, enabled)}. Until then, work from screenshots")
+                f"{missing_hint(win.wm_class, enabled, self.backend.window_role(win.id))}. Until then, work from screenshots")
 
     def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False,
                       expect_title: str | None = None) -> dict:

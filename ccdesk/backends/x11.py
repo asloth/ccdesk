@@ -68,6 +68,15 @@ class X11Backend(Backend):
             return []
         return parse_xrandr_monitors(self.try_run(["xrandr", "--listmonitors"]) or "")
 
+    def gray_grid(self, region: Region | None, cell: int):
+        if not self._real_tools or not self.env.get("DISPLAY"):
+            return None
+        grab = getattr(self, "_xgrab", None)
+        if grab is None:
+            from ccdesk.backends.xgrab import XGrab
+            grab = self._xgrab = XGrab(self.env["DISPLAY"])
+        return grab.gray(region, cell)
+
     def screenshot(self, path: str, region: Region | None) -> None:
         attempts = []
         if self.which("scrot"):
@@ -281,6 +290,13 @@ class X11Backend(Backend):
         m = re.search(r"_NET_CURRENT_DESKTOP\(CARDINAL\) = (\d+)",
                       self.try_run(["xprop", "-root", "_NET_CURRENT_DESKTOP"]) or "")
         return int(m.group(1)) if m else None
+
+    def window_role(self, window_id: str) -> str | None:
+        if not self.which("xprop"):
+            return None
+        m = re.search(r'WM_WINDOW_ROLE\(STRING\) = "([^"]*)"',
+                      self.try_run(["xprop", "-id", window_id, "WM_WINDOW_ROLE"]) or "")
+        return m.group(1) if m else None
 
     def idle_ms(self) -> int | None:
         # The MIT-SCREEN-SAVER extension's idle counter; xdotool's synthetic events reset it too.

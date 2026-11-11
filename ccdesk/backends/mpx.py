@@ -23,6 +23,7 @@ import subprocess
 import threading
 import time
 
+from ccdesk.backends import xerror
 from ccdesk.errors import CcdeskError, UnsupportedError, ValidationError
 from ccdesk.parsing import KeyCombo
 from ccdesk.seat import _screen_key, lock_dir
@@ -145,11 +146,6 @@ def unavailable_reason(backend_name: str, which=shutil.which) -> str | None:
     return None
 
 
-class _XErrorEvent(C.Structure):
-    _fields_ = [("type", C.c_int), ("display", C.c_void_p), ("resourceid", C.c_ulong), ("serial", C.c_ulong),
-                ("error_code", C.c_ubyte), ("request_code", C.c_ubyte), ("minor_code", C.c_ubyte)]
-
-
 class Libs:
     """The three libraries with every signature declared."""
 
@@ -205,7 +201,6 @@ class Mpx:
         self._root = 0
         self._slaves: dict[str, int] = {}  # "pointer"/"keyboard" -> XDevice*
         self._error: str | None = None
-        self._handler = None
         self._closed = True
         self._spare_lock = threading.Lock()
         self.name_lock = NameLock(self.env, agent)
@@ -279,14 +274,7 @@ class Mpx:
         if not self._dpy:
             raise CcdeskError(f"cannot open display {display}")
         # Xlib's default error handler exits the process; a bad window id must be an error instead.
-        proto = C.CFUNCTYPE(C.c_int, C.c_void_p, C.POINTER(_XErrorEvent))
-
-        def on_error(_dpy, ev):
-            self._error = f"X error {ev.contents.error_code} in request {ev.contents.request_code}"
-            return 0
-
-        self._handler = proto(on_error)
-        libs.x.XSetErrorHandler(C.cast(self._handler, C.c_void_p))
+        xerror.register(libs.x, self._dpy, self._on_error)
         self._root = libs.x.XDefaultRootWindow(self._dpy)
         for kind in ("pointer", "keyboard"):
             dev = libs.xi.XOpenDevice(self._dpy, self.ids[f"slave_{kind}"])
@@ -294,6 +282,9 @@ class Mpx:
                 raise CcdeskError(f"cannot open {self.name} XTEST {kind}")
             self._slaves[kind] = dev
         self._sync()
+
+    def _on_error(self, message: str) -> None:
+        self._error = message
 
     def close(self) -> None:
         # From a signal handler while a worker types, wait a moment and then go on without the lock:
@@ -332,6 +323,7 @@ class Mpx:
         self.name_lock.release()
         try:
             if libs and self._dpy:
+                xerror.unregister(self._dpy)
                 libs.x.XCloseDisplay(self._dpy)
         except Exception:
             pass

@@ -111,11 +111,14 @@ settings or hooks, three runs per arm. Input tokens processed, median:
 
 ## Wiring it into Claude Code
 
-`ccdesk install` does two things:
+`ccdesk install` does three things:
 
-1. Copies `skills/computer-use/SKILL.md` to `~/.claude/skills/computer-use/SKILL.md`
-   (or `$CLAUDE_CONFIG_DIR/skills/...`).
-2. Runs `claude mcp add --scope user ccdesk -- /path/to/ccdesk mcp`, after removing any
+1. Copies `skills/computer-use/SKILL.md` to `~/.agents/skills/computer-use/SKILL.md`, the shared
+   skills folder that opencode, Codex and other agents read, so every harness gets the same file.
+2. Links `~/.claude/skills/computer-use` (or `$CLAUDE_CONFIG_DIR/skills/...`) to that folder. A
+   copy left by an older `ccdesk install` is replaced by the link. Anything else already there, a
+   link of your own or a folder with other files, is left alone, and install says so.
+3. Runs `claude mcp add --scope user ccdesk -- /path/to/ccdesk mcp`, after removing any
    earlier `ccdesk` registration.
 
 Flags you pass to `install` are forwarded to the server: `ccdesk install --read-only`,
@@ -129,17 +132,21 @@ prints the exact file, size, checksum and commands, and changes nothing:
 $ ccdesk install --dry-run
 ccdesk install --dry-run (nothing is written)
 
-[1] would write /home/hermes/.claude/skills/computer-use/SKILL.md
+[1] would write /home/hermes/.agents/skills/computer-use/SKILL.md
     6198 bytes, sha256 b0dbc9581ca05b94…, copied from /home/hermes/Projects/ccdesk/skills/computer-use/SKILL.md
-[2] would run: claude mcp remove --scope user ccdesk   # ignored if not registered yet
-[3] would run: claude mcp add --scope user ccdesk -- /home/hermes/Projects/ccdesk/.venv/bin/ccdesk mcp
+    the shared skills folder: opencode, Codex and other agents read it
+[2] would link /home/hermes/.claude/skills/computer-use -> /home/hermes/.agents/skills/computer-use
+[3] would run: claude mcp remove --scope user ccdesk   # ignored if not registered yet
+[4] would run: claude mcp add --scope user ccdesk -- /home/hermes/Projects/ccdesk/.venv/bin/ccdesk mcp
 ```
 
 To wire it by hand instead:
 
 ```sh
 claude mcp add --scope user ccdesk -- ccdesk mcp
-mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.claude/skills/computer-use/
+mkdir -p ~/.agents/skills/computer-use ~/.claude/skills
+cp skills/computer-use/SKILL.md ~/.agents/skills/computer-use/
+ln -s ../../.agents/skills/computer-use ~/.claude/skills/computer-use
 ```
 
 Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
@@ -178,13 +185,8 @@ removes this setting. Keep the command it wrote, with its full path:
 opencode's default, Code Mode, has the model call tools from code. ccdesk's loop relies on each
 result and screenshot reaching the model directly, so `codemode: false` is the recommended setting.
 
-opencode already reads the skill from `~/.claude/skills`, so `ccdesk install` covers it. Without
-Claude Code, copy it yourself:
-
-```sh
-mkdir -p ~/.config/opencode/skills/computer-use
-cp skills/computer-use/SKILL.md ~/.config/opencode/skills/computer-use/
-```
+opencode reads skills from `~/.agents/skills`, so `ccdesk install` covers it, with or without
+Claude Code on the machine.
 
 To restrict the tools, opencode's permission rules match them as `ccdesk_<tool>`.
 
@@ -505,8 +507,16 @@ Without a tree (apps that don't publish one, or the bus switched off), `click`, 
 from before and after the action and return `screen_changed` and, if it changed,
 `changed_area`. A blinking text caret doesn't count. "Save did nothing" is then one call
 instead of a wait and two screenshots, and `wait_for_change()` replaces fixed `wait()`s for
-pages and dialogs. Each comparison costs about 0.2 s per capture (ImageMagick does the
-shrinking; without it the fields are left out).
+pages and dialogs. On X11 ccdesk reads the window straight from the X server (`XGetImage`
+through ctypes) and averages it itself: about 40 ms per capture on a 1912x1023 window, against
+220 ms for `import`, which copies the whole screen and leaves the shrinking to ImageMagick. With
+that fast capture, the after-capture is taken as soon as the window has changed and held still
+for one more capture, rather than after a fixed 0.3 s. A click on a 3840x1080 dual-monitor screen went
+from 0.85 s to 0.57 s. Other backends still use ImageMagick (without it the fields are left out).
+
+A browser started before the accessibility bus was switched on publishes its toolbars and tabs
+but an empty page. `ui_tree()` counts that as no tree, attaches `fallback_shot` and says to
+restart the browser.
 
 <a id="without-a-tree"></a>`show_change=true` on those same actions also puts a capture of
 `changed_area` (padded 24 px, scaled down to about 600 tokens at most) in the answer as
@@ -722,7 +732,7 @@ your `PATH`, `doctor` mentions it, but ccdesk never calls it.
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
-pip install -e '.[test]'
+pip install -e '.[test]'      # or, with uv: uv run pytest -q
 xvfb-run -a pytest -q        # unit tests + Tk integration test on a virtual X server
 pytest -q                    # without a display the integration tests are skipped
 xvfb-run -a ccdesk doctor
@@ -755,8 +765,8 @@ ccdesk/
   safety.py       read-only / launch policy, destructive keys, JSONL audit log
   parsing.py      pure parsers: keys, regions, wmctrl/xdotool output, PNG header
   doctor.py       environment report
-  install.py      Claude Code registration and skill copy
-  backends/       x11.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
+  install.py      Claude Code registration, shared skill copy and link
+  backends/       x11.py, x11_own.py, mpx.py, xgrab.py, xerror.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
 skills/computer-use/SKILL.md
 tests/
 ```
