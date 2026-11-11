@@ -195,3 +195,68 @@ def test_a_second_agent_with_the_same_name_is_refused_and_leftovers_of_dead_ones
     finally:
         first.close()
     assert devices(env) == []
+
+
+def test_an_agent_keeps_its_picture_when_others_move_and_never_takes_the_users_focus(screen, tmp_path):
+    """Rule D: a third window opening and moving does not stale agent 1's screenshot. Rule A: with
+    its window on another desktop its click is refused, and the user's focus and desktop stay put."""
+    from ccdesk.backends.x11_own import OwnPointerBackend
+    from ccdesk.desktop import Desktop
+    from ccdesk.errors import PolicyError
+    from ccdesk.safety import AuditLog
+
+    hl, env, procs = screen
+    if hl.info().get("window_manager") != "bspwm" or not shutil.which("bspc"):
+        pytest.skip("needs bspwm as the headless window manager (its desktops hide windows)")
+    backend = X11Backend(env=env)
+
+    def open_app(name: str) -> tuple[str, Path]:
+        f = tmp_path / f"{name}.txt"
+        procs.append(subprocess.Popen(["/usr/bin/python3", str(BUTTON_APP), str(f), f"BTN-{name}"],
+                                      env=dict(env, GDK_BACKEND="x11")))
+        wid = wait_for(lambda: next((w.id for w in backend.list_windows() if w.title == f"BTN-{name}"), None))
+        wait_for(f.exists)
+        return wid, f
+
+    def place(wid: str, x: int, y: int) -> None:
+        backend.move_window(next(w for w in backend.list_windows() if w.id == wid), x, y)
+        time.sleep(0.4)
+
+    a, file_a = open_app("A")
+    b, _ = open_app("B")
+    place(a, 50, 100)
+    place(b, 700, 100)
+    mpx = Mpx("grd", env)
+    mpx.create()
+    try:
+        desk = Desktop(backend=OwnPointerBackend(mpx, env=env), agent="grd",
+                       audit=AuditLog(tmp_path / "audit.log"), shots_dir=tmp_path / "shots", screen_diff=False)
+        bspc(env, "node", b, "-f")  # the user is working in B
+        time.sleep(0.3)
+        user_focus = core_focus(env)
+        desk.activate_window(a)
+        shot = desk.screenshot(window="BTN-A")
+        win_a = next(w for w in backend.list_windows() if w.id == a)
+        cx, cy = win_a.width // 2, win_a.height // 2  # in the picture's own pixels
+        c, _ = open_app("C")  # a third window opens, and is moved: the old layout is gone
+        place(c, 900, 500)
+        r = desk.click(cx, cy, shot=shot["shot"])
+        assert "clicked" in r
+        wait_for(lambda: file_a.read_text() == "CLICKED 1")
+        # Now agent 1's window goes to another desktop.
+        before_desktop = bspc(env, "query", "-D", "-d", "focused")
+        bspc(env, "monitor", "-a", "elsewhere")
+        bspc(env, "node", a, "-d", "elsewhere")
+        time.sleep(0.5)
+        user_focus = core_focus(env)
+        focused_node = bspc(env, "query", "-N", "-n", "focused")
+        with pytest.raises(PolicyError) as exc:
+            desk.click(cx, cy, shot=shot["shot"])
+        assert exc.value.code == "gui_target_hidden"
+        time.sleep(0.4)
+        assert file_a.read_text() == "CLICKED 1"
+        assert core_focus(env) == user_focus
+        assert bspc(env, "query", "-N", "-n", "focused") == focused_node
+        assert bspc(env, "query", "-D", "-d", "focused") == before_desktop  # the user's desktop did not change
+    finally:
+        mpx.close()
