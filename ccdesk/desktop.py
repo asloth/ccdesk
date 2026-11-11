@@ -21,7 +21,16 @@ from pathlib import Path
 
 from ccdesk.a11y import NATIVE_ROLES, A11y, WindowNotFound, bus_enabled, missing_hint
 from ccdesk.backends import Backend, get_backend
-from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError, UnsupportedError, ValidationError
+from ccdesk.errors import (
+    CcdeskError,
+    PolicyError,
+    StaleFrameError,
+    TargetCoveredError,
+    TargetHiddenError,
+    TargetRequiredError,
+    UnsupportedError,
+    ValidationError,
+)
 from ccdesk.parsing import (
     KeyCombo,
     Region,
@@ -48,6 +57,8 @@ MAX_WAIT = 300.0
 MAX_WAIT_FOR_CHANGE = 300.0
 BATCH_TOOLS = ("click_element", "set_value", "type_text", "press_key", "click", "scroll", "move", "drag",
                "activate_window", "wait")
+# What an agent (--agent) may only do once it has chosen its window with activate_window().
+NEEDS_TARGET = frozenset({"click", "drag", "scroll", "type_text", "press_key", "click_element", "set_value"})
 MAX_BATCH_STEPS = 20
 MAX_BATCH_WAIT = 5.0  # seconds per wait step: the seat is held meanwhile
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
@@ -195,6 +206,10 @@ class Desktop:
         # The latest MAX_SHOTS pictures handed out: id -> (origin x, y, scale x, y, width, height), so
         # click(shot=...) can turn a picture's own pixels into screen pixels.
         self._shots: OrderedDict[str, tuple] = OrderedDict()
+        # The layout fingerprint (see _layout) each of those pictures was taken in, by id. A picture
+        # whose layout is unknown (None, or absent) is not checked.
+        self._shot_layouts: dict[str, tuple | None] = {}
+        self._note: str | None = None  # what the backend said while _guard took the agent's window back
         self._shot_count = 0
         self._shots_lock = threading.Lock()
 
@@ -387,15 +402,18 @@ class Desktop:
             result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
         return result
 
-    def _remember_shot(self, origin: tuple[int, int], size: tuple[int, int], shown: tuple[int, int]) -> str:
-        """Give a picture an id and keep what turns its pixels into screen pixels. size is the
-        capture's size on screen, shown the size of the picture handed out."""
+    def _remember_shot(self, origin: tuple[int, int], size: tuple[int, int], shown: tuple[int, int],
+                       layout: tuple | None = None) -> str:
+        """Give a picture an id and keep what turns its pixels into screen pixels, and the layout it
+        was taken in (None: unknown). size is the capture's size on screen, shown the size of the
+        picture handed out."""
         with self._shots_lock:
             self._shot_count += 1
             sid = f"s{self._shot_count}"
             self._shots[sid] = (*origin, shown[0] / size[0], shown[1] / size[1], *shown)
+            self._shot_layouts[sid] = layout
             while len(self._shots) > MAX_SHOTS:
-                self._shots.popitem(last=False)
+                self._shot_layouts.pop(self._shots.popitem(last=False)[0], None)
         return sid
 
     def _from_shot(self, shot, x, y) -> tuple[int, int]:
@@ -454,7 +472,7 @@ class Desktop:
         if factor < 1:
             self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
             width, height = png_size(out)
-        sid = self._remember_shot((reg.x, reg.y), full, (width, height))
+        sid = self._remember_shot((reg.x, reg.y), full, (width, height), self._layout())
         return ({"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
                  "origin": {"x": reg.x, "y": reg.y}, "shot": sid}, factor)
 
@@ -519,17 +537,39 @@ class Desktop:
                 return False
         return False
 
+    def _need_target(self) -> None:
+        """An agent works in the window it chose: without one its input would go to whatever the
+        user has in front. Not overridden by force."""
+        if self.agent and self._target is None:
+            raise TargetRequiredError("this agent has no window yet, so its input would reach the user's: call "
+                                      "list_windows(), then activate_window() on your own window first "
+                                      "(force=true does not change this)")
+
+    def _hidden(self, window: Window) -> bool:
+        """Whether the window is minimized or on another desktop, which is when showing it takes
+        the window manager (and so the user's focus). The same test the own-pointer backend uses."""
+        try:
+            if self.backend.window_on_show(window.id) is False:
+                return True
+            desktop = self.backend.current_desktop()
+        except CcdeskError:
+            return False
+        return (window.desktop is not None and window.desktop >= 0
+                and desktop not in (None, window.desktop))
+
     def _guard(self, force: bool, point: tuple[int, int] | None = None,
-               expect_title: str | None = None, layout: bool = False) -> Window | None:
+               expect_title: str | None = None, layout: bool = False, shot: str | None = None) -> Window | None:
         """Refuse input when focus moved away from the window of the latest activate_window(), e.g.
         because the user switched to their terminal, or when the receiving window's title lacks
         expect_title (a browser tab: the window stays the same when the user switches tabs).
-        With layout=True (input at coordinates taken from a screenshot), also refuse when the
-        window layout changed since that screenshot.
+        With layout=True (input at coordinates taken from a screenshot, or from `shot`), also refuse
+        when the window layout changed since that picture. An agent (--agent) is also refused
+        without a window of its own, and never asks the window manager to show its window.
         Returns the receiving window for the result, and keeps a small copy of it for _changes()
         to compare with afterwards."""
         if expect_title is not None and (not isinstance(expect_title, str) or not expect_title.strip()):
             raise ValidationError("expect_title must be a non-empty string, or left out")
+        self._need_target()
         self._yielded = self._yield_to_user()  # first: focus may move while the user finishes
         try:
             windows = {w.id: w for w in self.backend.list_windows()}
@@ -544,18 +584,40 @@ class Desktop:
                    f"{window.title!r} ({window.id}), and " if window is not None else "")
             raise PolicyError(f"{who}the window from activate_window() ({target.title!r}, {target.id}) is "
                               f"gone; call list_windows() and activate_window() again, or pass force=true")
-        if (self.agent and target and not force and window is not None and target.id in windows
-                and not self._belongs_to_target(window)):
-            # Another agent on this screen moved focus or raised its window over ours. We hold the
-            # seat lock, so take our window back and check again.
-            self.backend.activate_window(target)
-            window = self._receiver(windows, point)
+        hidden = None  # whether the agent's window is off screen, once it matters
+        if self.agent and target and not force and target.id in windows:
+            away = window is not None and not self._belongs_to_target(window)
+            if away or (self.backend.own_pointer and point is not None):
+                hidden = self._hidden(windows[target.id])
+            if hidden and self.backend.own_pointer:
+                # Showing it goes through the window manager, which takes the user's keyboard focus
+                # and can switch their desktop: only activate_window() does that, on purpose.
+                raise TargetHiddenError(
+                    f"your window from activate_window() ({target.title!r}, {target.id}) is minimized or on "
+                    f"another desktop, so nothing was sent. activate_window({target.id!r}) would bring it onto "
+                    f"the user's screen and take their keyboard focus once: do that only if the task needs it")
+            if away:
+                # Another agent on this screen moved focus or raised its window over ours. We hold the
+                # seat lock, so take our window back and check again. With an own pointer that is only
+                # this agent's keyboard (the window is on show here); without one it is the shared focus.
+                self.backend.activate_window(windows[target.id])
+                note = self.backend.take_note()
+                if note:
+                    self._note = note
+                window = self._receiver(windows, point)
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
             if target.id not in windows:
                 raise PolicyError(f"{what} {window.title!r} ({window.id}), and the window from "
                                   f"activate_window() ({target.title!r}, {target.id}) is gone; call "
                                   f"list_windows() and activate_window() again, or pass force=true")
+            if self.agent and point is not None and hidden is False:
+                raise TargetCoveredError(
+                    f"the point {point[0]},{point[1]} of your window {target.title!r} ({target.id}) is covered "
+                    f"by {window.title!r} ({window.id}), which belongs to the user or another agent. Do not "
+                    f"raise your window: use click_element() (it reaches a covered window when the app has an "
+                    f"accessibility tree) or the keyboard, or wait() and retry; force=true sends the click "
+                    f"anyway")
             raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
                               f"activate_window(): the user may have switched windows. Call "
                               f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
@@ -569,7 +631,7 @@ class Desktop:
                                   f"the user may have switched tabs. Take a screenshot, switch back, then retry")
         self._after = None  # wait_for_change() compares with the screen after this action, not before
         if layout and not force:
-            self._check_layout(list(windows.values()) if windows else None, window or target)
+            self._check_layout(list(windows.values()) if windows else None, window or target, shot)
         # The tree answers for an action only when it lands in the tree's window and can be read;
         # anything else is reported from the pixels, so a stale tree never hides the result.
         pixels = self.a11y._last is None or self._tree_unreadable or not self._in_trees_window(window)
@@ -596,7 +658,10 @@ class Desktop:
     def _layout(self, windows: list[Window] | None = None) -> tuple | None:
         """A fingerprint of what is on screen: its size, every window's id, title, geometry and
         place in the backend's list, the active window and the desktop. None if the backend
-        cannot tell (then nothing is checked)."""
+        cannot tell (then nothing is checked). For an agent (--agent) only its own window
+        counts, see _agent_layout."""
+        if self.agent:
+            return self._agent_layout(windows)
         try:
             if windows is None:
                 windows = self.backend.list_windows()
@@ -607,6 +672,24 @@ class Desktop:
         rows = tuple(sorted((w.id, w.title, w.x, w.y, w.width, w.height, i) for i, w in enumerate(windows)))
         return (self.screen_size(), rows, active, desktop)
 
+    def _agent_layout(self, windows: list[Window] | None = None) -> tuple | None:
+        """What an agent's coordinates depend on: ("agent", its window's id, the screen size, the
+        window's box or None if it is not listed, whether it is on show). Other windows, focus and
+        the current desktop are the user's business; the receiver check refuses when something covers
+        the point. None without a window of its own, or when the backend cannot tell."""
+        target = self._target
+        if target is None:
+            return None
+        try:
+            if windows is None:
+                windows = self.backend.list_windows()
+            now = next((w for w in windows if w.id == target.id), None)
+            on_show = now is not None and not self._hidden(now)
+        except (CcdeskError, AttributeError):
+            return None
+        box = (now.x, now.y, now.width, now.height) if now is not None else None
+        return ("agent", target.id, self.screen_size(), box, on_show)
+
     @staticmethod
     def _geometry(layout: tuple) -> tuple:
         """The layout without any title: pages retitle their window as they load, and that does not
@@ -614,14 +697,21 @@ class Desktop:
         size, rows, active, desktop = layout
         return (size, tuple((r[0], *r[2:]) for r in rows), active, desktop)
 
-    def _check_layout(self, windows: list[Window] | None, receiver: Window | None) -> None:
+    def _check_layout(self, windows: list[Window] | None, receiver: Window | None,
+                      shot: str | None = None) -> None:
         """Refuse coordinate input, before sending anything, when the windows moved, opened, closed,
-        restacked or changed focus since the latest screenshot. A fresh screenshot comes with it."""
-        seen = self._layout_seen
+        restacked or changed focus since the picture the coordinates come from: `shot` if given, else
+        the latest screenshot. A fresh screenshot comes with it. For an agent, see _agent_layout."""
+        with self._shots_lock:
+            seen = self._layout_seen if shot is None else self._shot_layouts.get(shot)
         if seen is None or windows is None:
             return
         now = self._layout(windows)
         if now is None:
+            return
+        since = "the latest screenshot" if shot is None else f"picture {shot}"
+        if self.agent:
+            self._check_agent_layout(seen, now, windows, since)
             return
         if self._target is not None and now[2] == self._target.id:
             # Focus came back to our own activate_window() window, e.g. another agent on this
@@ -634,15 +724,43 @@ class Desktop:
         fresh = self._fresh_screenshot(now)
         see = (f"Read the fresh screenshot {fresh} and plan again" if fresh
                else "Take a screenshot and plan again")
-        raise StaleFrameError(f"the window layout changed since the latest screenshot ({what}), so its "
+        raise StaleFrameError(f"the window layout changed since {since} ({what}), so its "
                               f"coordinates may now hit something else. {see} (do not reuse the old "
                               f"coordinates), or pass force=true to send it anyway")
 
-    def _fresh_screenshot(self, layout: tuple) -> str | None:
-        """Full-screen screenshot for a gui_frame_stale refusal; it becomes the latest delivered one."""
+    def _check_agent_layout(self, seen: tuple, now: tuple, windows: list[Window], since: str) -> None:
+        """The agent's picture is stale when its window moved, was resized, went off screen or the
+        screen changed size. The fresh picture is of that window's region, never of the whole screen."""
+        if seen[1] != now[1] or seen == now:
+            return  # a picture taken for another window of this agent, or nothing changed
+        parts = []
+        if seen[2] != now[2]:
+            parts.append(f"screen {seen[2]} -> {now[2]}")
+        if seen[3] != now[3]:
+            parts.append(f"it moved or was resized: {self._box_text(seen[3])} -> {self._box_text(now[3])}")
+        if seen[4] != now[4]:
+            parts.append("it is now on show" if now[4] else "it is no longer on show")
+        what = f"your window {self._target.title!r} ({now[1]}): " + "; ".join(parts)
+        region = None
+        if now[4]:
+            region = self._window_region(next((w for w in windows if w.id == now[1]), None))
+        fresh = self._fresh_screenshot(now, region) if region else None
+        see = (f"Read the fresh picture of your window {fresh} and plan again" if fresh
+               else "Take a screenshot(window=...) of your window and plan again")
+        raise StaleFrameError(f"the window layout changed since {since} ({what}), so its "
+                              f"coordinates may now hit something else. {see} (do not reuse the old "
+                              f"coordinates), or pass force=true to send it anyway")
+
+    @staticmethod
+    def _box_text(box: tuple | None) -> str:
+        return "gone" if box is None else f"{box[0]},{box[1]} {box[2]}x{box[3]}"
+
+    def _fresh_screenshot(self, layout: tuple, region: Region | None = None) -> str | None:
+        """Screenshot for a gui_frame_stale refusal (the whole screen, or `region`: an agent's
+        window); it becomes the latest delivered one."""
         try:
             out = self._shot_path(None)
-            self.backend.screenshot(str(out), None)
+            self.backend.screenshot(str(out), region)
         except (CcdeskError, OSError):
             return None
         if not out.exists():
@@ -652,13 +770,18 @@ class Desktop:
             size = png_size(out)
         except (CcdeskError, OSError, ValueError):
             return str(out)
-        return f"{out} (shot {self._remember_shot((0, 0), size, size)})"
+        origin = (region.x, region.y) if region else (0, 0)
+        sid = self._remember_shot(origin, size, size, layout)
+        return f"{out} (shot {sid}" + (f", origin {origin[0]},{origin[1]})" if region else ")")
 
     def _with_window(self, result: dict, window: Window | None) -> dict:
         if window:
             result["window"] = {"id": window.id, "title": window.title}
         if self._yielded:
             result["yielded_ms"] = self._yielded
+        if self._note:  # what the backend said while this action took the agent's window back
+            result["note"] = " ".join(filter(None, [result.get("note"), self._note]))
+            self._note = None
         return result
 
     def _window_region(self, window: Window | None) -> Region | None:
@@ -754,12 +877,12 @@ class Desktop:
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
             # Coordinates measured on this picture are only valid while the layout holds.
-            self._layout_seen = self._layout()
+            layout = self._layout_seen = self._layout()
             full = width, height = png_size(out)
             if factor < 1:
                 self.backend.scale_png(str(out), max(1, round(width * factor)), max(1, round(height * factor)))
                 width, height = png_size(out)
-            sid = self._remember_shot((reg.x, reg.y) if reg else (0, 0), full, (width, height))
+            sid = self._remember_shot((reg.x, reg.y) if reg else (0, 0), full, (width, height), layout)
             # Image input costs about width*height/750 tokens once the model reads it.
             result = {"path": str(out), "width": width, "height": height, "approx_tokens": round(width * height / 750),
                       "shot": sid}
@@ -837,7 +960,7 @@ class Desktop:
             px, py = self._screen_point(shot, x, y)
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
-            window = self._guard(force, (px, py), expect_title, layout=True)
+            window = self._guard(force, (px, py), expect_title, layout=True, shot=shot)
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
             return self._changes(self._from(self._with_window(
@@ -865,7 +988,7 @@ class Desktop:
             x0, y0 = self._screen_point(shot, from_x, from_y)
             x1, y1 = self._screen_point(shot, to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
-            window = self._guard(force, (x0, y0), layout=True)
+            window = self._guard(force, (x0, y0), layout=True, shot=shot)
             self.backend.drag(x0, y0, x1, y1, ms)
             self._show_cursor(x1, y1)
             return self._changes(self._from(self._with_window(
@@ -886,7 +1009,7 @@ class Desktop:
             if not sx and not sy:
                 raise ValidationError("dx and dy are both 0; nothing to scroll. Pass dy=3 to scroll down, dy=-3 up, "
                                       "dx=3 right (there is no direction or amount argument)")
-            window = self._guard(force, (px, py), layout=True)
+            window = self._guard(force, (px, py), layout=True, shot=shot)
             self.backend.scroll(px, py, sx, sy)
             self._show_cursor(px, py)
             return self._changes(self._from(self._with_window(
@@ -984,7 +1107,11 @@ class Desktop:
             self.backend.activate_window(window)
             self._target = window  # input tools now refuse to go anywhere else (see _guard)
             # Raising a window restacks and refocuses: any screenshot taken before this is stale.
-            self._layout_seen = None
+            # (An agent's picture only depends on its own window, which this does not move.)
+            if not self.agent:
+                self._layout_seen = None
+                with self._shots_lock:
+                    self._shot_layouts.clear()
             result = self._with_window({"activated": window.to_dict()}, None)
             note = self.backend.take_note()
             if note:
@@ -1070,6 +1197,8 @@ class Desktop:
                 max_nodes: int = 300, shot_fallback: bool = True) -> dict:
         def do():
             limit = check_int("max_nodes", max_nodes, 1, 2000)
+            if window is None:
+                self._need_target()  # no window named: it would read the one the user has in front
             q = (query or "").strip() or None
             title = window or self._own_window_title()
             try:
@@ -1153,6 +1282,7 @@ class Desktop:
                       expect_title: str | None = None) -> dict:
         def do():
             self._ready()
+            self._need_target()
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             node = self.a11y.resolve(ref)
@@ -1180,7 +1310,10 @@ class Desktop:
 
     def _may_skip_pointer(self, force: bool) -> bool:
         """A native action reaches its element wherever the pointer and focus are, so _guard has
-        nothing to check, unless the tree is of another window than activate_window() chose."""
+        nothing to check, unless the tree is of another window than activate_window() chose. For an
+        agent, force does not skip it: a tree of a window that is not its own never does."""
+        if self.agent:
+            return self._target is not None and self.a11y.tree_window() == self._target.title
         return force or self._target is None or self.a11y.tree_window() == self._target.title
 
     def _before_native(self) -> None:
@@ -1203,6 +1336,7 @@ class Desktop:
                 raise ValidationError("text must be a string")
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters")
+            self._need_target()
             key = str(ref).strip()
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
@@ -1210,7 +1344,8 @@ class Desktop:
                 raise CcdeskError(f"{key} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
             if not self._may_skip_pointer(force):
                 raise PolicyError(f"{key} is in {self.a11y.tree_window()!r}, not {self._target.title!r} from "
-                                  f"activate_window(); call ui_tree() on that window, or pass force=true")
+                                  f"activate_window(); call ui_tree() on that window"
+                                  + ("" if self.agent else ", or pass force=true"))
             self._before_native()
             answer = self.a11y.set_value(key, text)
             self._cursor_to_node(node)
@@ -1334,6 +1469,12 @@ class Desktop:
         logged = [{"tool": n, **_redact(a)} for n, a in checked]
 
         def do():
+            if self.agent and self._target is None:
+                for name, _ in checked:  # before any step is sent, not halfway
+                    if name == "activate_window":
+                        break
+                    if name in NEEDS_TARGET:
+                        self._need_target()
             done: list[dict] = []
             result: dict = {"done": 0, "steps": done}
             self._batching, self._pending, self._pixel_report = True, None, False
