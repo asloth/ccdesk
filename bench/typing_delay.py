@@ -1,8 +1,8 @@
 """How low can the per-character typing delay go before a toolkit drops, duplicates or reorders characters?
 
-    python bench/typing.py --out typing.json                 # every target, every delay, 20 reps
-    python bench/typing.py --load --xdelays 2,1,0 --kdelays 3,1,0 --out typing-load.json
-    python bench/typing.py --compare typing.json typing-load.json
+    python bench/typing_delay.py --out typing.json                 # every target, every delay, 20 reps
+    python bench/typing_delay.py --load --xdelays 2,1,0 --kdelays 3,1,0 --out typing-load.json
+    python bench/typing_delay.py --compare typing.json typing-load.json
 
 Every target runs in its own Xvfb (started here, never $DISPLAY): a Tk entry (tests/tk_app.py), a GTK 3
 entry, a GTK 3 text view (tests/gtk_text_app.py), a GTK 4 entry, and Firefox on a local page whose input and
@@ -14,7 +14,7 @@ Each cell types one text 20 times, reads back what the app received and compares
 
 import sys
 
-# This file is called typing.py, and its folder is sys.path[0]: take it out so the standard library's
+# This file used to be called typing.py; its folder is sys.path[0]: take it out so the standard library's
 # typing module is found first.
 sys.path[:] = [p for p in sys.path if p not in (__import__("os").path.dirname(__import__("os").path.abspath(__file__)),)]
 

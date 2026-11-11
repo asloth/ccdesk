@@ -10,7 +10,7 @@ wheel/click --delay at 0, to price those flags. Refuses to run on DISPLAY :0.
 
 import sys
 
-# bench/typing.py would shadow the standard library's typing module: take this folder off sys.path.
+# bench/typing_delay.py would shadow the standard library's typing module: take this folder off sys.path.
 sys.path[:] = [p for p in sys.path if p != __import__("os").path.dirname(__import__("os").path.abspath(__file__))]
 
 import json
