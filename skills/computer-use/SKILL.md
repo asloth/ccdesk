@@ -119,6 +119,15 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   sent, the call fails with `code=gui_frame_stale`, and the message names a fresh screenshot to
   plan from. Read that one instead of retrying the old numbers. `force=true` skips the check, and
   `click_element` does not need it because it resolves the ref against the live tree.
+- **With `--agent NAME` you work in one window of your own.** Call `activate_window()` on it
+  before any `click`, `drag`, `scroll`, `type_text`, `press_key`, `click_element`, `set_value`,
+  or `ui_tree()` without `window=`; until then they fail with `code=gui_target_required`
+  (`force=true` does not change that). Coordinates then go stale only when your own window
+  moves, resizes or leaves the screen, not when the user opens or moves other windows. If your
+  window is minimized or on another desktop the call fails with `code=gui_target_hidden` and
+  sends nothing: `activate_window()` would show it on the user's screen and take their focus,
+  so do that only when the task needs it. If something covers the spot (`gui_target_covered`),
+  use `click_element` or the keyboard, or `wait()` and retry; do not raise your window.
 - Independent actions (filling several fields) can go in one turn; check each `changes`.
 - Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one

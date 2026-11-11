@@ -8,6 +8,7 @@ from pathlib import Path
 from ccdesk.backends import X11Backend
 from ccdesk.cursor import OFFSET, PALETTE, AgentCursor, claim_color, pick_color, valid_color
 from ccdesk.desktop import Desktop
+from ccdesk.parsing import Window
 from ccdesk.safety import AuditLog
 from tests.test_backends import X11_ALL, make
 
@@ -80,6 +81,10 @@ class Spy:
         return None
 
 
+# An agent must have chosen a window before it can click; the fake screen lists none.
+MINE = Window(id="0x00400010", title="mine", wm_class="a.A", x=0, y=0, width=400, height=300)
+
+
 def desk(tmp_path, cursor, agent="bot-1"):
     backend, rec = make(X11Backend, X11_ALL, env={"DISPLAY": ":9"})
     return Desktop(backend=backend, audit=AuditLog(tmp_path / "audit.log"), shots_dir=tmp_path / "s",
@@ -95,6 +100,7 @@ def test_desktop_moves_the_cursor_after_pointer_actions(tmp_path):
     assert spy.moves == []  # nothing moves until the action is over
     d._flush_cursor()
     assert spy.moves == [(120, 210)]  # the latest point wins
+    d._target = MINE
     d.click(30, 40)
     assert spy.moves[-1] == (30, 40)
 
@@ -106,6 +112,7 @@ def test_cursor_moves_after_the_change_check(tmp_path):
     seen = []
     real = d._changes
     d._changes = lambda *a, **k: (seen.append(list(spy.moves)), real(*a, **k))[1]
+    d._target = MINE
     d.click(30, 40)
     assert seen == [[]] and spy.moves == [(30, 40)]
 
