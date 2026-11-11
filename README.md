@@ -1,21 +1,95 @@
 # ccdesk
 
-**Claude Code can't see your desktop on Linux. ccdesk gives it eyes and hands.**
+**Give your coding agent eyes and hands on Linux.**
 
-It also works with other MCP clients: see [Using it with opencode](#using-it-with-opencode).
+ccdesk is an MCP server for working with desktop apps: read a window, take a screenshot,
+fill a form, click a control, and check what changed. Use your desktop, or give the agent
+its own private screen while you keep using your PC.
 
-A small MCP server that lets Claude Code take screenshots, move and click the mouse, type,
-press keys, list and focus windows, use the clipboard and read the accessibility tree, plus a
-skill that teaches the safe loop: look, one action, verify.
+Includes setup for [Claude Code](#wiring-it-into-claude-code) and
+[opencode](#using-it-with-opencode), plus a computer-use skill that teaches the agent to
+look, act once, and verify.
 
-![ccdesk filling and submitting a GTK form on its own invisible screen](docs/demo.gif)
+[Quickstart](#quickstart) · [Private screen](#headless-let-it-work-while-you-use-your-pc) ·
+[Tools](#tools) · [Compatibility](#support-matrix) · [Security](#security-model)
 
-*Recorded by `bench/record_demo.py`: a real ccdesk session on a private Xvfb screen, not a mockup.*
+![ccdesk filling and submitting a real GTK form on a private screen](docs/demo.gif)
+
+*A real GTK form, filled and submitted through ccdesk on a private Xvfb screen.
+The [recording script](bench/record_demo.py) calls ccdesk directly;
+[Claude Code benchmarks](#results) measure separate agent runs.*
+
+## What you can do
+
+| Task | How ccdesk helps |
+| --- | --- |
+| Read an app's controls | The accessibility tree exposes buttons, fields, and values as text. |
+| Fill a form | Set fields and activate controls by their element references; actions report what changed. |
+| Work with visual content | Capture a window or region, then use the mouse, keyboard, or clipboard. |
+| Keep using your PC | Run the agent's apps on a private screen with `--headless`. |
+
+For browser pages, the optional [Firefox integration](#firefox-for-claude-without-the-mouse-opt-in)
+lets the agent read and act inside the page without using your mouse.
+
+## Quickstart
+
+Requires **Linux and Python 3.10+**. The commands below use `pipx` and Git to install from
+this repository on **Debian/Ubuntu with X11**. For Wayland, check the
+[support matrix](#support-matrix) and your compositor's requirements first.
+
+```sh
+sudo apt install pipx git xdotool scrot wmctrl xclip x11-utils x11-xserver-utils
+pipx install git+https://github.com/asloth/ccdesk.git
+pipx ensurepath
+```
+
+Open a new terminal if `ccdesk` is not on your PATH, then:
+
+```sh
+ccdesk doctor        # check the display, helper tools, and accessibility bus
+ccdesk install       # connect Claude Code and install the computer-use skill
+```
+
+Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. Then try:
+
+> Use ccdesk to describe my active window. Read its accessibility tree if available,
+> and take a screenshot if needed.
+
+This first task reads your screen. For an example that acts on an app, use a disposable
+form and ask the agent to fill its fields, then report the values before submitting.
+
+To give the agent its own screen, follow the [headless setup](#headless-let-it-work-while-you-use-your-pc).
+For another client, follow [opencode setup](#using-it-with-opencode).
+
+### Other distributions
+
+On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
+`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
+`xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
+monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
+one monitor only.
+
+On KDE Plasma under Wayland, the X11 tools are not what you need: see
+[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
+
+## Why it exists
+
+Desktop tasks often span apps that have no useful API or browser interface. ccdesk gives
+an MCP client a way to read and operate those apps with Linux desktop tools. Its core is
+standard-library Python; its only Python runtime dependency is the official `mcp` package.
 
 ## Results
 
+On one small GTK form benchmark, accessibility-tree reads and change reports reduced
+input tokens by **37% with `--always-load`**, compared with the agent completing the task
+without ccdesk. Median time fell from 30 to 15 seconds. These are task-specific results;
+`--always-load` also adds prompt overhead to sessions that do not use the desktop.
+
+<details>
+<summary>Benchmark table, method, and limitations</summary>
+
 Same GTK signup form filled end to end. Claude Code 2.1.304, Opus 5.5, `claude -p`, no user
-settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, median:
+settings or hooks, three runs per arm. Input tokens processed, median:
 
 | | no ccdesk | screenshots only | ui_tree + changes | + `--always-load` |
 |---|---|---|---|---|
@@ -33,34 +107,7 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
 - Raw numbers, method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). Reproduce with
   `python bench/run.py`.
 
-## Quickstart
-
-```sh
-sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils   # Debian/Ubuntu, X11
-pipx install ccdesk  # from PyPI; today the wheel on the Releases page, or pipx install . in a checkout
-ccdesk doctor        # session type, helper tools, screen size, accessibility bus
-ccdesk install       # register the MCP server with Claude Code and install the skill
-```
-
-Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. To try it on a
-private screen instead of yours, see [Headless](#headless-let-it-work-while-you-use-your-pc).
-
-### Other distributions
-
-On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
-`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
-`xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
-monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
-one monitor only.
-
-On KDE Plasma under Wayland, the X11 tools are not what you need: see
-[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
-
-## Why it exists
-
-There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
-probably already have (`xdotool`, `scrot`, `wmctrl`, `xclip`). The core is standard-library
-Python; the only dependency is the official `mcp` package.
+</details>
 
 ## Wiring it into Claude Code
 
