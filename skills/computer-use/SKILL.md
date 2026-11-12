@@ -157,13 +157,15 @@ ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
 - **One action, then verify.** After each click, keypress or typed string, read its
   `changes` (with a tree) or take a new screenshot, and confirm the expected change happened
   before you continue. If it didn't, work out why. Don't repeat the action blindly.
-- **Without a tree, the answer already shows what the action did.** Actions report whether
-  the receiving window's pixels changed (`screen_changed`, and `changed_area` if they did)
-  and attach `change_shot`, a capture of just that area (at most ~600 tokens), taken once the
-  screen has stopped moving. Read it instead of taking a screenshot or a `wait()`. `false`
-  after a click means it did nothing yet: don't repeat it blindly. `settled: false` means the
-  screen was still changing after 1.5 s: call `wait_for_change()`. `show_change=false` (on
-  `click`, `type_text`, `press_key`, `scroll`, `drag`, `batch`) skips the picture. Screenshot
+- **Without a tree, the answer already says what the action did.** Actions report whether
+  the receiving window's pixels changed (`screen_changed`, and `changed_area` if they did).
+  Pass `show_change=true` to also get `change_shot`, a capture of just that area (at most
+  ~600 tokens, cropped to the receiving window), taken once the screen has stopped moving.
+  Use it instead of taking a screenshot or a `wait()`; don't ask for both.
+  `screen_changed: false` after a click means nothing visible changed (the field already had
+  focus), or not yet: don't repeat it blindly. `settled: false` means the
+  screen was still changing after 1.5 s: call `wait_for_change()`. `show_change=true` (on
+  `click`, `type_text`, `press_key`, `scroll`, `drag`, `batch`) adds the picture. Screenshot
   only when it isn't enough, and then just `changed_area`, never the whole monitor.
 - **A `hint` in a result means you overpaid.** ccdesk adds one to a screenshot that was much
   bigger than what the last action changed, and to a `wait()` right after an action. Follow it
@@ -194,7 +196,7 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
   with `click(px, py, shot="s1")`: no arithmetic (see Coordinate rules).
 - **Act and verify with crops.** Once you know where you are working, screenshot a region
   just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
-  typed value or a toggled checkbox with the action's own `change_shot` or a crop, not the whole monitor.
+  typed value or a toggled checkbox with `show_change=true` on the action or a crop, not the whole monitor.
   A half-scale monitor shot "just to check" is ~700 tokens; doing it after every click is
   what makes a task expensive, because each one stays in context for every later turn.
 - **Full resolution only to read.** Use a full-scale monitor capture when you must read

@@ -273,6 +273,6 @@ def test_instructions_say_what_the_answer_already_shows_and_stay_short():
     """They are sent with every request: 1,728 characters before the picture came with the answer."""
     from ccdesk.server import INSTRUCTIONS
 
-    for words in ("change_shot", "settled=false", "wait_for_change()", "show_change=false", "shot="):
+    for words in ("change_shot", "settled=false", "wait_for_change()", "show_change=true", "shot="):
         assert words in INSTRUCTIONS
     assert len(INSTRUCTIONS) <= 1728 + 160  # about 40 tokens more at most

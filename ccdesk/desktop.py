@@ -384,8 +384,9 @@ class Desktop:
         return result
 
     def _observe_pixels(self, result: dict, before: tuple, show_change: bool | None) -> dict:
-        """show_change None (the default): attach the capture of what changed; True: as None, and
-        say so when it cannot be done; False: never."""
+        """With show_change, attach the capture of what changed, and say so when it cannot be done.
+        Off by default: measured on the form task (bench/RESULTS.md), the model sends its own
+        screenshot in the same turn anyway, so a picture in every answer was paid for twice."""
         region, grid, wid = before
         after = self._settled_snapshot(region, grid, wid)
         if wid is not None:
@@ -403,7 +404,7 @@ class Desktop:
                 self._last_area = Region(*box)
                 if self._moving:
                     result["settled"] = False  # still changing: wait_for_change() waits for it to stop
-                if show_change is not False:
+                if show_change:
                     result["change_shot"] = self._change_shot(Region(*box), wid, region)
         if show_change and "change_shot" not in result and "screen_changed" not in result:
             result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
@@ -490,11 +491,10 @@ class Desktop:
         return Region(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
 
     def _change_shot(self, box: Region, wid: str | None = None, within: Region | None = None) -> dict:
-        """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS. With wid, of
-        that window's own pixels, inside `within` (the window's region)."""
-        reg = self._padded(box)
-        if wid is not None:
-            reg = self._clip(reg, within)
+        """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS, inside `within`
+        (the receiving window's region): the padding around the change never shows the window next
+        to it or under it. With wid, of that window's own pixels."""
+        reg = self._clip(self._padded(box), within)
         try:
             shot, factor = self._scaled_capture(reg, SHOT_MAX_TOKENS, wid)
         except (CcdeskError, OSError, ValueError) as exc:
@@ -1011,7 +1011,7 @@ class Desktop:
             return None
         return (f"the last action changed only {area.x},{area.y},{area.width},{area.height}: "
                 f'region="{crop.x},{crop.y},{crop.width},{crop.height}" shows it for ~{cost} tokens '
-                f"(this one: ~{tokens}); the action's own answer shows it already, unless show_change=false")
+                f"(this one: ~{tokens}), and show_change=true on the action returns it with the answer")
 
     def _shot_path(self, path: str | None) -> Path:
         if path:

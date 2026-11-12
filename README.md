@@ -325,12 +325,12 @@ while it is on.
 | Tool | What it does |
 | --- | --- |
 | `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. Every picture gets a `shot` id (`"s1"`, `"s2"`...) for `shot=` below. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=None, shot?)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change`: see [Without a tree](#without-a-tree). `shot`: see below. |
+| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false, shot?)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change`: see [Without a tree](#without-a-tree). `shot`: see below. |
 | `move(x, y, shot?)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=None, shot?)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false, show_change=None, shot?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
-| `type_text(text, submit=false, replace=false, force=false, expect_title?, show_change=None)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
-| `press_key(key, modifiers=[], confirm=false, force=false, expect_title?, show_change=None)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false, shot?)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false, show_change=false, shot?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `type_text(text, submit=false, replace=false, force=false, expect_title?, show_change=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
+| `press_key(key, modifiers=[], confirm=false, force=false, expect_title?, show_change=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
 | `activate_window(title_or_id)` | Raises and focuses a window by id or by partial title. Later input is refused if it would reach another window. |
 | `manage_window(title_or_id, action, x?, y?, width?, height?)` | `move`, `resize`, `minimize`, `maximize` or `restore` a window. Returns `before`, `after`, `on_show` and `changed`, read back from the window system, so a request the window manager ignored shows as `changed: false`, as does a window that was already like that. |
@@ -342,7 +342,7 @@ while it is on.
 | `ui_tree(window?, query?, page=false, max_nodes=300, shot_fallback=true)` | The window's buttons, fields, checkboxes, links and text as compact lines from the accessibility tree (AT-SPI), with values, states and screen boxes. |
 | `click_element(ref, button="left", count=1, force=false, expect_title?)` | Clicks an element from the latest `ui_tree()`; refuses if it changed or left the screen. A single left click on a button, checkbox, radio, link, tab or menu item runs its accessibility action when it has one, so it needs no pointer, scaling or free line of sight (the result says `activated`). Fields and everything else get a real click at the centre (`clicked`), and so does any click with `expect_title`, which has to check the window that receives it. |
 | `set_value(ref, text, force=false)` | Replaces the value of a field, slider or spin button in one call and reads it back: success means the app holds it (`verified`). Refuses password fields. When the app ignores or refuses the write and keeps its old value, as Firefox and Chromium web forms do, it clicks the field, selects all and types the text, then reads it back (`typed: true`). |
-| `batch(steps, show_change=None)` | Runs 1 to 20 input steps (`click_element`, `set_value`, `type_text`, `press_key`, `click`, `scroll`, `move`, `drag`, `activate_window`, `wait` up to 5 s) in one call: the seat is taken once, every step keeps its own checks (destructive keys still need `confirm=true`) and audit entry, and only the final state is observed (`changes` or `screen_changed`). All steps are validated before the first one runs; it stops at the first failure and reports `done`, `steps` and `failed`. Use it to fill a form from one `ui_tree()`. |
+| `batch(steps, show_change=false)` | Runs 1 to 20 input steps (`click_element`, `set_value`, `type_text`, `press_key`, `click`, `scroll`, `move`, `drag`, `activate_window`, `wait` up to 5 s) in one call: the seat is taken once, every step keeps its own checks (destructive keys still need `confirm=true`) and audit entry, and only the final state is observed (`changes` or `screen_changed`). All steps are validated before the first one runs; it stops at the first failure and reports `done`, `steps` and `failed`. Use it to fill a form from one `ui_tree()`. |
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
@@ -477,10 +477,10 @@ A browser started before the accessibility bus was switched on publishes its too
 but an empty page. `ui_tree()` counts that as no tree, attaches `fallback_shot` and says to
 restart the browser.
 
-<a id="without-a-tree"></a>On those same actions the answer also carries `change_shot`, a capture
-of `changed_area` (padded 24 px, scaled down to about 600 tokens at most) when the screen changed,
-so the check needs no screenshot of its own. `show_change` is `None` by default (attach it when
-the action ran on the pixel path and the screen changed), `true` as before, `false` never; with a
+<a id="without-a-tree"></a>On those same actions `show_change=true` adds `change_shot`, a capture
+of `changed_area` (padded 24 px, scaled down to about 600 tokens at most, cropped to the receiving
+window) when the screen changed, so the check needs no screenshot of its own. It is off by default
+(`screen_changed`, `changed_area` and `settled` always come back); with a
 tree the answer stays text (`changes`) and carries no picture. The after-capture waits for the
 change to stop: nothing changed by 0.3 s means `screen_changed: false`; something changed means it
 keeps capturing until two captures in a row are equal, up to 1.5 s, and `settled: false` says the

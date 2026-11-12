@@ -88,7 +88,7 @@ def screen_shots(fake):
 
 
 def test_typing_into_a_covered_window_reports_that_windows_own_change(agent, own, fake):
-    r = agent.type_text("hola")
+    r = agent.type_text("hola", show_change=True)
     assert r["covered"] is True
     assert r["screen_changed"] is True
     assert {wid for wid, _ in own.grids} == {FIREFOX}
@@ -104,7 +104,7 @@ def test_the_picture_of_the_change_stays_inside_the_window(make_desk, fake, own)
     fake.windows[0] = replace(fake.windows[0], x=100, y=50, width=400, height=300)
     desk = make_desk(screen_diff=True, agent="desk-1")
     desk.activate_window(FIREFOX)
-    r = desk.type_text("hola")
+    r = desk.type_text("hola", show_change=True)
     _, region = own.shots[-1]
     assert region.x >= 100 and region.y >= 50  # the padding around the change is cut at the window's edge
     assert region.x + region.width <= 500 and region.y + region.height <= 350
@@ -151,7 +151,7 @@ def test_own_pixels_lost_after_the_action_say_so_and_never_compare_with_the_scre
 
 def test_a_clipped_picture_of_the_change_is_an_error_and_keeps_the_report(agent, own):
     own.shot_size = (5, 5)
-    r = agent.type_text("hola")
+    r = agent.type_text("hola", show_change=True)
     assert r["screen_changed"] is True
     assert "do not fill the area" in r["change_shot"]["error"]
 
@@ -226,3 +226,14 @@ def test_a_covered_window_without_a_tree_gets_its_own_picture_from_ui_tree(agent
     shot = agent._tree_fallback_shot(FIREFOX)
     assert shot["covered"] is True
     assert read_png(shot["path"]).pixel(0, 0)[:3] == OWN
+
+
+def test_the_picture_of_a_change_never_shows_the_window_next_to_it(make_desk, fake):
+    """Nothing covers the Terminal (10,10 300x200), and the change is at its edge: the padding
+    stops at the window, so the user's window beside it is not in the picture."""
+    desk = make_desk(screen_diff=True)
+    desk.activate_window(TERMINAL)
+    fake.active = TERMINAL
+    fake.effects = [(250, 150, 60, 60, (255, 255, 255))]
+    shot = desk.type_text("x", show_change=True)["change_shot"]
+    assert shot["origin"]["x"] + shot["width"] <= 310 and shot["origin"]["y"] + shot["height"] <= 210

@@ -173,7 +173,7 @@ def test_a_wide_screenshot_after_a_small_change_says_what_the_crop_costs(make_de
     fake.effects = [(200, 300, 120, 40, WHITE)]
     d.click(250, 320)
     hint = d.screenshot()["hint"]
-    assert 'region="176,280,168,88"' in hint and "show_change=false" in hint
+    assert 'region="176,280,168,88"' in hint and "show_change=true" in hint
     assert "hint" not in d.screenshot()  # once per action
     fake.effects = [(200, 300, 120, 40, (0, 0, 0))]
     d.click(250, 320)

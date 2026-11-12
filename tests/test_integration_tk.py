@@ -268,7 +268,7 @@ def test_click_with_the_pixels_of_a_scaled_window_picture(app, desk):
     button = img.find_color(MAGENTA)
     assert button, "button not visible in the half-size window picture"
     px, py = center(button)
-    r = desk.click(px, py, shot=result["shot"])
+    r = desk.click(px, py, shot=result["shot"], show_change=True)
     assert app.wait_for(lambda s: s["label"] == "clicked")["label"] == "clicked"
     tx, ty, tw, th = app.state()["button"]
     assert tx <= r["clicked"]["x"] < tx + tw and ty <= r["clicked"]["y"] < ty + th

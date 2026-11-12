@@ -120,3 +120,32 @@ Same GTK form (`tests/gtk_app.py`) under `xvfb-run`, 5 repetitions per action, m
 
 Reproduce: `xvfb-run -a python bench/actions.py`; for two checkouts set `CCDESK_SRC` and
 `PYTHONPATH` to the older one (see the script's docstring).
+
+## A picture of the change in every answer (2026-11-12)
+
+Question: should pixel actions attach `change_shot` by default? Measured with `bench/run.py`
+(the Signup form, Sonnet, private Xvfb screen), develop against the branch with the picture on
+by default. Medians; every run filled the form correctly.
+
+| Arm | Runs | Requests | Images read | Input processed | Cost |
+|---|---|---|---|---|---|
+| develop, screenshots only (`base-shots`) | 3 | 5 | 3 | 73,029 | $0.0544 |
+| picture by default (`shots`) | 3 | 5 | 3 | 73,978 | $0.0558 |
+| picture by default, tool text says "send the action alone" | 4 | 5 | 3.5 | 74,813 | $0.0587 |
+| develop, tree (`base`) | 3 | 5 | 0 | 64,207 | $0.0419 |
+| branch, tree (`tree`) | 3 | 5 | 0 | 64,427 | $0.0419 |
+
+- The request count is 5 in all 16 runs. The model sends its own `screenshot` in the same turn
+  as the action, before it has read the action's answer, so a picture in that answer replaces
+  nothing.
+- With the picture on by default: 4 of 7 runs read the change twice (the picture and the
+  screenshot), 2 of 7 passed `show_change=false` themselves, 1 of 7 dropped the screenshots.
+- Changing the tool text did not change that.
+- Decision: `change_shot` is opt-in (`show_change=true`), as on develop. `screen_changed`,
+  `changed_area` and `settled` come with every answer.
+- The tree path costs 23% less in dollars than the pixel path on this task (12% fewer input tokens), on both builds.
+- Not measured: a long session, another model, a task where each step depends on the previous
+  answer. On the real screen, a Sonnet agent that got the picture with each `type_text` answer
+  verified three typed lines with no screenshot after typing.
+
+Reproduce: `CCDESK_BIN=.venv/bin/ccdesk CCDESK_BASE=<develop ccdesk> python bench/run.py --arms base-shots,shots,base,tree --reps 3 --model sonnet`

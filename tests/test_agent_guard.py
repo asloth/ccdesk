@@ -392,7 +392,7 @@ def test_a_change_shot_is_a_picture_with_its_own_layout(make_desk, fake):
     fake.windows[1] = replace(fake.windows[1], x=400)
     fake.under = TERMINAL
     fake.effects = [(450, 50, 120, 40, WHITE)]
-    r = d.click(450, 50, force=True)  # forced: the baseline is stale on purpose
+    r = d.click(450, 50, force=True, show_change=True)  # forced: the baseline is stale on purpose
     shot = r["change_shot"]["shot"]
     fake.effects = []
     fake.calls.clear()

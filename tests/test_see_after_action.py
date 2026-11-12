@@ -104,7 +104,7 @@ def test_a_failed_re_read_keeps_the_password_guard(make_desk, fake, helper):
 def test_a_pixel_action_that_changed_the_screen_carries_the_picture(make_desk, fake):
     d = make_desk(screen_diff=True)
     fake.effects = [(200, 300, 120, 40, WHITE)]
-    r = d.click(250, 320)
+    r = d.click(250, 320, show_change=True)
     shot = r["change_shot"]
     assert shot["origin"] == {"x": 176, "y": 280} and shot["approx_tokens"] <= 610
     assert read_png(shot["path"]).pixel(24, 24) == WHITE
@@ -132,6 +132,20 @@ def test_show_change_false_never_attaches_it(make_desk, fake, act):
 
 
 @pytest.mark.parametrize("act", [
+    lambda d: d.click(250, 320, show_change=True),
+    lambda d: d.drag(210, 310, 250, 330, show_change=True),
+    lambda d: d.scroll(250, 320, dy=3, show_change=True),
+    lambda d: d.type_text("x", show_change=True),
+    lambda d: d.press_key("Tab", show_change=True),
+    lambda d: d.batch([{"tool": "click", "x": 250, "y": 320}, {"tool": "press_key", "key": "Tab"}], show_change=True),
+])
+def test_show_change_true_attaches_it_on_every_pixel_action(make_desk, fake, act):
+    d = make_desk(screen_diff=True)
+    fake.effects = [(200, 300, 120, 40, WHITE)]
+    assert "change_shot" in act(d)
+
+
+@pytest.mark.parametrize("act", [
     lambda d: d.click(250, 320),
     lambda d: d.drag(210, 310, 250, 330),
     lambda d: d.scroll(250, 320, dy=3),
@@ -139,10 +153,11 @@ def test_show_change_false_never_attaches_it(make_desk, fake, act):
     lambda d: d.press_key("Tab"),
     lambda d: d.batch([{"tool": "click", "x": 250, "y": 320}, {"tool": "press_key", "key": "Tab"}]),
 ])
-def test_every_pixel_action_attaches_it_by_default(make_desk, fake, act):
+def test_by_default_no_pixel_action_attaches_it_but_all_report_the_change(make_desk, fake, act):
     d = make_desk(screen_diff=True)
     fake.effects = [(200, 300, 120, 40, WHITE)]
-    assert "change_shot" in act(d)
+    r = act(d)
+    assert "change_shot" not in r and r["screen_changed"] is True and "changed_area" in r
 
 
 def test_on_the_tree_path_there_is_no_picture(make_desk, fake, helper):
@@ -158,9 +173,9 @@ def test_on_the_tree_path_there_is_no_picture(make_desk, fake, helper):
 def test_the_picture_is_not_stored_in_the_audit_log(make_desk, fake, read_audit):
     d = make_desk(screen_diff=True)
     fake.effects = [(200, 300, 120, 40, WHITE)]
-    d.click(250, 320)
+    d.click(250, 320, show_change=True)
     entry = read_audit()[-1]
-    assert entry["args"]["show_change"] is None
+    assert entry["args"]["show_change"] is True
     assert set(entry["result"]["change_shot"]) == {"path", "width", "height", "approx_tokens", "origin", "shot"}
     assert len(str(entry)) < 1500
 
@@ -187,7 +202,7 @@ def test_a_screen_still_moving_at_the_cap_says_so(make_desk, fake):
     moving_screen(fake, moving_for=10_000)
     d.click(5, 5, show_change=False)  # learns that captures are direct
     fake.effects = [(0, 0, 10, 10, WHITE)]
-    r = d.click(5, 5)
+    r = d.click(5, 5, show_change=True)
     assert r["screen_changed"] is True and r["settled"] is False and "change_shot" in r
 
 
@@ -226,7 +241,7 @@ def test_every_picture_gets_an_id(make_desk, fake, helper):
     assert d.screenshot()["shot"] == "s1"
     assert d.screenshot(region="0,0,100,100")["shot"] == "s2"
     fake.effects = [(200, 300, 120, 40, WHITE)]
-    assert d.click(250, 320)["change_shot"]["shot"] == "s3"
+    assert d.click(250, 320, show_change=True)["change_shot"]["shot"] == "s3"
 
 
 def test_the_tree_fallback_picture_and_the_stale_refusal_have_ids(make_desk, fake, helper):
@@ -281,12 +296,12 @@ def test_an_unscaled_full_screen_shot_needs_no_conversion(make_desk, fake):
 def test_the_change_shot_has_its_own_origin_and_scale(make_desk, fake):
     d = make_desk(screen_diff=True)
     fake.effects = [(200, 300, 120, 40, WHITE)]
-    shot = d.click(250, 320)["change_shot"]
+    shot = d.click(250, 320, show_change=True)["change_shot"]
     assert shot["origin"] == {"x": 176, "y": 280}
     assert d.click(10, 10, shot=shot["shot"])["clicked"] == {"x": 186, "y": 290}
     big = d.screenshot(scale=0.5)["shot"]
     fake.effects = [(0, 0, 800, 600, (9, 9, 9))]
-    scaled = d.click(5, 5, shot=big)["change_shot"]  # a whole-screen change comes back scaled down
+    scaled = d.click(5, 5, shot=big, show_change=True)["change_shot"]  # a whole-screen change comes back scaled down
     assert scaled["scale"] < 1
     x = scaled["width"] // 2
     assert d.click(x, 5, shot=scaled["shot"])["clicked"]["x"] == round(x / scaled["width"] * 800)

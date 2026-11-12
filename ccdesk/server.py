@@ -31,9 +31,9 @@ Fall back to screenshot() for canvas, images, video, apps that publish none,
 to read layout, or to double-check something visual: the picture is in its answer. Coordinates
 are screen pixels; for a picture's own pixels (scaled or cropped) pass its shot id as shot=.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
-Without a tree, actions return screen_changed, changed_area and, if it changed, a picture of that
-area (change_shot): do not screenshot() or wait() to see the result. If false, the action did nothing
-yet. settled=false: still moving, call wait_for_change(). show_change=false skips the picture.
+Without a tree, actions return screen_changed and changed_area: false means nothing visible
+changed (a click on a field that already had focus), or not yet. show_change=true adds a picture of that area (change_shot) to the answer, so no screenshot()
+is needed to see it; don't send both. settled=false: still moving, call wait_for_change().
 wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
@@ -156,7 +156,8 @@ def build_server(desktop: Desktop) -> MCPServer:
         width, height and approx_tokens (what it costs). scale=0.5 halves each side for ~4x fewer
         tokens. Its `shot` id lets click, move, scroll and drag take pixels of this picture. path: only save it there.
         window: capture only that window, by id or title. It is a crop of the screen, so anything
-        covering the window shows too: activate_window() it first."""
+        covering the window shows too (an --agent on X11 gets its window's own content, covered: true).
+        To see what an action changed, pass show_change=true to the action instead."""
         result = desktop.screenshot(region=region, path=path, scale=scale, window=window)
         return result if path else with_picture(result)
 
@@ -168,7 +169,7 @@ def build_server(desktop: Desktop) -> MCPServer:
         shot="s3": x, y are pixels of that screenshot or change_shot, converted for you.
         After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
         expect_title: refuse unless the receiving window's title contains it (a browser tab).
-        show_change=false: no capture of what changed (without a ui_tree it comes with the answer, ~600 tokens)."""
+        show_change=true: the answer also shows a capture of what changed (at most ~600 tokens), instead of a screenshot after."""
         return with_change_shot(desktop.click(x, y, button=button, count=count, force=force,
                                        expect_title=expect_title, show_change=show_change, shot=shot))
 

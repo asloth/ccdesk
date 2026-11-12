@@ -294,7 +294,7 @@ def test_an_agent_types_into_its_covered_window_and_sees_that_window(screen, tmp
             pytest.skip("the window manager did not stack B over A")
         user_focus = core_focus(env)
 
-        r = desk.type_text("tapada ")
+        r = desk.type_text("tapada ", show_change=True)
         wait_for(lambda: "tapada" in file_a.read_text())
         assert file_b.read_text() == ""
         assert r["covered"] is True, r
