@@ -128,6 +128,10 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   sends nothing: `activate_window()` would show it on the user's screen and take their focus,
   so do that only when the task needs it. If something covers the spot (`gui_target_covered`),
   use `click_element` or the keyboard, or `wait()` and retry; do not raise your window.
+  While another window is on top of yours, results carry `covered: true`: the change report,
+  its picture, `screenshot(window=...)` and `wait_for_change()` then show your window's own
+  content (X11). A menu or dropdown your window opens is a separate window and is missing from
+  those pictures. `screenshot()` of the whole screen or a `region` still shows what is on top.
 - Independent actions (filling several fields) can go in one turn; check each `changes`.
 - Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
