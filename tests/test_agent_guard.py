@@ -268,6 +268,18 @@ def test_a_tree_of_another_window_does_not_skip_the_guard_for_an_agent(agent, ow
     assert not [q for q in helper.requests if q["op"] == "action"]
 
 
+def test_an_agents_forced_element_click_never_lands_in_another_window(agent, own, helper):
+    """The same tree of Firefox, and now the element's spot really is over Firefox: force would
+    carry the click into the user's window."""
+    agent.ui_tree(window="Firefox")
+    agent.activate_window(TERMINAL)
+    own.under = FIREFOX
+    own.calls.clear()
+    with pytest.raises(PolicyError):
+        agent.click_element("e4", force=True)
+    assert not sent(own)
+
+
 # -- D: the layout check looks at the agent's own window ------------------------------------------------
 
 

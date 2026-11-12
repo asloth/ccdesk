@@ -1379,7 +1379,11 @@ class Desktop:
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
-            window = self._guard(force, (px, py), expect_title)
+            # An agent's force never carries a click into a window that is not its own: with a tree
+            # of another window the guard runs in full, and the click goes out only if it lands in
+            # the agent's window.
+            forced = force and not (self.agent and not self._may_skip_pointer(False))
+            window = self._guard(forced, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
