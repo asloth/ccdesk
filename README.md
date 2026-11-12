@@ -371,11 +371,11 @@ while it is on.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change=true`: see [Without a tree](#without-a-tree). |
-| `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false, show_change=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. Every picture gets a `shot` id (`"s1"`, `"s2"`...) for `shot=` below. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
+| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false, shot?)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change`: see [Without a tree](#without-a-tree). `shot`: see below. |
+| `move(x, y, shot?)` | Moves the pointer (hover). |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false, shot?)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false, show_change=false, shot?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
 | `type_text(text, submit=false, replace=false, force=false, expect_title?, show_change=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
 | `press_key(key, modifiers=[], confirm=false, force=false, expect_title?, show_change=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
@@ -393,7 +393,13 @@ while it is on.
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
-full-screen screenshot.
+full-screen screenshot. With `shot="sN"` (the id of a `screenshot`, `change_shot` or
+`fallback_shot`) on `click`, `move`, `scroll`, `drag` and the same steps in `batch`, `x` and `y`
+are pixels of that picture, scaled or cropped as it is, and ccdesk converts them
+(`screen = origin + pixel / scale`, rounded, then the usual bounds check). The result reports the
+screen point used and `from_shot`. A point outside the picture, or an id older than the latest 32,
+is a validation error that says to take a new screenshot. The layout guard still compares with the
+latest delivered screenshot.
 
 ## Demo
 
@@ -416,7 +422,7 @@ Claude Code, Claude does the same thing by reading the PNG.
 < {"clicked": {"x": 249, "y": 79}, "button": "left", "count": 1}
 
 > screenshot(region='99,49,300,110')
-< {"path": "/home/hermes/.cache/ccdesk/screenshots/screen-20261019-200514-075.png", "width": 300, "height": 110, "origin": {"x": 99, "y": 49}, "note": "pixel (px,py) in this image is screen (origin.x+px, origin.y+py)"}
+< {"path": "/home/hermes/.cache/ccdesk/screenshots/screen-20261019-200514-075.png", "width": 300, "height": 110, "origin": {"x": 99, "y": 49}, "note": "pass shot=\"s2\" with this picture's own pixel coordinates", "shot": "s2"}
 
 > click(x=249, y=179)
 < {"clicked": {"x": 249, "y": 179}, "button": "left", "count": 1}
@@ -518,9 +524,16 @@ A browser started before the accessibility bus was switched on publishes its too
 but an empty page. `ui_tree()` counts that as no tree, attaches `fallback_shot` and says to
 restart the browser.
 
-<a id="without-a-tree"></a>`show_change=true` on those same actions also puts a capture of
-`changed_area` (padded 24 px, scaled down to about 600 tokens at most) in the answer as
-`change_shot`, so the check needs no screenshot of its own. And when a screenshot taken right
+<a id="without-a-tree"></a>On those same actions `show_change=true` adds `change_shot`, a capture
+of `changed_area` (padded 24 px, scaled down to about 600 tokens at most, cropped to the receiving
+window) when the screen changed, so the check needs no screenshot of its own. It is off by default
+(`screen_changed`, `changed_area` and `settled` always come back); with a
+tree the answer stays text (`changes`) and carries no picture. The after-capture waits for the
+change to stop: nothing changed by 0.3 s means `screen_changed: false`; something changed means it
+keeps capturing until two captures in a row are equal, up to 1.5 s, and `settled: false` says the
+screen was still moving then, so `wait_for_change()` is the next call. The tree answers only for an
+action that lands in the window the tree is of, and only while it can be read; any other action
+compares pixels, so a stale tree no longer hides the result. When a screenshot taken right
 after an action is more than four times the size of what changed, or a `wait()` of a second
 or more follows an action, the result carries a `hint` naming the cheaper call. In a real
 session without a tree (filling three web forms of the same shape) most of the 117 screenshots were

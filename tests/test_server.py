@@ -76,9 +76,10 @@ def test_registered_tools(make_desk):
     assert props["screenshot"] == {"region", "path", "scale", "window"}
     assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
     assert props["list_monitors"] == set()
-    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title", "show_change"}
-    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "show_change"}
-    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "show_change"}
+    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title", "show_change", "shot"}
+    assert props["move"] == {"x", "y", "shot"}
+    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "show_change", "shot"}
+    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "show_change", "shot"}
     assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title", "show_change"}
     assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title", "show_change"}
     assert props["clipboard"] == {"action", "text"}
@@ -266,3 +267,12 @@ def test_an_error_with_a_code_leads_with_it(make_desk, fake):
     assert ("click: code=gui_frame_stale input_emitted=false retry_same_request=false: "
             "the window layout changed") in str(err.value)
     assert not [c for c in fake.calls if c[0] == "click"]
+
+
+def test_instructions_say_what_the_answer_already_shows_and_stay_short():
+    """They are sent with every request: 1,728 characters before the picture came with the answer."""
+    from ccdesk.server import INSTRUCTIONS
+
+    for words in ("change_shot", "settled=false", "wait_for_change()", "show_change=true", "shot="):
+        assert words in INSTRUCTIONS
+    assert len(INSTRUCTIONS) <= 1728 + 160  # about 40 tokens more at most

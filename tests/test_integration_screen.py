@@ -54,7 +54,7 @@ def test_two_servers_share_one_named_screen(tmp_path, monkeypatch):
 
         def tree_of_b():
             try:
-                out = b.ui_tree()
+                out = b.ui_tree(window="ccdesk-text")  # an agent names its window
             except Exception:
                 return None
             return out if "ccdesk-text" in out["tree"] else None

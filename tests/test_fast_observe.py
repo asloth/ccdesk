@@ -8,7 +8,7 @@ import pytest
 
 from ccdesk.backends import xerror
 from ccdesk.backends.x11 import X11Backend
-from ccdesk.desktop import DIFF_CELL, SETTLE, SETTLE_POLL
+from ccdesk.desktop import DIFF_CELL, MAX_SETTLE, SETTLE, SETTLE_POLL
 from ccdesk.backends.xgrab import average_cells
 
 # -- average_cells ------------------------------------------------------------
@@ -205,13 +205,35 @@ def test_no_change_waits_the_whole_settle(make_desk, fake):
     assert set(fake.slept) == {SETTLE_POLL}
 
 
-def test_an_animation_never_settles_early(make_desk, fake):
+def test_an_animation_is_followed_up_to_max_settle_and_says_it_is_still_moving(make_desk, fake):
     d = make_desk(screen_diff=True)
     frames = [with_cells([11, 12, 13], 50 + 3 * i) for i in range(1, 60)]
     script(fake, [BASE] + frames)
     _, after = settle(d, fake)
-    assert SETTLE <= sum(fake.slept) < SETTLE + 2 * SETTLE_POLL
+    assert MAX_SETTLE <= sum(fake.slept) < MAX_SETTLE + 2 * SETTLE_POLL
     assert after.gray in frames
+    assert d._moving is True
+
+
+def test_a_change_that_stops_late_returns_when_it_stops(make_desk, fake):
+    """Something changed: keep polling past SETTLE until two captures in a row are equal."""
+    d = make_desk(screen_diff=True)
+    frames = [with_cells([11, 12, 13], 50 + 3 * i) for i in range(1, 21)]  # 20 polls, 0.6 s: past SETTLE
+    script(fake, [BASE] + frames + [frames[-1]])
+    _, after = settle(d, fake)
+    assert after.gray == frames[-1]
+    assert SETTLE < sum(fake.slept) < MAX_SETTLE
+    assert d._moving is False
+
+
+def test_a_change_that_arrives_after_settle_is_not_waited_for(make_desk, fake):
+    d = make_desk(screen_diff=True)
+    late = 12  # polls of 0.03 s: 0.36 s, after SETTLE
+    script(fake, [BASE] * (late + 1) + [BIG])
+    _, after = settle(d, fake)
+    assert after.gray == BASE
+    assert SETTLE <= sum(fake.slept) < SETTLE + 2 * SETTLE_POLL
+    assert d._moving is False
 
 
 def test_a_caret_blink_does_not_return_early(make_desk, fake):
@@ -243,10 +265,10 @@ def test_click_reports_screen_changed_on_the_fast_path(make_desk, fake):
         return COLS, ROWS, (BIG if fake.rects else BASE), (0, 0)
 
     fake.gray_grid = gray_grid
-    r = d.click(5, 5)
+    r = d.click(5, 5, show_change=False)  # the picture of the change is a PNG capture: not what is tested here
     assert r["screen_changed"] is False and "changed_area" not in r
     fake.effects = [(0, 0, 10, 10, (255, 255, 255))]  # painted by the next click
-    r = d.click(5, 5)
+    r = d.click(5, 5, show_change=False)
     assert r["screen_changed"] is True and "changed_area" in r
     assert d._grid_fast is True
     assert not any(c[0] == "screenshot" for c in fake.calls)  # the PNG path was never used

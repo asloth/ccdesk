@@ -51,3 +51,22 @@ class StaleFrameError(PolicyError):
     """Coordinates came from a screenshot whose window layout is no longer the one on screen."""
 
     code = "gui_frame_stale"
+
+
+class TargetRequiredError(PolicyError):
+    """An agent has not chosen its window yet: its input would go to the user's."""
+
+    code = "gui_target_required"
+
+
+class TargetHiddenError(PolicyError):
+    """The agent's window is minimized or on another desktop. Showing it takes the user's focus."""
+
+    code = "gui_target_hidden"
+
+
+class TargetCoveredError(PolicyError):
+    """Another window (the user's or another agent's) is over the spot the agent meant to click."""
+
+    code = "gui_target_covered"
+    retry_same_request = True  # it may be gone after a wait()

@@ -134,6 +134,25 @@ class Backend:
         screenshot() and scale_png())."""
         return None
 
+    # Why the last window_screenshot() / window_gray_grid() gave nothing, for the caller to show.
+    window_note: str | None = None
+
+    def window_screenshot(self, path: str, window_id: str, region: Region | None = None) -> bool:
+        """Write a PNG of the window's own content (also while other windows cover it) and return
+        True; `region` is in screen coordinates, clipped to the window's box. False when this
+        backend cannot (window_note says why): the caller then crops the screen as before."""
+        self.window_note = f"capturing one window is not supported by the {self.name} backend"
+        return False
+
+    def window_gray_grid(self, window_id: str, region: Region | None, cell: int):
+        """gray_grid() of the window's own content; None when it cannot be read (window_note)."""
+        self.window_note = f"capturing one window is not supported by the {self.name} backend"
+        return None
+
+    def window_covered(self, window_id: str) -> bool | None:
+        """Whether another visible window overlaps this window's box from above, or None if unknown."""
+        return None
+
     def scale_png(self, path: str, width: int, height: int) -> None:
         """Resize a PNG in place. ImageMagick is the only resizer; the core stays stdlib-only."""
         tool = self.first_tool("magick", "convert")

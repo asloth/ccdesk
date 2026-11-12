@@ -119,6 +119,19 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   sent, the call fails with `code=gui_frame_stale`, and the message names a fresh screenshot to
   plan from. Read that one instead of retrying the old numbers. `force=true` skips the check, and
   `click_element` does not need it because it resolves the ref against the live tree.
+- **With `--agent NAME` you work in one window of your own.** Call `activate_window()` on it
+  before any `click`, `drag`, `scroll`, `type_text`, `press_key`, `click_element`, `set_value`,
+  or `ui_tree()` without `window=`; until then they fail with `code=gui_target_required`
+  (`force=true` does not change that). Coordinates then go stale only when your own window
+  moves, resizes or leaves the screen, not when the user opens or moves other windows. If your
+  window is minimized or on another desktop the call fails with `code=gui_target_hidden` and
+  sends nothing: `activate_window()` would show it on the user's screen and take their focus,
+  so do that only when the task needs it. If something covers the spot (`gui_target_covered`),
+  use `click_element` or the keyboard, or `wait()` and retry; do not raise your window.
+  While another window is on top of yours, results carry `covered: true`: the change report,
+  its picture, `screenshot(window=...)` and `wait_for_change()` then show your window's own
+  content (X11). A menu or dropdown your window opens is a separate window and is missing from
+  those pictures. `screenshot()` of the whole screen or a `region` still shows what is on top.
 - Independent actions (filling several fields) can go in one turn; check each `changes`.
 - Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
@@ -144,13 +157,16 @@ ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
 - **One action, then verify.** After each click, keypress or typed string, read its
   `changes` (with a tree) or take a new screenshot, and confirm the expected change happened
   before you continue. If it didn't, work out why. Don't repeat the action blindly.
-- **Without a tree, pass `show_change=true` and read `screen_changed`.** Actions then report
-  whether the receiving window's pixels changed, and `changed_area` if they did. `false` after
-  a click means it did nothing yet: don't screenshot to find that out, and don't repeat the
-  click blindly. With `show_change=true` (on `click`, `type_text`, `press_key`, `scroll` and
-  `drag`), the answer also shows `change_shot`, a capture of just that area (at most ~600
-  tokens), so you check the result with no screenshot at all. Screenshot only when it isn't
-  enough, and then just `changed_area`, never the whole monitor.
+- **Without a tree, the answer already says what the action did.** Actions report whether
+  the receiving window's pixels changed (`screen_changed`, and `changed_area` if they did).
+  Pass `show_change=true` to also get `change_shot`, a capture of just that area (at most
+  ~600 tokens, cropped to the receiving window), taken once the screen has stopped moving.
+  Use it instead of taking a screenshot or a `wait()`; don't ask for both.
+  `screen_changed: false` after a click means nothing visible changed (the field already had
+  focus), or not yet: don't repeat it blindly. `settled: false` means the
+  screen was still changing after 1.5 s: call `wait_for_change()`. `show_change=true` (on
+  `click`, `type_text`, `press_key`, `scroll`, `drag`, `batch`) adds the picture. Screenshot
+  only when it isn't enough, and then just `changed_area`, never the whole monitor.
 - **A `hint` in a result means you overpaid.** ccdesk adds one to a screenshot that was much
   bigger than what the last action changed, and to a `wait()` right after an action. Follow it
   from the next call on, not just this once.
@@ -176,11 +192,11 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 1920x1080 capture is ~2,800 tokens; 960x540 is ~700; a 600x300 crop is ~240.
 
 - **Orient cheaply.** For a first look at a screen or page, use `scale=0.5` (a quarter of
-  the tokens). It is enough to find windows, sections and buttons. Image pixel `(px, py)`
-  is screen `(px/scale, py/scale)`, plus `origin` for a region.
+  the tokens). It is enough to find windows, sections and buttons. Click on what you see
+  with `click(px, py, shot="s1")`: no arithmetic (see Coordinate rules).
 - **Act and verify with crops.** Once you know where you are working, screenshot a region
   just around it at full scale, e.g. the form field and its label, or the dialog. Verify a
-  typed value or a toggled checkbox with `show_change=true` or a crop, not the whole monitor.
+  typed value or a toggled checkbox with `show_change=true` on the action or a crop, not the whole monitor.
   A half-scale monitor shot "just to check" is ~700 tokens; doing it after every click is
   what makes a task expensive, because each one stays in context for every later turn.
 - **Full resolution only to read.** Use a full-scale monitor capture when you must read
@@ -194,12 +210,15 @@ tokens (`approx_tokens` in the result), and it stays in context for every later 
 
 ## Coordinate rules
 
-- Coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They match a
-  full-scale screenshot pixel for pixel. If the result has `scale`, divide by it.
-- If the screenshot you are reading was shown to you downscaled, convert back with
-  `screen = seen * (width / displayed_width)`, using `width`/`height` from the tool result.
-- For a **region** screenshot, the result includes `origin`: screen point is
-  `(origin.x + px, origin.y + py)`.
+- **Every picture has a `shot` id** (`screenshot`, `change_shot`, `fallback_shot`). Pass it as
+  `shot="s3"` to `click`, `move`, `scroll`, `drag` (and the same steps in `batch`) and give
+  `x`, `y` as pixels of that picture, scaled or cropped as it is: ccdesk converts them. The
+  result reports the screen point used (`clicked`) and `from_shot`. A point outside the
+  picture, or an id older than the latest 32, is refused: take a new screenshot.
+- Without `shot`, coordinates are **screen pixels** with origin `(0, 0)` at the top-left. They
+  match a full-scale, full-screen screenshot pixel for pixel.
+- If the screenshot was shown to you downscaled by the host (not by `scale=`), convert back
+  with `screen = seen * (width / displayed_width)`, using `width`/`height` from the result.
 - Click the **center** of a target, not its edge. For a text field, click inside the box,
   well away from the border.
 - `list_windows()` gives window geometry. Use it to sanity-check that a target lies inside
