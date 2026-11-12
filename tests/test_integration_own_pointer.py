@@ -260,3 +260,60 @@ def test_an_agent_keeps_its_picture_when_others_move_and_never_takes_the_users_f
         assert bspc(env, "query", "-D", "-d", "focused") == before_desktop  # the user's desktop did not change
     finally:
         mpx.close()
+
+
+def test_an_agent_types_into_its_covered_window_and_sees_that_window(screen, tmp_path):
+    """The user's window sits on top of the agent's. The agent's keys still reach its own window,
+    and the change report, its picture and screenshot(window=...) show that window's own pixels."""
+    from ccdesk.backends.x11_own import OwnPointerBackend
+    from ccdesk.desktop import DIFF_CELL, Desktop
+    from ccdesk.parsing import Region
+    from ccdesk.safety import AuditLog
+    from tests.pngutil import read_png
+
+    hl, env, procs = screen
+    if hl.info().get("window_manager") != "bspwm" or not shutil.which("bspc"):
+        pytest.skip("needs bspwm as the headless window manager (floating windows that overlap)")
+    (a, b), (file_a, file_b) = open_two(env, procs, tmp_path)
+    backend = X11Backend(env=env)
+    for wid in (a, b):
+        bspc(env, "node", wid, "-t", "floating")
+    time.sleep(0.3)
+    for wid in (a, b):  # the same spot: one hides the other
+        backend.move_window(next(w for w in backend.list_windows() if w.id == wid), 100, 100)
+    time.sleep(0.4)
+    mpx = Mpx("cov", env)
+    mpx.create()
+    try:
+        desk = Desktop(backend=OwnPointerBackend(mpx, env=env), agent="cov",
+                       audit=AuditLog(tmp_path / "audit.log"), shots_dir=tmp_path / "shots", screen_diff=True)
+        desk.activate_window(a)
+        bspc(env, "node", b, "-f")  # the user works in B, on top of A
+        time.sleep(0.4)
+        if backend.window_covered(a) is not True:
+            pytest.skip("the window manager did not stack B over A")
+        user_focus = core_focus(env)
+
+        r = desk.type_text("tapada ")
+        wait_for(lambda: "tapada" in file_a.read_text())
+        assert file_b.read_text() == ""
+        assert r["covered"] is True, r
+        assert r["screen_changed"] is True, r
+        assert "error" not in r["change_shot"], r
+        win_a = next(w for w in backend.list_windows() if w.id == a)
+        area, origin = r["changed_area"], r["change_shot"]["origin"]
+        assert win_a.x <= origin["x"] <= area["x"] and win_a.y <= origin["y"] <= area["y"]
+
+        shot = desk.screenshot(window=a)
+        assert shot["covered"] is True and "warning" not in shot, shot
+        img = read_png(shot["path"])
+        assert (img.width, img.height) == (win_a.width, win_a.height)
+        # The screen at that spot shows B, which is empty: the two differ where A has its text.
+        box = Region(win_a.x, win_a.y, win_a.width, win_a.height)
+        assert backend.window_gray_grid(a, box, DIFF_CELL)[2] != backend.gray_grid(box, DIFF_CELL)[2]
+
+        assert desk.wait_for_change(timeout=1, settle_ms=0)["covered"] is True
+        assert backend.window_covered(a) is True  # nothing raised the agent's window
+        assert core_focus(env) == user_focus
+    finally:
+        mpx.close()

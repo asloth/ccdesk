@@ -177,14 +177,15 @@ class Desktop:
         # Pixel comparison when there is no accessibility tree: the receiving window before the
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
-        self._pending: tuple[Region | None, Grid] | None = None
+        # (region, grid, window id when the grid is that window's own pixels: see _own_pixels)
+        self._pending: tuple[Region | None, Grid, str | None] | None = None
         self._grid_fast: bool | None = None  # the latest _snapshot() read the display directly (None: no snapshot yet)
         # Whether the current action reports pixels (it landed outside the tree's window) rather than
         # the tree's lines, and whether the latest tree re-read failed (until ui_tree() works again).
         self._pixel_report = False
         self._tree_unreadable = False
         self._moving = False  # the latest _settled_snapshot() ended with the screen still changing
-        self._after: tuple[Region | None, Grid] | None = None
+        self._after: tuple[Region | None, Grid, str | None] | None = None
         # What the latest action changed, for the "screenshot just this" hint; and the tool before
         # this one, for the "wait_for_change instead of wait" hint.
         self._last_area: Region | None = None
@@ -385,10 +386,16 @@ class Desktop:
     def _observe_pixels(self, result: dict, before: tuple, show_change: bool | None) -> dict:
         """show_change None (the default): attach the capture of what changed; True: as None, and
         say so when it cannot be done; False: never."""
-        region, grid = before
-        after = self._settled_snapshot(region, grid)
+        region, grid, wid = before
+        after = self._settled_snapshot(region, grid, wid)
+        if wid is not None:
+            result["covered"] = True  # compared and pictured from the window's own pixels
+            if after is None:
+                result["note"] = (f"your window is covered and its own pixels could not be read after the action "
+                                  f"({self.backend.window_note}); take a screenshot(window=...) to see the result")
+                return result
         if after is not None:
-            self._after = (region, after)
+            self._after = (region, after, wid)
             box = changed_box(grid, after)
             result["screen_changed"] = box is not None
             if box:
@@ -397,7 +404,7 @@ class Desktop:
                 if self._moving:
                     result["settled"] = False  # still changing: wait_for_change() waits for it to stop
                 if show_change is not False:
-                    result["change_shot"] = self._change_shot(Region(*box))
+                    result["change_shot"] = self._change_shot(Region(*box), wid, region)
         if show_change and "change_shot" not in result and "screen_changed" not in result:
             result["note"] = "show_change needs ImageMagick to see what changed; take a screenshot"
         return result
@@ -451,22 +458,57 @@ class Desktop:
             x1, y1 = min(x1, size[0]), min(y1, size[1])
         return Region(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
 
-    def _change_shot(self, box: Region) -> dict:
-        """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS."""
-        reg = self._padded(box)
+    def _own_pixels(self, window: Window | None) -> str | None:
+        """The id to read this window's own pixels by, when a crop of the screen would show another
+        window instead: an agent's window with something over it (the user's, or another agent's).
+        None otherwise, also for a window nothing covers: the screen then shows the same pixels,
+        plus the menus and dropdowns the window opens, which are windows of their own."""
+        if not self.agent or window is None:
+            return None
         try:
-            shot, factor = self._scaled_capture(reg, SHOT_MAX_TOKENS)
+            return window.id if self.backend.window_covered(window.id) else None
+        except CcdeskError:
+            return None
+
+    def _capture(self, out: Path, reg: Region | None, wid: str | None = None) -> None:
+        """Write the picture of reg: a crop of the screen, or with wid that window's own pixels."""
+        if wid is None:
+            self.backend.screenshot(str(out), reg)
+            return
+        if not self.backend.window_screenshot(str(out), wid, reg):
+            raise CcdeskError(f"the covered window's own pixels could not be read ({self.backend.window_note})")
+        if reg is not None and png_size(out) != (reg.width, reg.height):
+            # Clipped to the window: the picture's origin is no longer reg's, so its pixels cannot be placed.
+            raise CcdeskError("the covered window's own pixels do not fill the area asked for")
+
+    @staticmethod
+    def _clip(reg: Region, to: Region | None) -> Region:
+        if to is None:
+            return reg
+        x0, y0 = max(reg.x, to.x), max(reg.y, to.y)
+        x1, y1 = min(reg.x + reg.width, to.x + to.width), min(reg.y + reg.height, to.y + to.height)
+        return Region(x0, y0, max(1, x1 - x0), max(1, y1 - y0))
+
+    def _change_shot(self, box: Region, wid: str | None = None, within: Region | None = None) -> dict:
+        """A capture of what an action changed, scaled down to about SHOT_MAX_TOKENS. With wid, of
+        that window's own pixels, inside `within` (the window's region)."""
+        reg = self._padded(box)
+        if wid is not None:
+            reg = self._clip(reg, within)
+        try:
+            shot, factor = self._scaled_capture(reg, SHOT_MAX_TOKENS, wid)
         except (CcdeskError, OSError, ValueError) as exc:
             return {"error": f"could not capture the change: {exc}"}
         if factor < 1:
             shot["scale"] = round(factor, 3)
         return shot
 
-    def _scaled_capture(self, reg: Region, max_tokens: int) -> tuple[dict, float]:
-        """Capture reg, scaled down to about max_tokens (tokens ~ width*height/750).
+    def _scaled_capture(self, reg: Region, max_tokens: int, wid: str | None = None) -> tuple[dict, float]:
+        """Capture reg (with wid: from that window's own pixels), scaled down to about max_tokens
+        (tokens ~ width*height/750).
         Returns the shot (path, width, height, approx_tokens, origin) and the scale factor used."""
         out = self._shot_path(None)
-        self.backend.screenshot(str(out), reg)
+        self._capture(out, reg, wid)
         full = width, height = png_size(out)
         factor = min(1.0, (max_tokens * 750 / (width * height)) ** 0.5)
         if factor < 1:
@@ -484,8 +526,18 @@ class Desktop:
             if wid is None:
                 raise CcdeskError("no active window to capture")
             title = wid
-        _, reg, _ = self._shown_window_region(title)
-        shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
+        window, reg, _ = self._shown_window_region(title)
+        wid = self._own_pixels(window)
+        try:
+            shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS, wid)
+        except CcdeskError:
+            if wid is None:
+                raise
+            wid = None
+            shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
+            shot["warning"] = self._covered_warning()
+        if wid is not None:
+            shot["covered"] = True
         shot["scale"] = round(factor, 3) if factor < 1 else 1.0
         return shot
 
@@ -643,8 +695,11 @@ class Desktop:
         # skip it where a capture is known to be slow.
         if pixels or self._grid_fast is not False:
             region = self._window_region(window)
-            grid = self._snapshot(region)
-            self._pending = (region, grid) if grid is not None else None
+            wid = self._own_pixels(window) if region is not None else None
+            grid = self._snapshot(region, wid) if wid is not None else None
+            if grid is None:
+                wid, grid = None, self._snapshot(region)
+            self._pending = (region, grid, wid) if grid is not None else None
         return window
 
     def _in_trees_window(self, window: Window | None) -> bool:
@@ -741,10 +796,12 @@ class Desktop:
         if seen[4] != now[4]:
             parts.append("it is now on show" if now[4] else "it is no longer on show")
         what = f"your window {self._target.title!r} ({now[1]}): " + "; ".join(parts)
-        region = None
+        region = own = None
         if now[4]:
-            region = self._window_region(next((w for w in windows if w.id == now[1]), None))
-        fresh = self._fresh_screenshot(now, region) if region else None
+            mine = next((w for w in windows if w.id == now[1]), None)
+            region = self._window_region(mine)
+            own = self._own_pixels(mine)
+        fresh = self._fresh_screenshot(now, region, own) if region else None
         see = (f"Read the fresh picture of your window {fresh} and plan again" if fresh
                else "Take a screenshot(window=...) of your window and plan again")
         raise StaleFrameError(f"the window layout changed since {since} ({what}), so its "
@@ -755,14 +812,14 @@ class Desktop:
     def _box_text(box: tuple | None) -> str:
         return "gone" if box is None else f"{box[0]},{box[1]} {box[2]}x{box[3]}"
 
-    def _fresh_screenshot(self, layout: tuple, region: Region | None = None) -> str | None:
+    def _fresh_screenshot(self, layout: tuple, region: Region | None = None, wid: str | None = None) -> str | None:
         """Screenshot for a gui_frame_stale refusal (the whole screen, or `region`: an agent's
-        window); it becomes the latest delivered one."""
+        window, from its own pixels when wid says it is covered); it becomes the latest delivered one."""
         try:
             out = self._shot_path(None)
-            self.backend.screenshot(str(out), region)
-        except (CcdeskError, OSError):
-            return None
+            self._capture(out, region, wid)
+        except (CcdeskError, OSError, ValueError):
+            return None  # a covered window that cannot be read: no picture beats one of another window
         if not out.exists():
             return None
         self._layout_seen = layout
@@ -797,7 +854,7 @@ class Desktop:
             return None
         return Region(x0, y0, x1 - x0, y1 - y0)
 
-    def _settled_snapshot(self, region: Region | None, before: Grid) -> Grid | None:
+    def _settled_snapshot(self, region: Region | None, before: Grid, wid: str | None = None) -> Grid | None:
         """The screen after an action. With a direct capture (a few tens of ms): nothing changed by
         SETTLE, return it; something changed, keep capturing until two captures in a row are equal,
         up to MAX_SETTLE, and say in self._moving if it was still moving then. With the PNG path
@@ -805,11 +862,11 @@ class Desktop:
         self._moving = False
         if not self._grid_fast:
             self.backend.sleep(SETTLE)
-            return self._snapshot(region)
+            return self._snapshot(region, wid)
         start, prev = self.clock(), None
         while True:
             self.backend.sleep(SETTLE_POLL)
-            cur = self._snapshot(region)
+            cur = self._snapshot(region, wid)
             if cur is None:
                 return cur
             elapsed = self.clock() - start
@@ -823,12 +880,20 @@ class Desktop:
                 return cur
             prev = cur
 
-    def _snapshot(self, region: Region | None) -> Grid | None:
-        """A grayscale copy of the screen at 1/DIFF_CELL size, or None (no ImageMagick, or it failed)."""
+    def _snapshot(self, region: Region | None, wid: str | None = None) -> Grid | None:
+        """A grayscale copy of the screen at 1/DIFF_CELL size, or None (no ImageMagick, or it failed).
+        With wid, of that window's own pixels, or None when they cannot be read: never the screen
+        instead, which would be compared with a picture of something else."""
         if not self.screen_diff:
             return None
-        fast = self.backend.gray_grid(region, DIFF_CELL)
-        self._grid_fast = fast is not None
+        if wid is not None:
+            fast = self.backend.window_gray_grid(wid, region, DIFF_CELL)
+            if fast is None:
+                return None
+            self._grid_fast = True
+        else:
+            fast = self.backend.gray_grid(region, DIFF_CELL)
+            self._grid_fast = fast is not None
         if fast is not None:
             cols, rows, gray, origin = fast
             return Grid(cols, rows, gray, origin, scale=(float(DIFF_CELL), float(DIFF_CELL)))
@@ -873,7 +938,14 @@ class Desktop:
             reg = reg or parse_region(region, self.screen_size())
             factor = check_scale(scale)
             out = self._shot_path(path)
-            self.backend.screenshot(str(out), reg)
+            own, warning = self._own_pixels(shot_of), None
+            if own is not None:
+                try:
+                    self._capture(out, reg, own)
+                except (CcdeskError, OSError, ValueError):
+                    own, warning = None, self._covered_warning()
+            if own is None:
+                self.backend.screenshot(str(out), reg)
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
             # Coordinates measured on this picture are only valid while the layout holds.
@@ -890,11 +962,15 @@ class Desktop:
                 result["scale"] = factor
             if shot_of:
                 result["window"] = {"id": shot_of.id, "title": shot_of.title}
+            if own is not None:
+                result["covered"] = True  # the window's own pixels: what is on top of it is not in the picture
+            if warning:
+                result["warning"] = warning
             if reg:
                 result["origin"] = {"x": reg.x, "y": reg.y}
             if reg or factor < 1:
                 result["note"] = f'pass shot="{sid}" with this picture\'s own pixel coordinates'
-            if unchecked:
+            if unchecked and not warning:
                 result["warning"] = ("could not check that this window is on show (on X11, install xwininfo); "
                                      "if the image shows something else, activate_window() it first")
             hint = self._crop_hint(reg, result["approx_tokens"])
@@ -906,6 +982,10 @@ class Desktop:
             return result
 
         return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
+
+    def _covered_warning(self) -> str:
+        return (f"this window is covered and its own pixels could not be read ({self.backend.window_note}): "
+                f"the picture is a crop of the screen and shows what is on top of it")
 
     def _tree_hint(self, reg: Region | None, factor: float, tokens: int) -> str | None:
         """A whole screen at full scale before any tree was read: the first shot is where the
@@ -1514,17 +1594,30 @@ class Desktop:
                 raise ValidationError(f"timeout must be between 0 and {MAX_WAIT_FOR_CHANGE:g} seconds")
             settle = check_int("settle_ms", settle_ms, 0, 60_000) / 1000
             start = self.clock()
+            wid = None
             if reg is None and self._after is not None:
-                reg, base = self._after  # a page that loaded while the model was thinking counts
+                reg, base, wid = self._after  # a page that loaded while the model was thinking counts
             else:
-                base = self._snapshot(reg)
+                if reg is None and self.agent and self._target is not None:
+                    # An agent whose window is covered waits for its window, not for the user's on top.
+                    try:
+                        mine = self.find_window(self._target.id)
+                    except CcdeskError:
+                        mine = None
+                    own, box = self._own_pixels(mine), self._window_region(mine)
+                    if own is not None and box is not None:
+                        base = self._snapshot(box, own)
+                        if base is not None:
+                            reg, wid = box, own
+                if wid is None:
+                    base = self._snapshot(reg)
             if base is None:
                 raise UnsupportedError("wait_for_change needs ImageMagick (magick or convert) to compare "
                                        "screenshots; use wait(seconds) instead")
             prev, area, last_motion = base, None, None
             while (elapsed := self.clock() - start) < limit:
                 self.backend.sleep(min(POLL, limit - elapsed))
-                current = self._snapshot(reg)
+                current = self._snapshot(reg, wid)
                 if current is None:
                     continue
                 if changed_box(prev, current):
@@ -1533,14 +1626,15 @@ class Desktop:
                 area = changed_box(base, current) or area
                 if area and last_motion is not None and self.clock() - last_motion >= settle:
                     break
-            self._after = (reg, prev)  # the next wait_for_change waits for the next change
+            self._after = (reg, prev, wid)  # the next wait_for_change waits for the next change
             waited = round(min(self.clock() - start, limit) * 1000)
+            covered = {"covered": True} if wid is not None else {}
             if area is None:
-                return {"changed": False, "waited_ms": waited,
+                return {"changed": False, "waited_ms": waited, **covered,
                         "note": f"nothing changed in {limit:g}s; take a screenshot to see why"}
             settled = self.clock() - last_motion >= settle
             self._last_area = Region(*area)
-            return {"changed": True, "settled": settled, "waited_ms": waited,
+            return {"changed": True, "settled": settled, "waited_ms": waited, **covered,
                     "changed_area": dict(zip(("x", "y", "width", "height"), area))}
 
         args = {"region": region, "timeout": timeout, "settle_ms": settle_ms}
