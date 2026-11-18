@@ -618,25 +618,64 @@ class Desktop:
                                       "list_windows(), then activate_window() on your own window first "
                                       "(force=true does not change this)")
 
-    def _tree_target(self) -> Window | None:
-        """The listed window the latest ui_tree() read, when its title names exactly one."""
-        title = self.a11y.tree_window()
+    def _listed(self, title: str | None) -> Window | None:
+        """The one listed window an accessibility title names: the same title, else the one title
+        that contains it or is contained in it (the window manager and the accessibility bus do not
+        always spell titles the same). None when no window or several match."""
         if not title:
             return None
         try:
-            matches = [w for w in self.backend.list_windows() if w.title == title]
+            windows = self.backend.list_windows()
         except CcdeskError:
             return None
-        return matches[0] if len(matches) == 1 else None
+        exact = [w for w in windows if w.title == title]
+        if exact:
+            return exact[0] if len(exact) == 1 else None
+        want = title.casefold().strip()
+        loose = [w for w in windows if w.title and (want in w.title.casefold() or w.title.casefold().strip() in want)]
+        return loose[0] if len(loose) == 1 else None
 
-    def _adopt_tree_window(self) -> None:
-        """An element action of an agent with no window yet makes the tree's window its own, with
-        nothing sent: no activation, no keyboard focus. Without such a window, the usual refusal."""
-        if self.agent and self._target is None:
-            window = self._tree_target()
+    def _tree_target(self) -> Window | None:
+        """The listed window the latest ui_tree() read, when its title names exactly one."""
+        return self._listed(self.a11y.tree_window())
+
+    def _tree_is_target(self) -> bool:
+        """Whether the latest ui_tree() (or the window of the ref acted on) is the agent's window."""
+        if self._target is None:
+            return False
+        title = self.a11y.tree_window()
+        if title == self._target.title:
+            return True
+        window = self._listed(title)
+        return window is not None and window.id == self._target.id
+
+    def _adopt_ref_window(self, ref: str) -> None:
+        """An element action works in the window its ref was read from. That window becomes the one
+        the action's changes are read from (as if ui_tree() had read it last). For an agent with no
+        window yet, it becomes its window. For an own-pointer agent (--own-pointer or --input
+        cua-driver) it also replaces an earlier window: that only records it, nothing is sent to the
+        window manager. Other agents keep their window (activate_window() activates for real)."""
+        title = self.a11y.ref_window(ref)
+        if title and title != self.a11y.tree_window():
+            try:
+                self.a11y.use_window(title)
+            except CcdeskError:
+                pass  # the window is gone: resolve() says so for the ref itself
+        if not self.agent:
+            return
+        window = self._listed(title or self.a11y.tree_window())
+        if self._target is None:
             if window is None:
                 self._need_target()
             self._target = window
+            return
+        if window is None or window.id == self._target.id or not self.backend.own_pointer:
+            return
+        before, self._target = self._target, window
+        self._typing_ref = None
+        self._note = " ".join(filter(None, [self._note, (
+            f"your window is now {window.title!r} ({window.id}), the window of this element; it was "
+            f"{before.title!r}. Nothing was sent to the window manager")]))
 
     def _hidden(self, window: Window) -> bool:
         """Whether the window is minimized or on another desktop, which is when showing it takes
@@ -1442,7 +1481,7 @@ class Desktop:
                       expect_title: str | None = None) -> dict:
         def do():
             self._ready()
-            self._adopt_tree_window()
+            self._adopt_ref_window(str(ref).strip())
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             node = self.a11y.resolve(ref)
@@ -1479,12 +1518,27 @@ class Desktop:
         nothing to check, unless the tree is of another window than activate_window() chose. For an
         agent, force does not skip it: a tree of a window that is not its own never does."""
         if self.agent:
-            return self._target is not None and self.a11y.tree_window() == self._target.title
-        return force or self._target is None or self.a11y.tree_window() == self._target.title
+            return self._tree_is_target()
+        return force or self._target is None or self._tree_is_target()
+
+    def _other_window(self, ref: str) -> str:
+        """The refusal for an element in another window than this agent's: what to call instead."""
+        title = self.a11y.ref_window(ref) or self.a11y.tree_window()
+        window = self._listed(title)
+        if window is None:
+            return (f"{ref} is in {title!r}, which is not one listed window (none or several match that "
+                    f"title), and your window is {self._target.title!r}. Call list_windows(), then "
+                    f"activate_window(<its id>) and ui_tree() on it")
+        if not self.agent:
+            return (f"{ref} is in {window.title!r}, not {self._target.title!r} from activate_window(); call "
+                    f"activate_window({window.id!r}) first, or pass force=true")
+        return (f"{ref} is in {window.title!r} ({window.id}), not your window {self._target.title!r}. Call "
+                f"activate_window({window.id!r}) first: that activates it and takes the user's focus, so do it "
+                f"only if the task needs that window (force=true does not change this)")
 
     def _remember_typing(self, ref: str, node: dict, at_end: bool) -> None:
         """Where an own-pointer agent's next type_text goes without keyboard focus, if anywhere."""
-        mine = self._target is not None and self.a11y.tree_window() == self._target.title
+        mine = self._tree_is_target()
         self._typing_ref = (ref, node, at_end) if mine and node.get("role") in TYPABLE_ROLES else None
 
     def _insert_typed(self, body: str, replace: bool, force: bool) -> dict | None:
@@ -1497,7 +1551,7 @@ class Desktop:
             wid = self.backend.active_window()
         except CcdeskError:
             wid = None
-        if wid == self._target.id or self.a11y.tree_window() != self._target.title:
+        if wid == self._target.id or not self._tree_is_target():
             return None  # the keyboard already reaches the window, or the refs are of another one
         ref, node, at_end = self._typing_ref
         label = f'{node["role"]} {node["name"]!r}'
@@ -1538,6 +1592,9 @@ class Desktop:
         if self._yielded:
             result["yielded_ms"] = self._yielded
         result["window"] = {"title": self.a11y.tree_window()}
+        if self._note:  # e.g. that this element's window is now the agent's
+            result["note"] = " ".join(filter(None, [result.get("note"), self._note]))
+            self._note = None
         return result
 
     def set_value(self, ref: str, text: str, force: bool = False) -> dict:
@@ -1547,16 +1604,14 @@ class Desktop:
                 raise ValidationError("text must be a string")
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters")
-            self._adopt_tree_window()
             key = str(ref).strip()
+            self._adopt_ref_window(key)
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
             if not node.get("showing"):
                 raise CcdeskError(f"{key} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
             if not self._may_skip_pointer(force):
-                raise PolicyError(f"{key} is in {self.a11y.tree_window()!r}, not {self._target.title!r} from "
-                                  f"activate_window(); call ui_tree() on that window"
-                                  + ("" if self.agent else ", or pass force=true"))
+                raise PolicyError(self._other_window(key))
             self._before_native()
             answer = self.a11y.set_value(key, text)
             self._cursor_to_node(node)
@@ -1682,11 +1737,13 @@ class Desktop:
 
         def do():
             if self.agent and self._target is None:
-                for name, _ in checked:  # before any step is sent, not halfway
+                for name, args in checked:  # before any step is sent, not halfway
                     if name == "activate_window":
                         break
-                    if name in ("click_element", "set_value") and self._tree_target() is not None:
-                        break  # it makes the tree's window this agent's own
+                    if (name in ("click_element", "set_value")
+                            and self._listed(self.a11y.ref_window(str(args.get("ref", "")).strip())
+                                             or self.a11y.tree_window()) is not None):
+                        break  # it makes the window of its ref this agent's own
                     if name in NEEDS_TARGET:
                         self._need_target()
             done: list[dict] = []

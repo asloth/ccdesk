@@ -77,6 +77,7 @@ class Ref:
     name: str
     dx: int = 0  # added to the element's box: the window's screen position on Wayland
     dy: int = 0
+    window: str | None = None  # the title of the window whose tree listed it
 
 
 class HelperProcess:
@@ -254,13 +255,13 @@ class A11y:
     def apps(self) -> list[dict]:
         return self.call({"op": "apps"})["apps"]
 
-    def _ref(self, n: dict, offset: tuple[int, int]) -> str:
+    def _ref(self, n: dict, offset: tuple[int, int], window: str | None = None) -> str:
         """Same element (path and role), same ref across calls, so refs from an earlier tree stay valid."""
         ref = self._by_path.get(n["path"])
         if ref is None or self.refs[ref].role != n["role"]:
             ref = f"e{len(self.refs) + 1}"
             self._by_path[n["path"]] = ref
-        self.refs[ref] = Ref(n["path"], n["role"], n["name"], *offset)
+        self.refs[ref] = Ref(n["path"], n["role"], n["name"], *offset, window=window)
         return ref
 
     def _offset(self, result: dict) -> tuple[int, int] | None:
@@ -281,7 +282,7 @@ class A11y:
             result["origin"] = {"x": offset[0], "y": offset[1]}
             for n in result["nodes"]:
                 shift(n, offset)
-        return result, [(self._ref(n, offset or (0, 0)), n) for n in result["nodes"]]
+        return result, [(self._ref(n, offset or (0, 0), result.get("window")), n) for n in result["nodes"]]
 
     def tree(self, window: str | None, query: str | None, page: bool, max_nodes: int) -> dict:
         request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
@@ -382,6 +383,23 @@ class A11y:
 
     def tree_window(self) -> str | None:
         return self._last["window"] if self._last else None
+
+    def ref_window(self, ref: str) -> str | None:
+        """The title of the window whose tree listed this ref (None for an unknown ref)."""
+        known = self.refs.get(str(ref).strip())
+        return known.window if known else None
+
+    def use_window(self, title: str) -> None:
+        """Make this window the one changes() and tree_window() follow, as if ui_tree() had read it:
+        an element action on a ref from an older tree reports the changes of its own window."""
+        with self._lock:
+            if self._last is not None and self._last["window"] == title:
+                return
+            request = {"op": "tree", "window": title, "query": None, "page": False,
+                       "max_nodes": self._last["request"]["max_nodes"] if self._last else 300}
+            result, nodes = self._read(request)
+            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes},
+                          "window": result["window"], "secret": secret_focused(nodes)}
 
 
 def secret_focused(nodes: list[tuple[str, dict]]) -> bool:

@@ -189,9 +189,32 @@ NEEDS_TARGET = [
     lambda d, **kw: d.scroll(5, 5, dy=2, **kw),
     lambda d, **kw: d.type_text("x", **kw),
     lambda d, **kw: d.press_key("Return", **kw),
-    lambda d, **kw: d.click_element("e4", **kw),
-    lambda d, **kw: d.set_value("e2", "x", **kw),
 ]
+
+
+@pytest.mark.parametrize("call", [lambda d: d.click_element("e4"), lambda d: d.set_value("e2", "x")])
+def test_an_element_action_makes_the_trees_window_the_agents_own(agent, own, helper, call):
+    """The accessible title ("Form — Mozilla Firefox") and the window manager's ("Mozilla Firefox")
+    are spelled differently and still name one window."""
+    agent.ui_tree(window="Firefox")
+    helper.actions["3.0.29.5"] = "click"
+    own.calls.clear()
+    call(agent)
+    assert agent._target.id == FIREFOX
+    assert not activations(own) and not focuses(own)
+
+
+@pytest.mark.parametrize("call", [lambda d, **kw: d.click_element("e4", **kw),
+                                  lambda d, **kw: d.set_value("e2", "x", **kw)])
+def test_an_element_action_without_a_listed_window_is_refused(agent, own, helper, call):
+    helper.trees["Nowhere"] = ("Nowhere", [dict(FORM := helper.nodes["3.0.29.5"], path="4.0.1")])
+    agent.ui_tree(window="Nowhere")  # its window is on the bus, not in the window list
+    own.calls.clear()
+    for kw in ({}, {"force": True}):
+        with pytest.raises(PolicyError) as exc:
+            call(agent, **kw)
+        assert exc.value.code == "gui_target_required"
+    assert own.calls == []
 
 
 @pytest.mark.parametrize("call", NEEDS_TARGET)
@@ -271,33 +294,36 @@ def test_the_normal_mode_needs_no_target(make_desk, fake):
     assert d.batch([{"tool": "click", "x": 5, "y": 5}])["done"] == 1
 
 
-def test_a_tree_of_another_window_does_not_skip_the_guard_for_an_agent(agent, own, helper):
-    """The tree is of the Firefox form, the agent's window is the Terminal: set_value would write
-    into a window that is not its own, and a forced click_element would use the native action."""
+def test_an_own_pointer_agent_acts_in_the_window_of_the_ref(agent, own, helper):
+    """The tree is of the Firefox form, the agent's window is the Terminal: the element actions
+    work in Firefox through accessibility and make it the agent's window, with nothing sent to the
+    window manager."""
     agent.ui_tree(window="Firefox")
     agent.activate_window(TERMINAL)
-    helper.requests.clear()
-    with pytest.raises(PolicyError, match="not 'Terminal'"):
-        agent.set_value("e2", "x", force=True)
-    assert not [q for q in helper.requests if q["op"] == "set"]
-    own.under = TERMINAL
     own.calls.clear()
+    r = agent.set_value("e2", "x")
+    assert r["verified"] and agent._target.id == FIREFOX
+    assert "your window is now 'Mozilla Firefox'" in r["note"] and "'Terminal'" in r["note"]
     helper.actions["3.0.29.5"] = "click"
-    r = agent.click_element("e4", force=True)
-    assert "activated" not in r and sent(own)  # by the pointer, through _guard, not natively
-    assert not [q for q in helper.requests if q["op"] == "action"]
+    assert agent.click_element("e4")["activated"] == "click"
+    assert own.calls == []  # no activation, no focus, no pointer
 
 
-def test_an_agents_forced_element_click_never_lands_in_another_window(agent, own, helper):
-    """The same tree of Firefox, and now the element's spot really is over Firefox: force would
-    carry the click into the user's window."""
-    agent.ui_tree(window="Firefox")
-    agent.activate_window(TERMINAL)
-    own.under = FIREFOX
-    own.calls.clear()
-    with pytest.raises(PolicyError):
-        agent.click_element("e4", force=True)
-    assert not sent(own)
+def test_a_shared_pointer_agent_is_told_what_to_call(make_desk, fake, helper):
+    """Without an own pointer activate_window() activates for real, so the agent keeps its window
+    and the refusal names the call that works."""
+    d = make_desk(agent="desk-1")
+    d.ui_tree(window="Firefox")
+    d.activate_window(TERMINAL)
+    helper.requests.clear()
+    with pytest.raises(PolicyError) as exc:
+        d.set_value("e2", "x", force=True)
+    text = str(exc.value)
+    assert f"activate_window({FIREFOX!r})" in text and "'Mozilla Firefox'" in text and "'Terminal'" in text
+    assert "call ui_tree() on that window" not in text
+    assert not [q for q in helper.requests if q["op"] == "set"]
+    d.activate_window(FIREFOX)  # what the refusal said
+    assert d.set_value("e2", "x")["verified"]
 
 
 # -- D: the layout check looks at the agent's own window ------------------------------------------------
