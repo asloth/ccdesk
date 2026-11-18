@@ -52,12 +52,15 @@ You have your own pointer and keyboard, and the user keeps working in their own 
 Work through the accessibility tree: list_windows(), ui_tree(window=<your window's title>), then
 click_element(ref) and set_value(ref, text); type_text right after one of those on a text field
 writes into it the same way. For a combo box use set_value(ref, "<option name>"), not clicks.
-That makes the window yours and touches neither the user's focus nor the window stacking.
-click_element on a button, check box or menu item runs its accessible action; on anything else
+That makes the window yours and touches neither the user's focus nor the window stacking; a ref
+from another window's tree acts in that window and makes it yours the same way (the note says so).
+click_element on a button, check box or menu item runs its accessible action, and an item without
+one (a spreadsheet's sheet tab, a page tab) is selected in its list; on anything else
 (a text field, a combo box) it is a real click, which some window managers take as
 click-to-focus and raise the window: prefer set_value there. Avoid activate_window(), and avoid type_text/press_key with no field chosen:
 they move your keyboard focus into the window, which on some window managers activates it and
-raises it over the user's. Never take the user's focus or raise your window to get past a refusal."""
+raises it over the user's. Never take the user's focus or raise your window to get past a refusal;
+force=true never sends your input into a window that is not yours."""
 
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
@@ -181,7 +184,8 @@ def build_server(desktop: Desktop) -> MCPServer:
               shot: str | None = None) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
         shot="s3": x, y are pixels of that screenshot or change_shot, converted for you.
-        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
+        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway,
+        except for an --agent: its clicks never go into a window that is not its own.
         expect_title: refuse unless the receiving window's title contains it (a browser tab).
         show_change=true: the answer also shows a capture of what changed (at most ~600 tokens), instead of a screenshot after."""
         return with_change_shot(desktop.click(x, y, button=button, count=count, force=force,
@@ -275,10 +279,12 @@ def build_server(desktop: Desktop) -> MCPServer:
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
                       force: bool = False, expect_title: str | None = None) -> dict:
-        """Click an element from the latest ui_tree() result, e.g. ref="e12". A single left click on
-        a button, checkbox, link or menu item runs its accessibility action when it has one, without
-        moving the pointer; otherwise it clicks the centre. Fails if the element changed or left the
-        screen; call ui_tree() again then. expect_title: as in click, and always a real click."""
+        """Click an element from a ui_tree() result, e.g. ref="e12"; a ref from an earlier tree acts in
+        its own window. A single left click on a button, checkbox, link or menu item runs its
+        accessibility action when it has one, without moving the pointer; an item with no action (a
+        sheet tab, a page tab) is selected in its list the same way; otherwise it clicks the centre.
+        Fails if the element changed or left the screen; call ui_tree() again then. expect_title: as
+        in click, and always a real click."""
         return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
