@@ -204,6 +204,18 @@ def test_an_agent_without_a_target_is_refused_and_force_does_not_help(agent, own
     assert read_audit()[-1]["status"] == "denied"
 
 
+def test_the_refusal_says_activation_leaves_the_user_alone_with_an_own_pointer(agent, own, make_desk):
+    # In the bench an agent read "would reach the user's" as "activating takes the user's focus" and gave up.
+    with pytest.raises(PolicyError) as exc:
+        agent.click(5, 5)
+    assert "only moves your keyboard focus" in str(exc.value)
+    assert "would reach the user's" not in str(exc.value)
+    own.own_pointer = False
+    with pytest.raises(PolicyError) as exc:
+        make_desk(agent="desk-2").click(5, 5)
+    assert "would reach the user's" in str(exc.value)
+
+
 def test_ui_tree_without_a_window_is_refused_for_an_agent_without_a_target(agent, helper):
     with pytest.raises(PolicyError) as exc:
         agent.ui_tree()

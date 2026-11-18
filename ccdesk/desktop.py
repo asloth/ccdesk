@@ -593,6 +593,12 @@ class Desktop:
         """An agent works in the window it chose: without one its input would go to whatever the
         user has in front. Not overridden by force."""
         if self.agent and self._target is None:
+            if self.backend.own_pointer:
+                raise TargetRequiredError(
+                    "this agent has no window yet: call list_windows(), then activate_window() on the window "
+                    "you work in. With your own pointer that only moves your keyboard focus: the user's "
+                    "focus, pointer and window stacking stay as they are, unless the window is minimized or "
+                    "on another desktop (force=true does not change this)")
             raise TargetRequiredError("this agent has no window yet, so its input would reach the user's: call "
                                       "list_windows(), then activate_window() on your own window first "
                                       "(force=true does not change this)")
