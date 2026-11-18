@@ -215,7 +215,8 @@ def test_the_own_pointer_refusal_points_at_element_actions_and_tells_the_truth(a
         agent.click(5, 5)
     text = str(exc.value)
     assert "ui_tree(window=" in text and "click_element() or set_value()" in text
-    assert "activates and raises the window" in text
+    assert "activate and raise the window" in text and "only records the window" in text
+    assert "Do not click something just to pick the window" in text
     assert "only moves your keyboard focus" not in text and "would reach the user's" not in text
     own.own_pointer = False
     with pytest.raises(PolicyError) as exc:

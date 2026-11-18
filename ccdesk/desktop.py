@@ -609,9 +609,11 @@ class Desktop:
                 raise TargetRequiredError(
                     "this agent has no window yet. Call list_windows(), then ui_tree(window=<its title>) and "
                     "act on its refs with click_element() or set_value(): that makes it your window without "
-                    "touching the user's focus or window stacking. activate_window() also picks it, but a "
-                    "type_text or press_key afterwards moves your keyboard focus there, which on some window "
-                    "managers activates and raises the window over the user's (force=true does not change this)")
+                    "touching the user's focus or window stacking. For a click, drag or scroll at coordinates, "
+                    "call activate_window() on it first: it only records the window. Do not click something "
+                    "just to pick the window: any pointer click, and a type_text or press_key that needs your "
+                    "keyboard focus, may make some window managers (xfwm4) activate and raise the window over "
+                    "the user's (force=true does not change this)")
             raise TargetRequiredError("this agent has no window yet, so its input would reach the user's: call "
                                       "list_windows(), then activate_window() on your own window first "
                                       "(force=true does not change this)")
