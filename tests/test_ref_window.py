@@ -145,3 +145,60 @@ def test_a_shared_pointer_agent_keeps_its_window_and_gets_working_advice(two, tm
     assert d._target.id == MAIL
     d.activate_window(CALC)
     assert d.set_value(calc["Recalculate field"], "7")["verified"]
+
+
+USER = "0x00000040"
+
+
+@pytest.fixture
+def user_on_top(agent):
+    """A third window, the user's, over Calc's sheet tab at 400,300 (the sentinel's "User activity")."""
+    d, session, helper, driver_input = agent
+    session.windows.append(Window(USER, "User activity", "sentinel", 350, 250, 300, 200, 0))
+    session.under = USER
+    return agent
+
+
+def test_a_forced_click_element_never_lands_in_the_users_window(user_on_top):
+    """Call 40 of own-r2 CDB-G02: click_element(page tab, force=true) in the agent's own Calc, the
+    tab has no action (and here no Selection), so the pointer fallback ran with force and the
+    click went into 'User activity'."""
+    d, session, helper, driver_input = user_on_top
+    calc = refs(d, "Calc")
+    d.activate_window(CALC)
+    helper.actions.pop("3.0.1")  # no action, and the fake offers no Selection
+    session.calls.clear()
+    for force in (False, True):
+        with pytest.raises(PolicyError) as exc:
+            d.click_element(calc["Recalculate"], force=force)
+        text = str(exc.value)
+        assert exc.value.code == "gui_target_covered" and exc.value.input_emitted is False
+        assert "'User activity'" in text and USER in text
+        assert "force=true sends" not in text
+    assert "never sends input into a window that is not yours" in text
+    assert [c for c in session.calls if c[0] in WM_CALLS] == [] and driver_input() == []
+
+
+def test_covered_names_the_window_over_the_point(user_on_top):
+    d, session, helper, driver_input = user_on_top
+    d.activate_window(CALC)
+    with pytest.raises(PolicyError) as exc:
+        d.click(400, 300)  # inside Calc, under the user's window
+    text = str(exc.value)
+    assert "the point 400,300 of your window 'kestrel.ods - LibreOffice Calc'" in text
+    assert f"is covered by 'User activity' ({USER})" in text
+
+
+def test_a_point_outside_the_agents_window_is_not_called_covered(user_on_top):
+    """cua CDB-G02 calls 20-33: a Calendar point was reported as "your window 'Signal Quay Chat' is
+    covered by 'Daymark Calendar'", the element's own window."""
+    d, session, helper, driver_input = user_on_top
+    d.activate_window(CALC)
+    session.under = MAIL
+    session.calls.clear()
+    with pytest.raises(PolicyError) as exc:
+        d.click(50, 50)  # in Mail only
+    text = str(exc.value)
+    assert "outside your window 'kestrel.ods - LibreOffice Calc'" in text and f"over 'Mail' ({MAIL})" in text
+    assert "covered" not in text
+    assert [c for c in session.calls if c[0] in WM_CALLS] == [] and driver_input() == []

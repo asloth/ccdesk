@@ -751,6 +751,11 @@ class Desktop:
                 if note:
                     self._note = note
                 window = self._receiver(windows, point)
+        if (self.agent and force and point is not None and target and window is not None
+                and target.id in windows and not self._belongs_to_target(window)):
+            # An agent's force skips its other checks, never this one: the input would land in a
+            # window that is not its own, the user's for all it knows.
+            raise TargetCoveredError(self._covered(point, windows[target.id], window, forced=True))
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
             if target.id not in windows:
@@ -758,12 +763,7 @@ class Desktop:
                                   f"activate_window() ({target.title!r}, {target.id}) is gone; call "
                                   f"list_windows() and activate_window() again, or pass force=true")
             if self.agent and point is not None and hidden is False:
-                raise TargetCoveredError(
-                    f"the point {point[0]},{point[1]} of your window {target.title!r} ({target.id}) is covered "
-                    f"by {window.title!r} ({window.id}), which belongs to the user or another agent. Do not "
-                    f"raise your window: use click_element() (it reaches a covered window when the app has an "
-                    f"accessibility tree) or the keyboard, or wait() and retry; force=true sends the click "
-                    f"anyway")
+                raise TargetCoveredError(self._covered(point, windows[target.id], window))
             raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
                               f"activate_window(): the user may have switched windows. Call "
                               f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
@@ -795,6 +795,25 @@ class Desktop:
                 wid, grid = None, self._snapshot(region)
             self._pending = (region, grid, wid) if grid is not None else None
         return window
+
+    def _covered(self, point: tuple[int, int], target: Window, window: Window, forced: bool = False) -> str:
+        """Why an agent's pointer input at `point` was not sent: `window` is what is under the point.
+        Inside the agent's window that means covered; outside it, the point is simply elsewhere."""
+        x, y = point
+        own = self.backend.own_pointer
+        pick = (f"click_element() or set_value() on a ref from ui_tree(window={window.title!r}) works there "
+                f"through accessibility" + (" and makes it your window; nothing is sent to the window manager"
+                                            if own else "; activate_window() on it first takes the user's focus"))
+        never = " force=true never sends input into a window that is not yours." if forced else ""
+        if target.x <= x < target.x + target.width and target.y <= y < target.y + target.height:
+            return (f"the point {x},{y} of your window {target.title!r} ({target.id}) is covered by "
+                    f"{window.title!r} ({window.id}), which belongs to the user or another agent, so nothing "
+                    f"was sent. Do not raise your window: act on it with click_element() or set_value() on refs "
+                    f"from ui_tree(window={target.title!r}), which reach a covered window through "
+                    f"accessibility, or wait() and retry.{never}")
+        return (f"the point {x},{y} is outside your window {target.title!r} ({target.id}): it is over "
+                f"{window.title!r} ({window.id}), so nothing was sent. To act in {window.title!r}, "
+                f"{pick}.{never}")
 
     def _focus_keys(self, window: Window) -> None:
         self.backend.focus_keyboard(window)

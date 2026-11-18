@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError
+from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError, TargetCoveredError
 from ccdesk.parsing import Region, Window
 from tests.test_screen_changes import WHITE
 
@@ -93,13 +93,15 @@ def test_a_pointer_action_on_a_hidden_target_is_refused_even_when_the_keyboard_i
     assert own.calls == []
 
 
-def test_force_sends_it_to_a_hidden_target_as_before(agent, own):
+def test_force_never_clicks_into_another_window_over_a_hidden_target(agent, own):
+    # force skipped the receiver check, so this click landed in the Terminal under the point.
     agent.activate_window(FIREFOX)
     own.hidden.add(FIREFOX)
     own.under = own.active = TERMINAL
     own.calls.clear()
-    assert "clicked" in agent.click(500, 400, force=True)
-    assert sent(own) and not activations(own)
+    with pytest.raises(TargetCoveredError, match="never sends input into a window that is not yours"):
+        agent.click(500, 400, force=True)
+    assert not sent(own) and not activations(own)
 
 
 def test_a_target_on_show_gets_the_agents_keyboard_back_without_activation(agent, own):
@@ -164,12 +166,18 @@ def test_a_covered_target_says_what_covers_it(agent, own):
     assert not sent(own)
 
 
-def test_force_sends_it_into_the_covering_window(agent, own):
+def test_force_never_sends_a_click_into_the_covering_window(agent, own):
+    # It used to: the refusal even said "force=true sends the click anyway".
     agent.activate_window(FIREFOX)
     own.under = TERMINAL
     own.calls.clear()
-    assert agent.click(20, 20, force=True)["window"] == {"id": TERMINAL, "title": "Terminal"}
-    assert sent(own)
+    with pytest.raises(TargetCoveredError) as exc:
+        agent.click(20, 20, force=True)
+    assert "'Terminal'" in str(exc.value) and "never sends input into a window that is not yours" in str(exc.value)
+    assert not sent(own)
+    with pytest.raises(TargetCoveredError) as exc:
+        agent.click(20, 20)
+    assert "force=true" not in str(exc.value)
 
 
 def test_the_normal_mode_keeps_the_switched_windows_message(make_desk, fake):
