@@ -109,6 +109,11 @@ def test_element_actions_leave_the_active_window_and_the_stacking_alone(screen, 
         assert desk._target is not None and desk._target.id == agent_id
         unchanged("click_element")
 
+        combo = ref_of(tree, r'combo box "Priority"')
+        assert desk.set_value(combo, "low")["verified"] is True  # an option by name, no popup
+        wait_for(lambda: form().get("priority") == "Low")
+        unchanged("set_value on a combo box")
+
         entry = ref_of(tree, r'(?:text|entry) "Display name"')
         assert desk.set_value(entry, "Ana")["verified"] is True
         wait_for(lambda: form().get("entry") == "Ana")

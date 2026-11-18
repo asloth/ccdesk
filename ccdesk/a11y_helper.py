@@ -305,6 +305,32 @@ def action(req):
     return {"action": None}
 
 
+def options(obj):
+    """A combo box's options as (index for Selection, name): its own children, or those of the
+    menu or list it holds (GTK puts the items in a menu)."""
+    kids = list(children(obj))
+    if len(kids) == 1 and (kids[0][1].get_role_name() or "") in ("menu", "list", "list box"):
+        kids = list(children(kids[0][1]))
+    return [(i, (c.get_name() or "").strip()) for i, c in kids]
+
+
+def choose(obj, text):
+    """Choose a combo box option by name through Selection: no popup, no pointer, no focus."""
+    found = options(obj)
+    want = text.strip().casefold()
+    match = [i for i, name in found if name.casefold() == want]
+    if not match:
+        names = ", ".join(repr(n) for _, n in found if n)[:MAX_TEXT] or "none listed"
+        return {"error": f"no option named {text!r} (options: {names})"}
+    if not Atspi.Selection.select_child(obj, match[0]):
+        return {"verified": False, "value": "", "refused": True}
+    for _ in range(10):
+        if Atspi.Selection.is_child_selected(obj, match[0]):
+            return {"verified": True}
+        time.sleep(0.05)
+    return {"verified": False, "value": text_of(obj, "combo box") or ""}
+
+
 def full_text(obj):
     return Atspi.Text.get_text(obj, 0, Atspi.Text.get_character_count(obj))
 
@@ -325,6 +351,8 @@ def set_value(req):
         Atspi.Value.set_current_value(obj, number)
         read = lambda: Atspi.Value.get_current_value(obj)
         same = lambda got: abs(got - number) < 1e-6
+    elif role == "combo box" and obj.get_selection_iface() is not None:
+        return choose(obj, text)
     elif obj.get_editable_text_iface() is not None and obj.get_text_iface() is not None:
         if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
             return {"error": "this field is read-only"}
