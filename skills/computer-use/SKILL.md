@@ -135,7 +135,11 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   makes that window yours (no `activate_window()` needed) and sends nothing to the window
   manager: the user's focus and the stacking stay put, even when their window covers yours.
   A `type_text` right after `click_element` or `set_value` on a text field writes into that
-  field the same way (the result says `via: accessibility`). `activate_window()` only records
+  field the same way (the result says `via: accessibility`). For a combo box, use
+  `set_value(ref, "<option name>")`: it picks the option with no popup and no click.
+  `click_element` runs the accessible action of buttons, check boxes, links and menu items; on
+  a text field or a combo box it is a real click of your pointer, and some window managers
+  (xfwm4) take any click as click-to-focus and raise the window, so prefer `set_value` there. `activate_window()` only records
   the window, but a `type_text` or `press_key` that needs your keyboard focus moves it there
   (XISetFocus), and some window managers (xfwm4) answer that by activating your window and
   raising it over the user's; the result's `note` says so when it happens. Never take the

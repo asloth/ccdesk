@@ -51,8 +51,11 @@ BESIDE_USER = """
 You have your own pointer and keyboard, and the user keeps working in their own window beside you.
 Work through the accessibility tree: list_windows(), ui_tree(window=<your window's title>), then
 click_element(ref) and set_value(ref, text); type_text right after one of those on a text field
-writes into it the same way. That makes the window yours and touches neither the user's focus nor
-the window stacking. Avoid activate_window(), and avoid type_text/press_key with no field chosen:
+writes into it the same way. For a combo box use set_value(ref, "<option name>"), not clicks.
+That makes the window yours and touches neither the user's focus nor the window stacking.
+click_element on a button, check box or menu item runs its accessible action; on anything else
+(a text field, a combo box) it is a real click, which some window managers take as
+click-to-focus and raise the window: prefer set_value there. Avoid activate_window(), and avoid type_text/press_key with no field chosen:
 they move your keyboard focus into the window, which on some window managers activates it and
 raises it over the user's. Never take the user's focus or raise your window to get past a refusal."""
 

@@ -152,6 +152,7 @@ def test_an_own_pointer_agent_is_told_to_work_through_the_tree(make_desk, fake):
     fake.own_pointer = True
     text = build_server(make_desk(agent="desk-1")).instructions
     assert BESIDE_USER in text and "Avoid activate_window()" in text
+    assert 'set_value(ref, "<option name>")' in text
     assert BESIDE_USER not in build_server(make_desk()).instructions
 
 
