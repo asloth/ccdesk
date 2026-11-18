@@ -691,6 +691,9 @@ class Desktop:
             if away or keys or (self.backend.own_pointer and point is not None):
                 hidden = self._hidden(windows[target.id])
             if hidden and self.backend.own_pointer:
+                if getattr(self.backend, "background_input", False):
+                    raise TargetHiddenError("Your target is hidden or on another desktop. Choose an on-screen "
+                                            "window or use a private screen; no input was sent.")
                 # Showing it goes through the window manager, which takes the user's keyboard focus
                 # and can switch their desktop: only activate_window() does that, on purpose.
                 raise TargetHiddenError(
@@ -756,7 +759,8 @@ class Desktop:
 
     def _focus_keys(self, window: Window) -> None:
         self.backend.focus_keyboard(window)
-        self._note = " ".join(filter(None, [self._note, KEY_FOCUS_NOTE.format(title=window.title)]))
+        if not getattr(self.backend, "background_input", False):  # cua-driver addresses keys: nothing moved
+            self._note = " ".join(filter(None, [self._note, KEY_FOCUS_NOTE.format(title=window.title)]))
 
     def _in_trees_window(self, window: Window | None) -> bool:
         """Whether an action on this window is covered by the latest ui_tree(). The titles come from
@@ -1114,7 +1118,11 @@ class Desktop:
             self._yielded = self._yield_to_user()
             self.backend.move(px, py)
             self._show_cursor(px, py)
-            return self._from(self._with_window({"moved": {"x": px, "y": py}}, None), shot)
+            result = self._from(self._with_window({"moved": {"x": px, "y": py}}, None), shot)
+            note = self.backend.take_note()
+            if note:
+                result["note"] = note
+            return result
 
         return self._act("move", {"x": x, "y": y} | ({"shot": shot} if shot is not None else {}), do)
 
@@ -1258,7 +1266,8 @@ class Desktop:
                     self._shot_layouts.clear()
             result = self._with_window({"activated": window.to_dict()}, None)
             note = self.backend.take_note()
-            if self.agent and self.backend.own_pointer and not note:
+            if (self.agent and self.backend.own_pointer and not note
+                    and not getattr(self.backend, "background_input", False)):
                 note = ("recorded as your window; nothing was focused or raised. click_element and "
                         "set_value work in it as it is. type_text and press_key move your keyboard focus "
                         "there first, which on some window managers activates and raises it over the user's "

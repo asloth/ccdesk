@@ -47,6 +47,33 @@ class CommandError(CcdeskError):
     """An external helper (xdotool, scrot, ...) failed or is missing."""
 
 
+class CuaDriverError(CcdeskError):
+    """A background refusal or uncertain delivery. Never forward foreground advice."""
+
+    NEXT = {
+        "target_occluded": "Target is occluded. Refresh the window list and screenshot, then wait for it to be uncovered or use a private screen.",
+        "background_pointer_failed": "Background pointer delivery failed. Inspect the target before retrying; use a private screen if the route remains unavailable.",
+        "popup_keyboard_grab": "A popup holds the keyboard. Inspect the target and dismiss its popup through accessibility, or use a private screen.",
+        "background_unavailable": "Background delivery is unavailable. Check ccdesk doctor and the target's accessibility tree; use a private screen for unsupported tasks.",
+        "cua_driver_disconnected": "The cua-driver connection was lost. Inspect the app before retrying, then restart this ccdesk server.",
+    }
+
+    def __init__(self, code: str, *, input_emitted: bool):
+        message = self.NEXT.get(code, "cua-driver could not complete background input. Inspect the app and refresh its state before choosing another action.")
+        super().__init__(message, code=code, input_emitted=input_emitted)
+
+    @classmethod
+    def from_result(cls, result: dict, *, input_call: bool):
+        # v0.38 also uses action effects and delivery counts instead of a boolean.
+        # Unknown/partial effects are conservatively emitted, to prevent duplicate input.
+        emitted = result.get("input_emitted")
+        if not isinstance(emitted, bool):
+            effect = result.get("effect")
+            delivery = result.get("delivery") or {}
+            emitted = bool(delivery.get("delivered_count")) or (input_call and effect not in ("refused", "none"))
+        return cls(result.get("code") or "cua_driver_error", input_emitted=emitted)
+
+
 class StaleFrameError(PolicyError):
     """Coordinates came from a screenshot whose window layout is no longer the one on screen."""
 
