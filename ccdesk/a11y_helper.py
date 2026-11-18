@@ -346,6 +346,34 @@ def set_value(req):
     return {"verified": False, "value": str(got)[:MAX_TEXT]}
 
 
+def insert(req):
+    """Insert text at the caret (at the end with "at_end", or when the field has no caret) and
+    read it back. Needs no keyboard focus: an agent beside the user types this way without
+    activating the window."""
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    role, text = obj.get_role_name() or "", req["text"]
+    if role == "password text":
+        return {"error": "this is a password field: ask the user to type it themselves"}
+    if obj.get_editable_text_iface() is None or obj.get_text_iface() is None:
+        return {"inserted": False}
+    if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
+        return {"error": "this field is read-only"}
+    before = full_text(obj)
+    count = Atspi.Text.get_character_count(obj)
+    caret = Atspi.Text.get_caret_offset(obj)
+    at = caret if 0 <= caret <= count and not req.get("at_end") else count
+    if not Atspi.EditableText.insert_text(obj, at, text, len(text.encode())):
+        return {"inserted": False}
+    want = before[:at] + text + before[at:]
+    for _ in range(10):  # the app may apply it a moment later
+        if full_text(obj) == want:
+            return {"inserted": True}
+        time.sleep(0.05)
+    return {"inserted": False, "changed": full_text(obj) != before}
+
+
 def apps(_req):
     return {"apps": [{"name": app.get_name(), "pid": app.get_process_id(),
                       "windows": [f.get_name() for _, f in children(app)]}
@@ -353,7 +381,8 @@ def apps(_req):
 
 
 def handle(req):
-    ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value}
+    ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value,
+           "insert": insert}
     try:
         return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing

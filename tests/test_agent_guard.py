@@ -42,6 +42,10 @@ def activations(fake):
     return [c for c in fake.calls if c[0] == "activate"]
 
 
+def focuses(fake):
+    return [c for c in fake.calls if c[0] == "focus"]
+
+
 # -- A: no window-manager activation behind an ordinary action ----------------------------------
 
 
@@ -98,13 +102,14 @@ def test_force_sends_it_to_a_hidden_target_as_before(agent, own):
     assert sent(own) and not activations(own)
 
 
-def test_a_target_on_show_gets_its_focus_back_as_before(agent, own):
+def test_a_target_on_show_gets_the_agents_keyboard_back_without_activation(agent, own):
     agent.activate_window(FIREFOX)
     own.calls.clear()
     own.active = TERMINAL  # another window took the agent's keyboard
     r = agent.type_text("hola")
-    assert activations(own) == [("activate", FIREFOX)]
+    assert not activations(own) and focuses(own) == [("focus", FIREFOX)]
     assert r["typed_chars"] == 4 and ("type_text", "hola") in own.calls
+    assert "raises it over the user's window" in r["note"]
 
 
 def test_without_an_own_pointer_the_shared_focus_is_retaken_as_before(make_desk, fake):
@@ -204,12 +209,14 @@ def test_an_agent_without_a_target_is_refused_and_force_does_not_help(agent, own
     assert read_audit()[-1]["status"] == "denied"
 
 
-def test_the_refusal_says_activation_leaves_the_user_alone_with_an_own_pointer(agent, own, make_desk):
-    # In the bench an agent read "would reach the user's" as "activating takes the user's focus" and gave up.
+def test_the_own_pointer_refusal_points_at_element_actions_and_tells_the_truth(agent, own, make_desk):
+    # On xfwm4 the agent's XISetFocus activates and raises the window: the old text said it did not.
     with pytest.raises(PolicyError) as exc:
         agent.click(5, 5)
-    assert "only moves your keyboard focus" in str(exc.value)
-    assert "would reach the user's" not in str(exc.value)
+    text = str(exc.value)
+    assert "ui_tree(window=" in text and "click_element() or set_value()" in text
+    assert "activates and raises the window" in text
+    assert "only moves your keyboard focus" not in text and "would reach the user's" not in text
     own.own_pointer = False
     with pytest.raises(PolicyError) as exc:
         make_desk(agent="desk-2").click(5, 5)
@@ -422,3 +429,27 @@ def test_a_shot_from_before_activate_window_is_unchecked_as_before(make_desk, fa
     d.activate_window("Mozilla Firefox")
     fake.windows[1] = replace(fake.windows[1], x=400)
     assert "clicked" in d.click(100, 100, shot="s1")
+
+
+# -- F: element actions beside the user need no activation ---------------------------------------------------
+
+
+@pytest.fixture
+def form_window(own):
+    own.windows[0] = replace(own.windows[0], title="Form — Mozilla Firefox")  # the fake tree's window
+    return own
+
+
+def test_click_element_without_activate_window_sends_no_activate_or_focus(agent, form_window, helper):
+    helper.actions["3.0.29.5"] = "press"
+    agent.ui_tree(window="Form — Mozilla Firefox")
+    assert agent.click_element("e4")["activated"] == "press"
+    assert [c for c in form_window.calls if c[0] in ("activate", "focus")] == []
+    assert agent._target.id == FIREFOX
+
+
+def test_set_value_without_activate_window_sends_no_activate_or_focus(agent, form_window, helper):
+    agent.ui_tree(window="Form — Mozilla Firefox")
+    assert agent.set_value("e2", "ana@x.org")["verified"] is True
+    assert [c for c in form_window.calls if c[0] in ("activate", "focus")] == []
+    assert sent(form_window) == []

@@ -372,6 +372,14 @@ class A11y:
         request = {"op": "set", "path": self.refs[ref].path, "text": text}
         return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
 
+    def insert(self, ref: str, text: str, at_end: bool = False) -> dict:
+        """Insert text at the element's caret without keyboard focus. {"inserted": False} means the
+        app took none of it (try the keyboard); "changed" says it took something else."""
+        unsure = ("the app did not answer within the time limit: the text may have been inserted. "
+                  "Check with ui_tree() before trying again")
+        request = {"op": "insert", "path": self.refs[ref].path, "text": text, "at_end": at_end}
+        return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
+
     def tree_window(self) -> str | None:
         return self._last["window"] if self._last else None
 

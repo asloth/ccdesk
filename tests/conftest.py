@@ -134,6 +134,10 @@ class FakeBackend(Backend):
         self.calls.append(("activate", window.id))
         self.active = window.id
 
+    def focus_keyboard(self, window):
+        self.calls.append(("focus", window.id))
+        self.active = window.id
+
     def _replace_window(self, window, **fields):
         self.windows = [replace(w, **fields) if w.id == window.id else w for w in self.windows]
 
@@ -212,6 +216,7 @@ class FakeA11yHelper:
         self.tree_error: str | None = None
         self.actions: dict[str, str] = {}  # path -> the native action that element offers
         self.values: dict[str, dict] = {}  # path -> the answer to a set request
+        self.inserts: dict[str, dict] = {}  # path -> the answer to an insert request
         self.argvs: list[list[str]] = []
 
     def __call__(self, argv, timeout, stdin=None):
@@ -222,6 +227,8 @@ class FakeA11yHelper:
             return json.dumps({"action": self.actions.get(req["path"])})
         if req["op"] == "set":
             return json.dumps(self.values.get(req["path"], {"verified": True}))
+        if req["op"] == "insert":
+            return json.dumps(self.inserts.get(req["path"], {"inserted": True}))
         if req["op"] == "apps":
             return json.dumps({"apps": self.apps})
         if req["op"] == "tree" and self.tree_error:

@@ -309,9 +309,9 @@ def test_ui_tree_without_a_window_reads_the_agents_window(tmp_path, helper):
     assert helper.requests[-1]["window"] == "Agent window"
     d.ui_tree(window="User window")  # an explicit window still wins
     assert helper.requests[-1]["window"] == "User window"
-    mpx.focus_window = None  # no focus of its own: the helper's default
+    mpx.focus_window = None  # its keyboard is nowhere yet: the window it chose, not the user's
     d.ui_tree()
-    assert helper.requests[-1]["window"] is None
+    assert helper.requests[-1]["window"] == "Agent window"
 
 
 def test_ui_tree_on_the_core_path_keeps_the_helper_default(make_desk, helper):
@@ -391,3 +391,123 @@ def test_a_signal_removes_the_devices_and_ends_the_process(tmp_path, sig):
     p.send_signal(sig)
     assert p.wait(5) == -sig  # killed by the signal itself, promptly
     assert (tmp_path / "log").read_text().strip() == "removed"
+
+
+# -- G: beside the user, nothing activates the agent's window --------------------------------------------------
+# CuaDriverBench, xfwm4: the agent's XISetFocus made its window the active one and raised it over the
+# user's, 30 to 130 ms later. Element actions and activate_window() must not send it.
+
+FORM = "Form — Mozilla Firefox"  # the window the fake helper's tree is of
+
+
+def beside_the_user(tmp_path, helper):
+    d, backend, mpx = desk(tmp_path, [win("0x00400010", FORM), win("0x00500010", "User window")])
+    d.a11y = A11y(runner=helper, pythons=("/bin/sh",))
+    calls = []
+    backend.activate_window = lambda w, _orig=backend.activate_window: (calls.append(("activate", w.id)),
+                                                                          _orig(w))[1]
+    return d, backend, mpx, calls
+
+
+def focus_calls(mpx):
+    return [c for c in mpx.calls if c[0] == "focus"]
+
+
+def test_click_element_with_no_window_yet_adopts_the_trees_window_and_focuses_nothing(tmp_path, helper):
+    d, backend, mpx, activated = beside_the_user(tmp_path, helper)
+    helper.actions["3.0.29.5"] = "press"
+    d.ui_tree(window=FORM)
+    r = d.click_element("e4")  # push button "Save"
+    assert r["activated"] == "press"
+    assert d._target.id == "0x00400010"
+    assert activated == [] and focus_calls(mpx) == []
+
+
+def test_set_value_with_no_window_yet_adopts_the_trees_window_and_focuses_nothing(tmp_path, helper):
+    d, backend, mpx, activated = beside_the_user(tmp_path, helper)
+    d.ui_tree(window=FORM)
+    assert d.set_value("e2", "ana@x.org")["verified"] is True
+    assert d._target.id == "0x00400010"
+    assert activated == [] and focus_calls(mpx) == []
+    assert not [c for c in mpx.calls if c[0] in ("button", "type_text", "press_key")]
+
+
+def test_an_element_action_on_a_tree_with_no_matching_window_is_refused(tmp_path, helper):
+    d, backend, mpx, _ = beside_the_user(tmp_path, helper)
+    backend.windows = [win("0x00400010", "Something else"), win("0x00500010", "User window")]
+    d.ui_tree(window="Something else")  # the fake bus names it FORM: no listed window has that title
+    with pytest.raises(PolicyError) as exc:
+        d.set_value("e2", "x")
+    assert exc.value.code == "gui_target_required"
+    assert d._target is None
+
+
+def test_activate_window_sends_no_focus_and_says_what_it_did(tmp_path, helper):
+    d, backend, mpx, _ = beside_the_user(tmp_path, helper)
+    r = d.activate_window("0x00400010")
+    assert focus_calls(mpx) == [] and mpx.calls == []
+    assert "nothing was focused or raised" in r["note"]
+
+
+def test_pointer_actions_need_no_keyboard_focus(tmp_path, helper):
+    d, backend, mpx, _ = beside_the_user(tmp_path, helper)
+    d.activate_window("0x00400010")
+    mpx.under = [0x400010]
+    d.click(5, 5)
+    d.scroll(5, 5, dy=2)
+    d.drag(5, 5, 9, 9)
+    assert focus_calls(mpx) == []
+    assert ("button", 1, True) in mpx.calls
+
+
+def test_a_key_moves_the_agents_keyboard_once_and_says_it_may_raise_the_window(tmp_path, helper):
+    d, backend, mpx, activated = beside_the_user(tmp_path, helper)
+    d.activate_window("0x00400010")
+    activated.clear()
+    r = d.press_key("ctrl+a")
+    assert focus_calls(mpx) == [("focus", 0x400010)] and activated == []
+    assert "raises it over the user's window" in r["note"]
+    r = d.type_text("hola")
+    assert focus_calls(mpx) == [("focus", 0x400010)]  # already there: not sent again
+    assert "note" not in r
+
+
+def test_type_text_after_set_value_writes_through_accessibility_without_focus(tmp_path, helper):
+    d, backend, mpx, activated = beside_the_user(tmp_path, helper)
+    d.ui_tree(window=FORM)
+    d.set_value("e2", "")
+    r = d.type_text("ana@x.org")
+    assert r["via"] == "accessibility" and r["typed_chars"] == 9
+    assert helper.requests[-1]["op"] in ("insert", "tree", "resolve")
+    assert any(q["op"] == "insert" and q["text"] == "ana@x.org" for q in helper.requests)
+    assert focus_calls(mpx) == [] and activated == []
+    assert not [c for c in mpx.calls if c[0] in ("type_text", "press_key")]
+    r = d.type_text("new", replace=True)
+    assert r["replaced"] is True and helper.requests[-1]["op"] in ("set", "tree", "resolve")
+    assert focus_calls(mpx) == []
+
+
+def test_type_text_falls_back_to_the_keyboard_when_the_field_takes_no_insert(tmp_path, helper):
+    d, backend, mpx, _ = beside_the_user(tmp_path, helper)
+    d.ui_tree(window=FORM)
+    d.set_value("e2", "")
+    helper.inserts["3.0.29.2"] = {"inserted": False}
+    r = d.type_text("x")
+    assert "via" not in r and ("type_text", "x") in mpx.calls
+    assert focus_calls(mpx) == [("focus", 0x400010)] and "raises it" in r["note"]
+
+
+def test_submit_and_keys_still_use_the_keyboard(tmp_path, helper):
+    d, backend, mpx, _ = beside_the_user(tmp_path, helper)
+    d.ui_tree(window=FORM)
+    d.set_value("e2", "")
+    d.type_text("go", submit=True)  # Return has no accessibility route
+    assert ("type_text", "go") in mpx.calls and focus_calls(mpx) == [("focus", 0x400010)]
+
+
+def test_a_batch_may_start_with_an_element_action(tmp_path, helper):
+    d, backend, mpx, activated = beside_the_user(tmp_path, helper)
+    d.ui_tree(window=FORM)
+    r = d.batch([{"tool": "set_value", "ref": "e2", "text": "a@b.c"}, {"tool": "type_text", "text": "d"}])
+    assert r["done"] == 2, r
+    assert focus_calls(mpx) == [] and activated == []
