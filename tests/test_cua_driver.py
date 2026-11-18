@@ -182,7 +182,7 @@ def test_lost_response_never_retries(session, failure):
 def test_probe_startup_and_missing_binary(session):
     assert report(session, session.binary)["available"] is True
     session.env["FAKE_UNAVAILABLE"] = "1"
-    with pytest.raises(CuaDriverError, match="Background delivery is unavailable"):
+    with pytest.raises(CuaDriverError, match="Background input is unavailable"):
         CuaDriverBackend(session, session.binary)
     assert report(session, session.binary)["available"] is False
     with pytest.raises(CommandError, match="missing"):
@@ -238,7 +238,7 @@ def test_cli_fails_before_serving_when_background_is_unavailable(session, monkey
     monkeypatch.setattr(ccdesk.backends, "get_backend", lambda _: session)
     monkeypatch.setattr(ccdesk.server, "serve", lambda _: pytest.fail("server started despite refusal"))
     assert cli.main(["mcp", "--agent", "a", "--input", "cua-driver", "--cua-driver", session.binary]) == 1
-    assert "Background delivery is unavailable" in capsys.readouterr().err
+    assert "Background input is unavailable" in capsys.readouterr().err
 
 
 def test_inspection_and_clipboard_stay_on_session(backend, session, tmp_path):
@@ -346,3 +346,44 @@ def test_keys_after_adopting_tree_window_send_no_focus(backend, session, tmp_pat
     assert input_calls(session)[-1] == {"name": "press_key", "arguments": {
         "pid": 1234, "window_id": 32, "delivery_mode": "background", "key": "a", "modifiers": ["ctrl"]}}
     assert "XISetFocus" not in str(result.get("note"))
+
+
+def test_a_refusal_before_sending_says_so_and_does_not_send_to_doctor(session):
+    """The bench's 10 background_unavailable calls (scroll, click, drag, press_key on Electron,
+    LibreOffice and Tk) came back without an effect, so they were reported as input_emitted=true,
+    with "Check ccdesk doctor" (which says background input is available)."""
+    session.env["FAKE_FAILURE"] = json.dumps({"ok": False, "code": "background_unavailable",
+                                            "reason": "toolkit drops routed pointer events"})
+    with CuaBackendContext(session) as backend:
+        backend.activate_window(session.windows[0])
+        for call, tool in ((lambda: backend.scroll(125, 240, 0, 3), "scroll"),
+                           (lambda: backend.drag(120, 230, 190, 290, 300), "drag"),
+                           (lambda: backend.press_key(parse_key_combo("Tab")), "press_key")):
+            with pytest.raises(CuaDriverError) as caught:
+                call()
+            text = str(caught.value)
+            assert caught.value.code == "background_unavailable" and caught.value.input_emitted is False
+            assert f"refused this {tool} in the background before sending anything" in text
+            assert "toolkit drops routed pointer events" in text and "ui_tree()" in text
+            assert "doctor" not in text and "foreground" not in text
+
+
+def test_an_unconfirmed_background_unavailable_stays_emitted(session):
+    session.env["FAKE_FAILURE"] = json.dumps({"ok": False, "code": "background_unavailable",
+                                            "effect": "unverifiable",
+                                            "reason": "bring the window to the foreground"})
+    with CuaBackendContext(session) as backend:
+        with pytest.raises(CuaDriverError) as caught:
+            backend.click(125, 240, 1, 1)
+    text = str(caught.value)
+    assert caught.value.input_emitted is True and "may have reached the app" in text
+    assert "foreground" not in text and "doctor" not in text  # the driver's reason was foreground advice
+
+
+def test_an_unaddressable_window_names_it(session):
+    session.env["FAKE_WINDOWS"] = "[]"  # read by the driver when it starts
+    with CuaBackendContext(session) as backend:
+        backend.activate_window(session.windows[0])
+        with pytest.raises(CuaDriverError) as caught:
+            backend.type_text("x")
+    assert "lists no window for 'Agent'" in str(caught.value) and caught.value.input_emitted is False

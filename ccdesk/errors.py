@@ -54,24 +54,55 @@ class CuaDriverError(CcdeskError):
         "target_occluded": "Target is occluded. Refresh the window list and screenshot, then wait for it to be uncovered or use a private screen.",
         "background_pointer_failed": "Background pointer delivery failed. Inspect the target before retrying; use a private screen if the route remains unavailable.",
         "popup_keyboard_grab": "A popup holds the keyboard. Inspect the target and dismiss its popup through accessibility, or use a private screen.",
-        "background_unavailable": "Background delivery is unavailable. Check ccdesk doctor and the target's accessibility tree; use a private screen for unsupported tasks.",
         "cua_driver_disconnected": "The cua-driver connection was lost. Inspect the app before retrying, then restart this ccdesk server.",
     }
+    # Said only where the driver documents that nothing was sent (0.38: it refuses "before
+    # anything is sent" when a toolkit takes no routed input of that kind: Tk reads the hardware
+    # pointer, Chromium and Electron drop routed pointer events).
+    BEFORE_SENDING = frozenset({"background_unavailable"})
+    # Words of the driver's own reasons that would steer an agent onto the user's focus.
+    FOREGROUND = ("foreground", "bring_to_front", "front", "focus", "activate")
 
-    def __init__(self, code: str, *, input_emitted: bool):
-        message = self.NEXT.get(code, "cua-driver could not complete background input. Inspect the app and refresh its state before choosing another action.")
+    def __init__(self, code: str, *, input_emitted: bool, tool: str | None = None, reason: str | None = None,
+                 message: str | None = None):
+        if message is None and code == "background_unavailable":
+            what = f"this {tool}" if tool else "this input"
+            why = f" (cua-driver: {reason})" if reason else ""
+            if input_emitted:
+                message = (f"cua-driver could not confirm {what} in the background{why}; it may have reached "
+                           f"the app. Check with ui_tree() or a screenshot before repeating it.")
+            else:
+                message = (f"cua-driver refused {what} in the background before sending anything{why}: this "
+                           f"window's toolkit does not take that kind of background input. Work through its "
+                           f"accessibility tree instead (ui_tree(), then click_element() or set_value() on its "
+                           f"refs); a task that needs this input needs a private screen.")
+        if message is None:
+            message = self.NEXT.get(code, "cua-driver could not complete background input. Inspect the app and refresh its state before choosing another action.")
         super().__init__(message, code=code, input_emitted=input_emitted)
 
     @classmethod
-    def from_result(cls, result: dict, *, input_call: bool):
+    def from_result(cls, result: dict, *, input_call: bool, tool: str | None = None):
         # v0.38 also uses action effects and delivery counts instead of a boolean.
-        # Unknown/partial effects are conservatively emitted, to prevent duplicate input.
+        # Unknown/partial effects are conservatively emitted, to prevent duplicate input, except
+        # for a refusal the driver documents as made before sending anything.
+        code = result.get("code") or "cua_driver_error"
         emitted = result.get("input_emitted")
         if not isinstance(emitted, bool):
             effect = result.get("effect")
             delivery = result.get("delivery") or {}
-            emitted = bool(delivery.get("delivered_count")) or (input_call and effect not in ("refused", "none"))
-        return cls(result.get("code") or "cua_driver_error", input_emitted=emitted)
+            if effect is None and not delivery.get("delivered_count") and code in cls.BEFORE_SENDING:
+                emitted = False
+            else:
+                emitted = bool(delivery.get("delivered_count")) or (input_call and effect not in ("refused", "none"))
+        return cls(code, input_emitted=emitted, tool=tool, reason=cls._reason(result.get("reason")))
+
+    @classmethod
+    def _reason(cls, reason) -> str | None:
+        """The driver's reason, short, and only when it carries no foreground advice."""
+        if not isinstance(reason, str) or not reason.strip():
+            return None
+        text = " ".join(reason.split())[:160]
+        return None if any(word in text.lower() for word in cls.FOREGROUND) else text
 
 
 class StaleFrameError(PolicyError):

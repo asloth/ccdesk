@@ -118,7 +118,7 @@ class Driver:
             self.close()
             raise CuaDriverError("cua_driver_disconnected", input_emitted=input_call)
         if result.get("isError") or structured.get("ok") is False:
-            raise CuaDriverError.from_result(structured, input_call=input_call)
+            raise CuaDriverError.from_result(structured, input_call=input_call, tool=name)
         return structured
 
     def close(self):
@@ -224,7 +224,8 @@ class CuaDriverBackend:
         try:
             self.status = background_status(session, self.driver)
             if self.status["available"] is False:
-                raise CuaDriverError("background_unavailable", input_emitted=False)
+                raise CuaDriverError("background_unavailable", input_emitted=False,
+                                     message=self.status["reason"])
         except BaseException:
             self.close()
             raise
@@ -310,7 +311,10 @@ class CuaDriverBackend:
                 raw = [r for r in self.session._safe_windows() if str(r.get("id")) == window.id]
                 found = [r for r in found if len(raw) == 1 and r.get("pid") == raw[0].get("pid")]
         if len(found) != 1 or not found[0].get("pid") or not found[0].get("window_id"):
-            raise CuaDriverError("background_unavailable", input_emitted=False)
+            many = "several windows" if len(found) > 1 else "no window"
+            raise CuaDriverError("background_unavailable", input_emitted=False, message=(
+                f"cua-driver lists {many} for {window.title!r} ({window.id}), so ccdesk cannot address it and "
+                f"sent nothing. Call list_windows() and act through ui_tree() refs, or use a private screen."))
         return {"pid": found[0]["pid"], "window_id": found[0]["window_id"], "delivery_mode": "background"}
 
     def _window(self, wid: str | None) -> Window:
