@@ -47,6 +47,18 @@ This server works on its own invisible screen, not the user's: it starts empty, 
 the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
 or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR first)."""
 
+BESIDE_USER = """
+You have your own pointer and keyboard, and the user keeps working in their own window beside you.
+Work through the accessibility tree: list_windows(), ui_tree(window=<your window's title>), then
+click_element(ref) and set_value(ref, text); type_text right after one of those on a text field
+writes into it the same way. For a combo box use set_value(ref, "<option name>"), not clicks.
+That makes the window yours and touches neither the user's focus nor the window stacking.
+click_element on a button, check box or menu item runs its accessible action; on anything else
+(a text field, a combo box) it is a real click, which some window managers take as
+click-to-focus and raise the window: prefer set_value there. Avoid activate_window(), and avoid type_text/press_key with no field chosen:
+they move your keyboard focus into the window, which on some window managers activates it and
+raises it over the user's. Never take the user's focus or raise your window to get past a refusal."""
+
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
     "list_windows", "activate_window", "clipboard", "wait", "doctor", "launch",
@@ -131,7 +143,9 @@ def slim_tools(server: MCPServer) -> None:
 
 
 def build_server(desktop: Desktop) -> MCPServer:
-    kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
+    beside = bool(desktop.agent) and desktop.backend.own_pointer and not desktop.headless
+    kwargs = {"name": "ccdesk",
+              "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "") + (BESIDE_USER if beside else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
         kwargs["version"] = __version__
     server = MCPServer(**kwargs)
@@ -224,7 +238,9 @@ def build_server(desktop: Desktop) -> MCPServer:
     @tool
     def activate_window(title_or_id: str) -> dict:
         """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title.
-        Later clicks, keys and typing are refused if they would reach another window (force=true overrides)."""
+        Later clicks, keys and typing are refused if they would reach another window (force=true overrides).
+        With your own pointer (--own-pointer) it only records the window: keys later move your keyboard
+        focus there, which some window managers turn into raising it over the user's window."""
         return desktop.activate_window(title_or_id)
 
     @tool

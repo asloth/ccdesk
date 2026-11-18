@@ -145,6 +145,17 @@ def test_headless_adds_instructions(make_desk):
     assert HEADLESS in build_server(desk).instructions
 
 
+def test_an_own_pointer_agent_is_told_to_work_through_the_tree(make_desk, fake):
+    from ccdesk.server import BESIDE_USER
+
+    assert BESIDE_USER not in build_server(make_desk(agent="desk-1")).instructions
+    fake.own_pointer = True
+    text = build_server(make_desk(agent="desk-1")).instructions
+    assert BESIDE_USER in text and "Avoid activate_window()" in text
+    assert 'set_value(ref, "<option name>")' in text
+    assert BESIDE_USER not in build_server(make_desk()).instructions
+
+
 class StdioClient:
     def __init__(self, *args, env):
         self.proc = subprocess.Popen([sys.executable, "-m", "ccdesk", "mcp", *args], cwd=ROOT, env=env,

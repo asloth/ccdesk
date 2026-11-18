@@ -119,15 +119,31 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   sent, the call fails with `code=gui_frame_stale`, and the message names a fresh screenshot to
   plan from. Read that one instead of retrying the old numbers. `force=true` skips the check, and
   `click_element` does not need it because it resolves the ref against the live tree.
-- **With `--agent NAME` you work in one window of your own.** Call `activate_window()` on it
-  before any `click`, `drag`, `scroll`, `type_text`, `press_key`, `click_element`, `set_value`,
-  or `ui_tree()` without `window=`; until then they fail with `code=gui_target_required`
-  (`force=true` does not change that). Coordinates then go stale only when your own window
+- **With `--agent NAME` you work in one window of your own.** Choose it before any `click`,
+  `drag`, `scroll`, `type_text`, `press_key`, or `ui_tree()` without `window=`: with
+  `activate_window()`, or with a `click_element`/`set_value` on a ref from
+  `ui_tree(window=...)` (see `--own-pointer` below). Until then they fail with
+  `code=gui_target_required` (`force=true` does not change that). Coordinates then go stale only when your own window
   moves, resizes or leaves the screen, not when the user opens or moves other windows. If your
   window is minimized or on another desktop the call fails with `code=gui_target_hidden` and
   sends nothing: `activate_window()` would show it on the user's screen and take their focus,
   so do that only when the task needs it. If something covers the spot (`gui_target_covered`),
   use `click_element` or the keyboard, or `wait()` and retry; do not raise your window.
+- **With `--own-pointer` the user keeps working beside you: prefer the tree, avoid
+  `activate_window()`.** Call `list_windows()`, then `ui_tree(window="<your window's title>")`,
+  and act on its refs with `click_element(ref)` and `set_value(ref, text)`. The first of those
+  makes that window yours (no `activate_window()` needed) and sends nothing to the window
+  manager: the user's focus and the stacking stay put, even when their window covers yours.
+  A `type_text` right after `click_element` or `set_value` on a text field writes into that
+  field the same way (the result says `via: accessibility`). For a combo box, use
+  `set_value(ref, "<option name>")`: it picks the option with no popup and no click.
+  `click_element` runs the accessible action of buttons, check boxes, links and menu items; on
+  a text field or a combo box it is a real click of your pointer, and some window managers
+  (xfwm4) take any click as click-to-focus and raise the window, so prefer `set_value` there. `activate_window()` only records
+  the window, but a `type_text` or `press_key` that needs your keyboard focus moves it there
+  (XISetFocus), and some window managers (xfwm4) answer that by activating your window and
+  raising it over the user's; the result's `note` says so when it happens. Never take the
+  user's focus or raise your window to get past a refusal: refusals say which route works.
   While another window is on top of yours, results carry `covered: true`: the change report,
   its picture, `screenshot(window=...)` and `wait_for_change()` then show your window's own
   content (X11). A menu or dropdown your window opens is a separate window and is missing from
