@@ -13,6 +13,7 @@ import shutil
 import subprocess
 import tempfile
 import threading
+import time
 
 from ccdesk.errors import (CommandError, CuaDriverError, TargetHiddenError,
                            TargetRequiredError, UnsupportedError)
@@ -21,6 +22,7 @@ from ccdesk.parsing import KeyCombo, Window
 HOVER_NOTE = ("hover is not delivered to the app in background mode; a task that needs hover "
               "(tooltip, hover-only toolbar) will later go to a private screen")
 SUPPORTED_VERSION = "0.38.0"
+OVERLAY_TITLE = "Cua.AgentCursorOverlay."
 
 
 def version_of(binary: str, env: dict, timeout: float = 20) -> str:
@@ -81,12 +83,16 @@ class Driver:
             if self.closed:
                 raise CuaDriverError("cua_driver_disconnected", input_emitted=False)
             self.serial += 1
+            deadline = time.monotonic() + self.timeout
             try:
                 self.proc.stdin.write(json.dumps({"jsonrpc": "2.0", "id": self.serial,
                                                   "method": method, "params": params}) + "\n")
                 self.proc.stdin.flush()
                 while True:
-                    message = self.messages.get(timeout=self.timeout)
+                    remaining = deadline - time.monotonic()
+                    if remaining <= 0:
+                        raise queue.Empty
+                    message = self.messages.get(timeout=remaining)
                     if isinstance(message, Exception):
                         raise message
                     if not isinstance(message, dict):
@@ -97,7 +103,10 @@ class Driver:
                         raise ValueError("unexpected response id")
                     if "error" in message:
                         raise ValueError("cua-driver rejected the protocol request")
-                    return message["result"]
+                    result = message["result"]
+                    if not isinstance(result, dict):
+                        raise ValueError("invalid JSON-RPC result")
+                    return result
             except (OSError, ValueError, KeyError, queue.Empty, EOFError) as exc:
                 self.close()
                 raise CuaDriverError("cua_driver_disconnected", input_emitted=input_call) from exc
@@ -105,6 +114,9 @@ class Driver:
     def call(self, name: str, args: dict, *, input_call: bool = False) -> dict:
         result = self._request("tools/call", {"name": name, "arguments": args}, input_call=input_call)
         structured = result.get("structuredContent") or {}
+        if not isinstance(structured, dict):
+            self.close()
+            raise CuaDriverError("cua_driver_disconnected", input_emitted=input_call)
         if result.get("isError") or structured.get("ok") is False:
             raise CuaDriverError.from_result(structured, input_call=input_call)
         return structured
@@ -116,12 +128,21 @@ class Driver:
             self.closed = True
             if self.proc is not None:
                 if self.proc.poll() is None:
-                    self.proc.terminate()
+                    # EOF lets the direct MCP runtime release its devices before
+                    # forced termination is needed for a wedged child.
+                    try:
+                        self.proc.stdin.close()
+                    except OSError:
+                        pass
                     try:
                         self.proc.wait(timeout=2)
                     except subprocess.TimeoutExpired:
-                        self.proc.kill()
-                        self.proc.wait(timeout=2)
+                        self.proc.terminate()
+                        try:
+                            self.proc.wait(timeout=2)
+                        except subprocess.TimeoutExpired:
+                            self.proc.kill()
+                            self.proc.wait(timeout=2)
                 for pipe in (self.proc.stdin, self.proc.stdout):
                     if pipe:
                         pipe.close()
@@ -131,9 +152,13 @@ class Driver:
 def driver_env(session) -> dict:
     env = dict(session.env)
     # The chosen ccdesk backend determines which input protocol the child uses.
-    env["CUA_DRIVER_RS_ENABLE_WAYLAND"] = "0" if session.name == "x11" else "1"
+    env["CUA_DRIVER_RS_ENABLE_WAYLAND"] = "1" if native_wayland(session) else "0"
     env["CUA_DRIVER_ALLOW_BRIEF_FOREGROUND"] = "0"
     return env
+
+
+def native_wayland(session) -> bool:
+    return session.name in ("wayland", "kde") and bool(session.env.get("WAYLAND_DISPLAY"))
 
 
 def binary_path(session, binary: str | None = None) -> str:
@@ -148,16 +173,21 @@ def background_status(session, driver: Driver) -> dict:
     # This probe emits no input and never requests portal consent. Availability
     # is conditional on the target/toolkit; every actual call may still refuse.
     permissions = driver.call("check_permissions", {"prompt": False})
-    if session.name == "x11":
+    if not native_wayland(session):
         available = permissions.get("xsend_event") is True
         reason = "X11 background routes are available; delivery depends on the target toolkit."
     else:
         available = permissions.get("wayland_enabled") is True and permissions.get("atspi") is True
         reason = ("Wayland background AT-SPI is available; addressed compositor routes may also work. "
                   "Virtual-pointer and portal/libei input alone cannot target an unfocused window.")
+        if permissions.get("wayland_enabled") is True and permissions.get("atspi") is False:
+            available = None
+            reason = ("Wayland is enabled but AT-SPI is unavailable. The driver has no read-only probe "
+                      "for addressed compositor input; background availability is unknown until a target "
+                      "action. Unsupported actions are refused; use a private screen if needed.")
     if permissions.get("background_available") is False:
         available = False
-    return {"available": available, "reason": reason if available else
+    return {"available": available, "reason": reason if available is not False else
             "Background input is unavailable. Check the session and accessibility bus with ccdesk doctor; "
             "use a private screen for unsupported tasks."}
 
@@ -189,10 +219,11 @@ class CuaDriverBackend:
         self.session = session
         self._target: str | None = None
         self._note = None
-        self.driver = Driver(binary_path(session, binary), driver_env(session), overlay=overlay)
+        self.binary = binary_path(session, binary)
+        self.driver = Driver(self.binary, driver_env(session), overlay=overlay)
         try:
             self.status = background_status(session, self.driver)
-            if not self.status["available"]:
+            if self.status["available"] is False:
                 raise CuaDriverError("background_unavailable", input_emitted=False)
         except BaseException:
             self.close()
@@ -204,24 +235,39 @@ class CuaDriverBackend:
     def close(self):
         self.driver.close()
 
+    @property
+    def TOOLS(self):
+        return {cap: names for cap, names in self.session.TOOLS.items()
+                if cap not in ("input", "pointer", "keyboard")} | {"input": ("cua-driver",)}
+
+    def tools_report(self):
+        return {cap: found for cap, found in self.session.tools_report().items()
+                if cap not in ("input", "pointer", "keyboard")} | {"input": {"cua-driver": self.binary}}
+
+    def typing_warning(self, text: str):
+        # Session typing limitations describe tools this wrapper never invokes.
+        return None
+
     def take_note(self):
         note, self._note = self._note, None
         return note
 
     def activate_window(self, window: Window):
-        current = next((w for w in self.session.list_windows() if w.id == window.id), None)
-        if current is None:
-            raise TargetRequiredError("Window disappeared. Read list_windows() and choose a window again.")
+        self._target = self._window(window.id).id
+
+    def _ensure_visible(self, window: Window):
         desktop = self.session.current_desktop()
         if (self.session.window_on_show(window.id) is False or
-                (current.desktop is not None and current.desktop >= 0 and desktop is not None
-                 and current.desktop != desktop)):
+                (window.desktop is not None and window.desktop >= 0 and desktop is not None
+                 and window.desktop != desktop)):
             raise TargetHiddenError("Window is hidden or on another desktop. Choose an on-screen window "
                                     "or use a private screen; no activation or input was sent.")
-        self._target = window.id
 
     def active_window(self):
         return self._target
+
+    def list_windows(self):
+        return [window for window in self.session.list_windows() if not window.title.startswith(OVERLAY_TITLE)]
 
     def window_at(self, x: int, y: int):
         if self.session.name == "x11":
@@ -233,7 +279,7 @@ class CuaDriverBackend:
             if xq is None:
                 raise UnsupportedError("Safe window targeting requires libX11. Install it and retry.")
             try:
-                return f"0x{xq.window_at(x, y):08x}"
+                return f"0x{xq.window_at(x, y, ignore_titles=(OVERLAY_TITLE,)):08x}"
             except XQueryUnavailable as exc:
                 raise UnsupportedError("Cannot read window stacking. Refresh the session or use a private screen.") from exc
         return self.session.window_at(x, y)
@@ -244,11 +290,20 @@ class CuaDriverBackend:
         records = self.driver.call("list_windows", {})["windows"]
         if self.session.name == "x11":
             found = [r for r in records if r.get("window_id") == int(window.id, 16)]
+        elif self.session.name == "wayland" and self.session._hyprland():
+            # Both providers use Hyprland's exact numeric address. Do not weaken
+            # that identity by joining titles or guessing from array order.
+            found = [r for r in records if r.get("window_id") == int(window.id, 16)]
+            clients = [c for c in self.session._hypr_clients() if c.get("address") == window.id]
+            found = [r for r in found if len(clients) == 1 and r.get("pid") == clients[0].get("pid")]
         else:
             # No array-order guess or PID-only match: one app can have many windows.
             found = [r for r in records if r.get("title") == window.title and
                      r.get("bounds") == {"x": window.x, "y": window.y,
                                          "width": window.width, "height": window.height}]
+            if self.session.name == "kde":
+                raw = [r for r in self.session._safe_windows() if str(r.get("id")) == window.id]
+                found = [r for r in found if len(raw) == 1 and r.get("pid") == raw[0].get("pid")]
         if len(found) != 1 or not found[0].get("pid") or not found[0].get("window_id"):
             raise CuaDriverError("background_unavailable", input_emitted=False)
         return {"pid": found[0]["pid"], "window_id": found[0]["window_id"], "delivery_mode": "background"}
@@ -257,11 +312,15 @@ class CuaDriverBackend:
         window = next((w for w in self.session.list_windows() if w.id == wid), None)
         if window is None:
             raise TargetRequiredError("Choose an existing window with activate_window(); no input was sent.")
+        self._ensure_visible(window)
         return window
 
     def _point(self, x: int, y: int):
         window = self._window(self.window_at(x, y))
-        return window, self._address(window) | {"x": x - window.x, "y": y - window.y}
+        # Explicit frame avoids the driver's requirement for its own prior
+        # screenshot. This is still window-addressed background input: the
+        # driver translates screen pixels to the supplied window, not scope=desktop.
+        return window, self._address(window) | {"x": x, "y": y, "coordinate_frame": "desktop"}
 
     def move(self, x: int, y: int):
         # This tool is the deliberate exception: overlay-only, screen coordinates.
@@ -274,11 +333,11 @@ class CuaDriverBackend:
                                           "count": count}, input_call=True)
 
     def drag(self, x0: int, y0: int, x1: int, y1: int, duration_ms: int):
-        window, args = self._point(x0, y0)
+        _, args = self._point(x0, y0)
         args.pop("x")
         args.pop("y")
-        self.driver.call("drag", args | {"from_x": x0 - window.x, "from_y": y0 - window.y,
-                                         "to_x": x1 - window.x, "to_y": y1 - window.y,
+        self.driver.call("drag", args | {"from_x": x0, "from_y": y0,
+                                         "to_x": x1, "to_y": y1,
                                          "duration_ms": duration_ms}, input_call=True)
 
     def scroll(self, x: int, y: int, dx: int, dy: int):

@@ -45,7 +45,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "monitors": [],
         "scale": {},
         "cua_driver": backend.which("cua-driver"),
-        "cua_driver_input": ({"binary": backend.driver.proc.args[0], "version": backend.driver.version,
+        "cua_driver_input": ({"binary": backend.binary, "version": backend.driver.version,
                               **backend.status} if getattr(backend, "background_input", False)
                              else cua_report(backend, cua_driver)),
         "mcp": _mcp_version(),
@@ -86,7 +86,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     for cap in report["missing"]:
         names = " or ".join(backend.TOOLS[cap])
         warnings.append(f"no tool for {cap}: install {names}")
-    if backend.name == "wayland":
+    if backend.name == "wayland" and not getattr(backend, "background_input", False):
         warnings.append(
             "Wayland: outside sway and Hyprland, the keyboard and any compositor without a virtual "
             "pointer need ydotoold running with /dev/uinput access; "
@@ -95,10 +95,11 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         if env.get("DISPLAY"):
             warnings.append("XWayland is available: set CCDESK_BACKEND=x11 to drive X11 apps only")
     elif backend.name == "kde":
-        warnings.append(
-            "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
-            "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
-        )
+        if not getattr(backend, "background_input", False):
+            warnings.append(
+                "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
+                "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
+            )
         if not tools.get("windows", {}).get("kdotool"):
             warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "
                             "`cargo install kdotool`). Without it clicks and drags are refused, because "
@@ -228,8 +229,9 @@ def format_report(report: dict) -> str:
                             None: "unknown"}[report["a11y"].get("bus_enabled")],
         f"cua-driver:   {report.get('cua_driver_input', {}).get('binary') or report['cua_driver'] or 'not found'}",
         "cua version:  " + (report.get("cua_driver_input", {}).get("version") or "unknown"),
-        "cua input:    " + ("available (target dependent)" if report.get("cua_driver_input", {}).get("available")
-                            else "unavailable") + "; " + (report.get("cua_driver_input", {}).get("reason") or "unknown"),
+        "cua input:    " + {True: "available (target dependent)", False: "unavailable", None: "unknown"}[
+            report.get("cua_driver_input", {}).get("available", False)]
+        + "; " + (report.get("cua_driver_input", {}).get("reason") or "unknown"),
         "firefox:      " + (("running, automation " + ("on" if report["firefox"]["automation"] else "off"))
                             if report["firefox"]["running"] else "not running")
         + ("; Claude's own Firefox is running" if report["firefox"].get("agent_running") else ""),

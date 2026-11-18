@@ -21,7 +21,7 @@ def _policy_flags(p: argparse.ArgumentParser) -> None:
     p.add_argument("--yield-ms", metavar="MS", type=_yield_ms, default=0,
                    help="on your own screen: hold input until you have left mouse and keyboard alone this "
                         "long (e.g. 3000; needs xprintidle). Default 0, never wait. Ignored with "
-                        "--own-pointer, which never touches your pointer or keyboard")
+                        "--own-pointer and --input cua-driver, which use independent input")
 
 
 def _size_flags(p: argparse.ArgumentParser) -> None:
@@ -220,6 +220,7 @@ def _mcp(args) -> int:
         backend = get_backend(args.backend)
     own = None
     cua = None
+    previous_signals = {}
     if args.input == "cua-driver":
         from ccdesk.backends.cua_driver import CuaDriverBackend
 
@@ -231,6 +232,8 @@ def _mcp(args) -> int:
             print(f"ccdesk mcp --input cua-driver: {exc}", file=sys.stderr)
             return 1
         backend = cua
+        if args.yield_ms:
+            print("ccdesk mcp: --yield-ms is ignored with --input cua-driver (background delivery)", file=sys.stderr)
         args.yield_ms = 0
         def on_signal(sig, _frame):
             cua.close()
@@ -240,7 +243,7 @@ def _mcp(args) -> int:
             os.kill(os.getpid(), sig)
 
         for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
-            signal.signal(sig, on_signal)
+            previous_signals[sig] = signal.signal(sig, on_signal)
     if args.own_pointer:
         own = _own_pointer(args, backend)
         if own is None:
@@ -273,11 +276,14 @@ def _mcp(args) -> int:
         desktop.audit.record("server_start", {"read_only": args.read_only, "allow_launch": args.allow_launch,
                                               "confirm_keys": args.confirm_keys, "yield_ms": args.yield_ms,
                                               "backend": desktop.backend.name,
+                                              "input": args.input or ("own-pointer" if args.own_pointer else "session"),
                                               "headless": headless.info() if headless else None}, "ok")
         serve(desktop)
     finally:
         if cua:
             cua.close()
+        for sig, handler in previous_signals.items():
+            signal.signal(sig, handler)
         if own:
             own.mpx.close()
         if headless:

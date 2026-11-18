@@ -3,13 +3,13 @@ from __future__ import annotations
 import json
 import os
 import shutil
-from dataclasses import replace
+import signal
 from pathlib import Path
 
 import pytest
 
 from ccdesk import cli
-from ccdesk.backends.cua_driver import CuaDriverBackend, Driver, HOVER_NOTE, report
+from ccdesk.backends.cua_driver import CuaDriverBackend, HOVER_NOTE, report
 from ccdesk.desktop import Desktop
 from ccdesk.errors import CommandError, CuaDriverError, TargetHiddenError, TargetRequiredError, UnsupportedError
 from ccdesk.parsing import Window, parse_key_combo
@@ -60,12 +60,13 @@ def test_exact_input_contract_and_one_process(backend, session):
     backend.press_key(parse_key_combo("ctrl+enter"))
     backend.move(800, 600)
     address = {"pid": 1234, "window_id": 32, "delivery_mode": "background"}
+    point_address = address | {"coordinate_frame": "desktop"}
     assert input_calls(session) == [
-        {"name": "click", "arguments": address | {"x": 25, "y": 40, "button": "right", "count": 2}},
-        {"name": "drag", "arguments": address | {"from_x": 20, "from_y": 30, "to_x": 90, "to_y": 90,
+        {"name": "click", "arguments": point_address | {"x": 125, "y": 240, "button": "right", "count": 2}},
+        {"name": "drag", "arguments": point_address | {"from_x": 120, "from_y": 230, "to_x": 190, "to_y": 290,
                                                    "duration_ms": 450}},
-        {"name": "scroll", "arguments": address | {"x": 40, "y": 60, "direction": "down", "amount": 3, "by": "line"}},
-        {"name": "scroll", "arguments": address | {"x": 40, "y": 60, "direction": "left", "amount": 2, "by": "line"}},
+        {"name": "scroll", "arguments": point_address | {"x": 140, "y": 260, "direction": "down", "amount": 3, "by": "line"}},
+        {"name": "scroll", "arguments": point_address | {"x": 140, "y": 260, "direction": "left", "amount": 2, "by": "line"}},
         {"name": "type_text", "arguments": address | {"text": "hello →"}},
         {"name": "press_key", "arguments": address | {"key": "enter", "modifiers": ["ctrl"]}},
         {"name": "move_cursor", "arguments": {"x": 800, "y": 600, "scope": "window"}},
@@ -92,7 +93,10 @@ def test_typing_requires_selected_live_window(backend, session):
 
 
 def test_hidden_window_never_activates(backend, session):
+    backend.activate_window(session.windows[0])
     session.hidden.add(session.windows[0].id)
+    with pytest.raises(TargetHiddenError):
+        backend.type_text("hidden")
     with pytest.raises(TargetHiddenError, match="private screen"):
         backend.activate_window(session.windows[0])
     session.hidden.clear()
@@ -102,6 +106,15 @@ def test_hidden_window_never_activates(backend, session):
     assert not session.calls
 
 
+def test_wayland_without_atspi_does_not_guess_addressed_route_availability(session):
+    session.name = "wayland"
+    session.env["WAYLAND_DISPLAY"] = "fake"
+    session.env["FAKE_ATSPI"] = "0"
+    with CuaBackendContext(session) as backend:
+        assert backend.status["available"] is None
+        assert "unknown" in backend.status["reason"]
+
+
 def test_x11_targeting_never_uses_pointer_fallback(backend, session, monkeypatch):
     session.name = "x11"
     monkeypatch.setattr(session, "_xq", lambda: None, raising=False)
@@ -109,12 +122,13 @@ def test_x11_targeting_never_uses_pointer_fallback(backend, session, monkeypatch
     with pytest.raises(UnsupportedError, match="libX11"):
         backend.click(125, 240, 1, 1)
     class Query:
-        def window_at(self, x, y):
+        def window_at(self, x, y, *, ignore_titles):
             assert (x, y) == (125, 240)
+            assert ignore_titles == ("Cua.AgentCursorOverlay.",)
             return 32
     monkeypatch.setattr(session, "_xq", Query)
     backend.click(125, 240, 1, 1)
-    assert input_calls(session)[0]["arguments"]["x"] == 25
+    assert input_calls(session)[0]["arguments"]["x"] == 125
 
 
 def test_ambiguous_native_handle_refused(session):
@@ -179,6 +193,7 @@ def test_unsupported_version_fails_clearly(session):
     session.env["FAKE_VERSION"] = "0.28.2"
     with pytest.raises(CommandError, match="0.28.2"):
         CuaDriverBackend(session, session.binary)
+    assert report(session, session.binary)["version"] == "cua-driver 0.28.2"
 
 
 def test_move_note_reaches_desktop(backend, tmp_path):
@@ -195,3 +210,125 @@ def test_cli_contract():
         with pytest.raises(SystemExit) as caught:
             cli.main(argv)
         assert caught.value.code == 2
+
+
+def test_cli_owns_and_closes_driver(session, monkeypatch, tmp_path):
+    import ccdesk.backends
+    import ccdesk.server
+
+    monkeypatch.setattr(ccdesk.backends, "get_backend", lambda _: session)
+    seen = []
+    def serve(desktop):
+        assert isinstance(desktop.backend, CuaDriverBackend)
+        assert desktop.policy.yield_ms == 0
+        seen.append(desktop.backend.driver.proc)
+    monkeypatch.setattr(ccdesk.server, "serve", serve)
+    original_signal = signal.getsignal(signal.SIGTERM)
+    assert cli.main(["mcp", "--agent", "a", "--input", "cua-driver", "--cua-driver", session.binary,
+                     "--yield-ms", "2000", "--audit-log", str(tmp_path / "audit")]) == 0
+    assert seen[0].returncode == 0  # EOF, rather than a forced signal
+    assert signal.getsignal(signal.SIGTERM) == original_signal
+
+
+def test_cli_fails_before_serving_when_background_is_unavailable(session, monkeypatch, capsys):
+    import ccdesk.backends
+    import ccdesk.server
+
+    session.env["FAKE_UNAVAILABLE"] = "1"
+    monkeypatch.setattr(ccdesk.backends, "get_backend", lambda _: session)
+    monkeypatch.setattr(ccdesk.server, "serve", lambda _: pytest.fail("server started despite refusal"))
+    assert cli.main(["mcp", "--agent", "a", "--input", "cua-driver", "--cua-driver", session.binary]) == 1
+    assert "Background delivery is unavailable" in capsys.readouterr().err
+
+
+def test_inspection_and_clipboard_stay_on_session(backend, session, tmp_path):
+    session.clipboard_set("sentinel")
+    assert backend.clipboard_get() == "sentinel"
+    assert backend.list_windows() == session.windows
+    backend.screenshot(str(tmp_path / "screen.png"), None)
+    assert session.calls[-1] == ("screenshot", None)
+    assert input_calls(session) == []
+    assert backend.tools_report()["input"] == {"cua-driver": session.binary}
+
+
+@pytest.mark.parametrize("effect,emitted", [("refused", False), ("none", False), ("unknown", True),
+                                           ("unverifiable", True)])
+def test_driver_effect_maps_input_emission(effect, emitted):
+    error = CuaDriverError.from_result({"code": "background_pointer_failed", "effect": effect}, input_call=True)
+    assert error.input_emitted is emitted
+
+
+def test_partial_scroll_preserves_prior_input(session):
+    with CuaBackendContext(session) as backend:
+        original = backend.driver.call
+        scrolls = []
+        def call(name, args, **kwargs):
+            if name == "scroll":
+                scrolls.append(args)
+                if len(scrolls) == 2:
+                    raise CuaDriverError("background_pointer_failed", input_emitted=False)
+            return original(name, args, **kwargs)
+        backend.driver.call = call
+        with pytest.raises(CuaDriverError) as caught:
+            backend.scroll(125, 240, 0, 51)
+        assert caught.value.input_emitted is True
+        assert [r["amount"] for r in scrolls] == [50, 1]
+
+
+def test_hyprland_native_address_and_pid(session):
+    from ccdesk.backends.wayland import WaylandBackend
+
+    clients = [{"address": "0x00000020", "title": "Agent", "class": "gtk", "pid": 1234,
+                "at": [100, 200], "size": [400, 300], "workspace": {"id": 1}, "focusHistoryID": 0}]
+    commands = []
+    def run(argv, **kwargs):
+        commands.append(argv)
+        if argv == ["hyprctl", "clients", "-j"]:
+            return json.dumps(clients)
+        if argv == ["hyprctl", "-j", "monitors"]:
+            return json.dumps([{"activeWorkspace": {"id": 1}}])
+        if argv == ["hyprctl", "-j", "activeworkspace"]:
+            return json.dumps({"id": 1})
+        pytest.fail(f"Unexpected session command: {argv}")
+    native = WaylandBackend(env=session.env | {"HYPRLAND_INSTANCE_SIGNATURE": "fake", "WAYLAND_DISPLAY": "fake"},
+                            runner=run, which=lambda n: "/usr/bin/hyprctl" if n == "hyprctl" else None)
+    backend = CuaDriverBackend(native, session.binary)
+    try:
+        backend.activate_window(native.list_windows()[0])
+        backend.click(125, 240, 1, 1)
+        backend.type_text("hello")
+        assert input_calls(session)[0]["arguments"] == {"pid": 1234, "window_id": 32, "x": 125, "y": 240,
+                                                       "coordinate_frame": "desktop", "delivery_mode": "background",
+                                                       "button": "left", "count": 1}
+        clients[0]["pid"] = 9999
+        with pytest.raises(CuaDriverError) as caught:
+            backend.type_text("wrong owner")
+        assert caught.value.input_emitted is False
+        assert backend.driver.proc.args == [session.binary, "mcp", "--direct"]
+        assert backend.driver.version == "cua-driver 0.38.0"
+    finally:
+        backend.close()
+
+
+def test_kde_native_pid_and_unique_window_join(session):
+    from ccdesk.backends.kde import KdeBackend, WINDOWS_SCRIPT
+
+    raw = [{"id": "{native-uuid}", "title": "Agent", "cls": "gtk", "pid": 1234,
+            "x": 100, "y": 200, "width": 400, "height": 300}]
+    def run(argv, **kwargs):
+        if argv == ["kdotool", "get_desktop"]:
+            return "1"
+        assert argv == ["kdotool", "kwinscript", "--inline", WINDOWS_SCRIPT]
+        return json.dumps(raw)
+    native = KdeBackend(env=session.env | {"WAYLAND_DISPLAY": "fake"}, runner=run,
+                        which=lambda n: "/usr/bin/kdotool" if n == "kdotool" else None)
+    backend = CuaDriverBackend(native, session.binary)
+    try:
+        backend.activate_window(native.list_windows()[0])
+        backend.type_text("hello")
+        assert input_calls(session)[0]["arguments"]["window_id"] == 32
+        raw[0]["pid"] = 9999
+        with pytest.raises(CuaDriverError):
+            backend.type_text("wrong owner")
+    finally:
+        backend.close()

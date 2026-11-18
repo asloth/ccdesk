@@ -21,7 +21,7 @@ for line in sys.stdin:
     else:
         name = request["params"]["name"]
         if name == "check_permissions":
-            structured = {"xsend_event": True, "atspi": True, "wayland_enabled": True,
+            structured = {"xsend_event": True, "atspi": os.environ.get("FAKE_ATSPI") != "0", "wayland_enabled": True,
                           "background_available": os.environ.get("FAKE_UNAVAILABLE") != "1"}
         elif name == "list_windows":
             structured = {"windows": json.loads(os.environ["FAKE_WINDOWS"])}

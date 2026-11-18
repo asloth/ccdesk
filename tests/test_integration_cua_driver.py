@@ -4,7 +4,6 @@ from __future__ import annotations
 import json
 import os
 import shutil
-import socket
 import subprocess
 import time
 from pathlib import Path
@@ -30,7 +29,7 @@ def binary():
 def skip_reason():
     if not binary():
         return "cua-driver 0.38.0 absent (set CCDESK_TEST_CUA_DRIVER or use ~/.cache/ccdesk-dev/cua-driver)"
-    for tool in ("Xvfb", "xdotool", "dbus-daemon"):
+    for tool in ("Xvfb", "xdotool", "dbus-daemon", "bspwm", "xprop"):
         if not shutil.which(tool):
             return f"{tool} absent"
     if not find_libexec("at-spi2-registryd"):
@@ -56,9 +55,10 @@ def wait_for(read, predicate=lambda value: bool(value), timeout=15):
     pytest.fail(f"Timed out: {value!r}")
 
 
-def test_unfocused_click_and_type_preserve_user_input_focus_and_pointer(tmp_path, monkeypatch):
+@pytest.mark.parametrize("overlay", [False, True])
+def test_unfocused_click_and_type_preserve_user_input_focus_and_pointer(tmp_path, monkeypatch, overlay):
     monkeypatch.setenv("XDG_CACHE_HOME", str(tmp_path / "cache"))
-    screen = Headless(size="1200x800", wm="none")
+    screen = Headless(size="1200x800", wm="auto")
     def start_private_x(xvfb):
         # Headless normally asks Xvfb for the first free number, often :1.
         # Keep this integration on a high, explicitly owned display instead.
@@ -101,28 +101,55 @@ def test_unfocused_click_and_type_preserve_user_input_focus_and_pointer(tmp_path
         target = wait_for(lambda: window("target"))
         user = wait_for(lambda: window("user"))
         # Test setup is the only foreground input. It runs entirely on this private screen.
-        session.run(["xdotool", "windowfocus", "--sync", user.id])
+        session.run(["xdotool", "windowactivate", "--sync", user.id])
         session.run(["xdotool", "mousemove", "980", "650"])
         time.sleep(0.3)
         focus = session.run(["xdotool", "getwindowfocus"]).strip()
+        active = session.active_window()
+        assert active == user.id and active != target.id
+        active_property = session.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"])
         pointer = session.run(["xdotool", "getmouselocation", "--shell"])
         focus_events = read("user")["focus_events"]
-        backend = CuaDriverBackend(session, binary(), overlay=False)
+        backend = CuaDriverBackend(session, binary(), overlay=overlay)
+        sent = []
+        driver_call = backend.driver.call
+        def record_call(name, args, **kwargs):
+            sent.append((name, args.copy()))
+            return driver_call(name, args, **kwargs)
+        monkeypatch.setattr(backend.driver, "call", record_call)
+        def undisturbed():
+            assert session.run(["xdotool", "getwindowfocus"]).strip() == focus
+            assert session.run(["xprop", "-root", "_NET_ACTIVE_WINDOW"]) == active_property
+            assert session.active_window() == active
+            assert session.run(["xdotool", "getmouselocation", "--shell"]) == pointer
         backend.activate_window(target)
-        assert session.run(["xdotool", "getwindowfocus"]).strip() == focus
+        undisturbed()
+        backend.move(*read("target")["button"])
+        undisturbed()
+        if overlay:
+            def overlay_window():
+                xq = session._xq()
+                return any((xq.window_info(wid) or {}).get("title", "").startswith("Cua.AgentCursorOverlay.")
+                           for wid in xq.visible_named())
+            wait_for(overlay_window)
         user_text = "the user keeps typing without interruption"
         writer = subprocess.Popen(["xdotool", "type", "--clearmodifiers", "--delay", "80", user_text], env=env)
         backend.click(*read("target")["button"], 1, 1)
         wait_for(lambda: read("target"), lambda state: state.get("clicks") == 1)
-        assert session.run(["xdotool", "getwindowfocus"]).strip() == focus
+        undisturbed()
         backend.type_text("background text")
         wait_for(lambda: read("target"), lambda state: state.get("text") == "background text")
+        undisturbed()
         writer.wait(timeout=15)
         assert writer.returncode == 0
         wait_for(lambda: read("user"), lambda state: state.get("text") == user_text)
-        assert session.run(["xdotool", "getwindowfocus"]).strip() == focus
-        assert session.run(["xdotool", "getmouselocation", "--shell"]) == pointer
+        undisturbed()
         assert read("user")["focus_events"] == focus_events
+        click = next(args for name, args in sent if name == "click")
+        assert click == {"pid": apps[0].pid, "window_id": int(target.id, 16),
+                         "x": read("target")["button"][0], "y": read("target")["button"][1],
+                         "coordinate_frame": "desktop", "delivery_mode": "background", "button": "left", "count": 1}
+        assert all(args.get("scope") != "desktop" for _, args in sent)
     finally:
         if writer and writer.poll() is None:
             writer.terminate()

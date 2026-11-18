@@ -759,6 +759,8 @@ It optionally calls Cua Driver for input; the normal input backend remains the d
 `doctor` reports the binary, version and conditional background availability. Availability
 does not guarantee that every application accepts background input: refusals carry a code
 and `input_emitted`, and never fall back to foreground delivery.
+When Wayland has no AT-SPI, availability is reported as unknown: the driver does not expose
+a read-only probe for its addressed compositor routes. Each target action can still refuse.
 
 On X11, cua-driver tries accessibility, then its virtual master devices on real Xorg with
 writable `/dev/uinput`, then synthetic events where supported. Xvfb cannot use the real-input
@@ -767,6 +769,11 @@ backend in its child process. Accessibility and addressed compositor routes can 
 ordinary virtual-pointer and portal/libei input cannot target an unfocused window. Unsupported
 actions are refused. Native window identity must match uniquely between the session and driver.
 Use a private screen for tasks that need unavailable background input.
+
+Pointer actions send screen pixels with `coordinate_frame="desktop"`, explicit `pid` and
+`window_id`, and `delivery_mode="background"`. The driver converts them to that window's
+coordinates. This avoids requiring a second screenshot from the driver; it does not use
+`scope="desktop"` or move the user's pointer.
 
 `move()` only moves the agent's visual cursor, with this explicit note:
 "hover is not delivered to the app in background mode; a task that needs hover (tooltip,
