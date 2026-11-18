@@ -67,6 +67,7 @@ def build_parser() -> argparse.ArgumentParser:
     p = sub.add_parser("doctor", help="report session type, helper tools, screen size and scale")
     p.add_argument("--json", action="store_true", help="print the report as JSON")
     p.add_argument("--backend", choices=["x11", "wayland"], help="force a backend instead of auto-detecting")
+    p.add_argument("--cua-driver", metavar="PATH", help="cua-driver binary to diagnose")
 
     p = sub.add_parser("install", help="register the MCP server with Claude Code and install the skill")
     p.add_argument("--dry-run", action="store_true", help="print what would be written and run, then exit")
@@ -89,7 +90,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--cursor-color", metavar="#RRGGBB",
                    help="with --agent on X11: the colour of this agent's drawn cursor (default: one picked from its name)")
     p.add_argument("--no-cursor", action="store_true", help="with --agent: do not draw a cursor for this agent")
-    p.add_argument("--own-pointer", action="store_true",
+    input_group = p.add_mutually_exclusive_group()
+    input_group.add_argument("--input", choices=["cua-driver"], help="with --agent: window-addressed background input")
+    p.add_argument("--cua-driver", metavar="PATH", help="cua-driver 0.38.0 executable (default: PATH)")
+    input_group.add_argument("--own-pointer", action="store_true",
                    help="with --agent, X11 only: give this agent its own pointer and keyboard focus "
                         "(an XInput2 master pair made with xinput), so it never moves yours and "
                         "agents do not take turns; removed when the server exits")
@@ -118,6 +122,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
+    if args.command == "mcp":
+        if args.input and not args.agent:
+            parser.error("--input cua-driver needs --agent NAME")
+        if args.cua_driver and args.input != "cua-driver":
+            parser.error("--cua-driver requires --input cua-driver")
 
     if args.command == "version":
         print(f"ccdesk {__version__}")
@@ -129,7 +138,7 @@ def main(argv: list[str] | None = None) -> int:
         from ccdesk.safety import Policy, default_audit_path
 
         backend = get_backend(args.backend)
-        report = build_report(backend, Policy(), default_audit_path())
+        report = build_report(backend, Policy(), default_audit_path(), cua_driver=args.cua_driver)
         report["cleanup"] = housekeeping(backend)
         print(json.dumps(report, indent=2) if args.json else format_report(report))
         return 0 if report["ready"] and not report["missing"] else 1
@@ -179,6 +188,9 @@ def _mcp(args) -> int:
     from ccdesk.parsing import parse_confirm_keys
     from ccdesk.safety import AuditLog, Policy
 
+    if args.input and not args.agent:
+        print("ccdesk mcp: --input cua-driver needs --agent NAME", file=sys.stderr)
+        return 1
     try:
         from ccdesk.server import serve
     except ImportError as exc:
@@ -207,6 +219,28 @@ def _mcp(args) -> int:
     else:
         backend = get_backend(args.backend)
     own = None
+    cua = None
+    if args.input == "cua-driver":
+        from ccdesk.backends.cua_driver import CuaDriverBackend
+
+        try:
+            cua = CuaDriverBackend(backend, args.cua_driver, overlay=not args.no_cursor)
+        except CcdeskError as exc:
+            if headless:
+                headless.stop()
+            print(f"ccdesk mcp --input cua-driver: {exc}", file=sys.stderr)
+            return 1
+        backend = cua
+        args.yield_ms = 0
+        def on_signal(sig, _frame):
+            cua.close()
+            if headless:
+                headless.stop()
+            signal.signal(sig, signal.SIG_DFL)
+            os.kill(os.getpid(), sig)
+
+        for sig in (signal.SIGTERM, signal.SIGINT, signal.SIGHUP):
+            signal.signal(sig, on_signal)
     if args.own_pointer:
         own = _own_pointer(args, backend)
         if own is None:
@@ -219,7 +253,7 @@ def _mcp(args) -> int:
                   "or keyboard)", file=sys.stderr)
             args.yield_ms = 0
     cursor = None
-    if args.agent and not args.no_cursor and backend.name == "x11":
+    if args.agent and not args.no_cursor and backend.name == "x11" and cua is None:
         if args.cursor_color and not valid_color(args.cursor_color):
             print("ccdesk mcp: --cursor-color must look like '#RRGGBB'", file=sys.stderr)
             return 1
@@ -242,6 +276,8 @@ def _mcp(args) -> int:
                                               "headless": headless.info() if headless else None}, "ok")
         serve(desktop)
     finally:
+        if cua:
+            cua.close()
         if own:
             own.mpx.close()
         if headless:

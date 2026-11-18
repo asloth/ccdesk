@@ -59,7 +59,9 @@ def test_doctor_detects_cua_driver(tmp_path, monkeypatch, capsys):
     main(["doctor", "--json"])
     report = json.loads(capsys.readouterr().out)
     assert report["cua_driver"] == str(fake)
-    assert any("does not use it" in w for w in report["warnings"])
+    assert report["cua_driver_input"]["binary"] == str(fake)
+    assert report["cua_driver_input"]["available"] is False
+    assert "0.38.0" in report["cua_driver_input"]["reason"]
 
 
 @pytest.fixture
