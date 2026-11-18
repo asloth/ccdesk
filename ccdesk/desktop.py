@@ -1497,6 +1497,16 @@ class Desktop:
                     self._typing_ref = None
                     self._cursor_to_node(node)
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
+                # No action (LibreOffice's sheet tabs, some page tabs): a click on it selects it in
+                # its parent, which AT-SPI Selection does with no pointer. Pointer only without one.
+                picked = self.a11y.select(str(ref).strip()).get("selected")
+                if picked:
+                    self._typing_ref = None
+                    self._cursor_to_node(node)
+                    return self._changes(self._in_tree_window({"selected": label, "via": "accessibility"}))
+                if picked is False:
+                    raise CcdeskError(f"{ref} ({label}) did not become selected through accessibility. Check "
+                                      f"with ui_tree(); don't repeat it blindly")
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             # An agent's force never carries a click into a window that is not its own: with a tree

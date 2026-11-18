@@ -401,6 +401,14 @@ class A11y:
             self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes},
                           "window": result["window"], "secret": secret_focused(nodes)}
 
+    def select(self, ref: str) -> dict:
+        """Select the element in its parent through AT-SPI Selection (a sheet tab, a page tab): no
+        pointer, no focus. {"selected": None}: the parent offers no Selection."""
+        unsure = ("the app did not answer within the time limit: the item may have been selected. "
+                  "Check with ui_tree() before trying again")
+        return self.call({"op": "select", "path": self.refs[ref].path}, timeout=ACTION_TIMEOUT,
+                         on_timeout=unsure)
+
 
 def secret_focused(nodes: list[tuple[str, dict]]) -> bool:
     return any(n["role"] == "password text" and "focused" in n.get("states", ()) for _, n in nodes)

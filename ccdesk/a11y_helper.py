@@ -9,6 +9,7 @@ Requests:
    "settle_ms": int}: settle_ms > 0 watches for a change before answering (see tree()).
   {"op": "resolve", "path": "3.0.1.4"}
   {"op": "action", "path": "3.0.1.4", "names": ["click", ...]}
+  {"op": "select", "path": "3.0.1.4"}: select it in its parent through AT-SPI Selection
   {"op": "set", "path": "3.0.1.4", "text": str}: pass "-" as the argument and the request on stdin,
   so the text stays out of the process list.
 
@@ -305,6 +306,30 @@ def action(req):
     return {"action": None}
 
 
+def select(req):
+    """Select the element in its parent through Selection, the way a click on a sheet tab or a page
+    tab would, with no pointer and no focus. {"selected": None}: the parent has no Selection, or the
+    element is not one of its children."""
+    path = str(req["path"])
+    obj = find(path)
+    if obj is None:
+        return GONE
+    parent_path, _, index = path.rpartition(".")
+    parent = find(parent_path) if parent_path else None
+    if parent is None or parent.get_selection_iface() is None:
+        return {"selected": None}
+    index = int(index)
+    if Atspi.Selection.is_child_selected(parent, index):
+        return {"selected": True, "already": True}
+    if not Atspi.Selection.select_child(parent, index):
+        return {"selected": False}
+    for _ in range(10):  # the app may apply it a moment later
+        if Atspi.Selection.is_child_selected(parent, index):
+            return {"selected": True}
+        time.sleep(0.05)
+    return {"selected": False}
+
+
 def options(obj):
     """A combo box's options as (index for Selection, name): its own children, or those of the
     menu or list it holds (GTK puts the items in a menu)."""
@@ -410,7 +435,7 @@ def apps(_req):
 
 def handle(req):
     ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value,
-           "insert": insert}
+           "insert": insert, "select": select}
     try:
         return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing
