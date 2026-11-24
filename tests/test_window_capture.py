@@ -13,6 +13,7 @@ import ctypes.util
 import os
 import shutil
 import subprocess
+import time
 
 import pytest
 
@@ -399,3 +400,75 @@ def test_a_hundred_captures_leave_no_redirect_or_segment_behind(screen, backend,
             assert f is not None
     assert len(grab._redirected) == 1
     grab.close()
+
+
+# -- the first capture after a redirect, with and without a compositor -------------------------
+
+
+def _own_selection(screen, name: bytes):
+    """Make a window of the test client own selection `name`, as a compositing manager owns _NET_WM_CM_S0."""
+    x = screen.x
+    x.XInternAtom.restype, x.XInternAtom.argtypes = C.c_ulong, [C.c_void_p, C.c_char_p, C.c_int]
+    x.XSetSelectionOwner.restype, x.XSetSelectionOwner.argtypes = C.c_int, [C.c_void_p, C.c_ulong, C.c_ulong, C.c_ulong]
+    owner = screen.window(0, 0, 1, 1, map=False)
+    x.XSetSelectionOwner(screen.d, x.XInternAtom(screen.d, name, 0), owner, 0)
+    screen.sync()
+
+
+def test_without_a_compositor_the_first_capture_waits_for_the_repaint_once(screen, backend, tmp_path):
+    a, _ = screen.striped(50, 40, 300, 200)
+    screen.striped(0, 0, 500, 400, colours=(0xFFFF00,))
+    shot(backend, tmp_path / "w0.png", a)
+    grab = backend._xgrab
+    assert grab.repaint_wait is not None and grab.repaint_wait <= xgrab.REPAINT_WAIT + 0.2
+    grab.repaint_wait = None
+    shot(backend, tmp_path / "w1.png", a)
+    assert grab.repaint_wait is None  # redirected already: no second wait
+
+
+def test_under_a_compositor_the_first_capture_does_not_wait(screen, backend, tmp_path):
+    _own_selection(screen, b"_NET_WM_CM_S0")
+    a, _ = screen.striped(50, 40, 300, 200)
+    screen.striped(0, 0, 500, 400, colours=(0xFFFF00,))
+    shot(backend, tmp_path / "w.png", a)
+    assert backend._xgrab.repaint_wait is None
+
+
+CHROMIUM = shutil.which("chromium") or shutil.which("chromium-browser") or shutil.which("google-chrome")
+PAGE = (0xFF, 0x00, 0xFF)  # the page's background
+COVER = 0xFFFF00
+
+
+@pytest.mark.skipif(not CHROMIUM, reason="Chromium is not installed")
+def test_a_browser_covered_before_its_first_capture_gives_its_own_pixels(xvfb, screen, backend, tmp_path):
+    """CDB-G04's case on a desktop without a compositor: the browser draws its page itself (no
+    server-painted backgrounds), it is covered before ccdesk ever redirected it, and the first
+    picture must be the page, not the window on top nor the stale copy the redirect starts from."""
+    page = "data:text/html,<title>Morrowglass Archive</title><body style='margin:0;background:%23ff00ff'></body>"
+    proc = subprocess.Popen([CHROMIUM, f"--user-data-dir={tmp_path / 'profile'}", "--no-first-run",
+                             "--no-default-browser-check", "--disable-gpu", "--window-position=40,30",
+                             "--window-size=400,300", f"--app={page}"],
+                            env={**os.environ, "DISPLAY": xvfb}, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    try:
+        window = None
+        for _ in range(60):
+            out = subprocess.run(["xdotool", "search", "--onlyvisible", "--name", "Morrowglass"],
+                                 env={**os.environ, "DISPLAY": xvfb}, capture_output=True, text=True).stdout.split()
+            if out:
+                window = int(out[-1])
+                break
+            time.sleep(0.25)
+        if window is None:
+            pytest.skip("Chromium did not open a window on Xvfb")
+        time.sleep(1.5)  # the page painted once, uncovered
+        screen.window(0, 0, 600, 500, bg=COVER)  # covers all of it
+        box = Region(40, 30, 400, 300)
+        backend.screenshot(str(tmp_path / "screen.png"), box)
+        assert read_png(tmp_path / "screen.png").pixel(200, 150)[:3] == (0xFF, 0xFF, 0x00)  # the screen shows the cover
+        assert backend.window_covered(hex(window)) is True
+        w, h, _ = shot(backend, tmp_path / "first.png", window)
+        assert (w, h) == (400, 300)
+        assert read_png(tmp_path / "first.png").pixel(w // 2, h // 2)[:3] == PAGE
+    finally:
+        proc.terminate()
+        proc.wait(10)

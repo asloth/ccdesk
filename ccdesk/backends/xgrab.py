@@ -10,10 +10,14 @@ back to XGetImage, and when even that fails callers use the PNG tools.
 
 A single window's own pixels, also while other windows cover it, come from XComposite (window_frame):
 the window is redirected once (automatic mode, so the screen looks the same) and a fresh named
-pixmap is read per capture.
+pixmap is read per capture. Under a compositing window manager (xfwm4's compositor, picom, KWin)
+every window already has its pixmap, so the first read is current. Without one, the pixmap the
+redirect creates starts as a copy of the screen, and the parts that were covered hold whatever was
+on top until the app repaints them (Chromium: about 0.2 s). So the first capture after such a
+redirect waits for the app's drawing to stop (X Damage events, at most REPAINT_WAIT).
 
-libX11, libXext and libXcomposite through ctypes (stdlib only), with argtypes on every call, one Display per
-process and one lock around it: tool calls run on worker threads.
+libX11, libXext, libXcomposite and libXdamage through ctypes (stdlib only), with argtypes on every
+call, one Display per process and one lock around it: tool calls run on worker threads.
 """
 
 from __future__ import annotations
@@ -23,6 +27,7 @@ import ctypes as C
 import ctypes.util
 import sys
 import threading
+import time
 from dataclasses import dataclass
 
 from ccdesk.backends import xerror
@@ -33,6 +38,17 @@ ALL_PLANES = 0xFFFFFFFF
 IS_VIEWABLE = 2
 COMPOSITE_REDIRECT_AUTOMATIC = 0
 MAX_DEPTH = 64  # parents to walk up from a window to the root
+DAMAGE_REPORT_NON_EMPTY = 3
+# After a redirect without a compositor: how long to wait for the app's first drawing, how long its
+# drawing must then stay quiet, and the most the whole wait may take. Once per window.
+REPAINT_FIRST = 0.5
+REPAINT_QUIET = 0.1
+REPAINT_WAIT = 1.0
+REPAINT_POLL = 0.01
+
+
+class _XEvent(C.Structure):  # XEvent is a 24-long union; only `type` is read
+    _fields_ = [("type", C.c_int), ("pad", C.c_long * 24)]
 
 
 class _XImage(C.Structure):
@@ -178,6 +194,10 @@ class XGrab:
         self._xc_tried = False
         self._root_checked = False
         self._redirected: set[int] = set()  # top-level windows this connection redirected
+        self._xd = None  # libXdamage, once found with the server's extension: (lib, first event code)
+        self._xd_tried = False
+        self._cm_atom = 0  # _NET_WM_CM_Sn: owned while a compositing manager runs
+        self.repaint_wait: float | None = None  # seconds the last fresh redirect waited, for tests
         self.window_note: str | None = None  # why the last window capture gave nothing
 
     def _open(self) -> None:
@@ -203,6 +223,10 @@ class XGrab:
         sig(x.XGetWindowAttributes, i, v, ul, C.POINTER(_Attrs))
         sig(x.XTranslateCoordinates, i, v, ul, ul, i, i, C.POINTER(i), C.POINTER(i), C.POINTER(ul))
         sig(x.XFreePixmap, i, v, ul)
+        sig(x.XInternAtom, ul, v, ci, i)
+        sig(x.XGetSelectionOwner, ul, v, ul)
+        sig(x.XPending, i, v)
+        sig(x.XNextEvent, i, v, C.POINTER(_XEvent))
         dpy = x.XOpenDisplay(self.display.encode())
         if not dpy:
             raise OSError(f"cannot open display {self.display}")
@@ -459,6 +483,7 @@ class XGrab:
                 if len(self._redirected) > 256:
                     self._forget_gone()
                 self._redirected.add(top)
+                self.repaint_wait = None if self._compositing() else self._await_repaint(top)
             self._error = None
             pix = xc.XCompositeNameWindowPixmap(dpy, top)
             x.XSync(dpy, 0)
@@ -469,6 +494,73 @@ class XGrab:
             if attempt:
                 return f"the window's pixels cannot be named ({self._error or 'no pixmap'}); it may have just been hidden"
         return "no pixmap"
+
+    def _compositing(self) -> bool:
+        """Whether a compositing manager runs on this screen: it has redirected every window already,
+        so their pixmaps hold what the apps drew, covered or not."""
+        x, dpy = self._x, self._dpy
+        if not self._cm_atom:
+            self._cm_atom = x.XInternAtom(dpy, f"_NET_WM_CM_S{x.XDefaultScreen(dpy)}".encode(), 0)
+        return bool(self._cm_atom and x.XGetSelectionOwner(dpy, self._cm_atom))
+
+    def _damage(self):
+        """(libXdamage, the DamageNotify event code), or None without the library or the extension."""
+        if not self._xd_tried:
+            self._xd_tried = True
+            try:
+                xd = C.CDLL(ctypes.util.find_library("Xdamage") or "libXdamage.so.1")
+                v, i, ul = C.c_void_p, C.c_int, C.c_ulong
+                xd.XDamageQueryExtension.restype, xd.XDamageQueryExtension.argtypes = i, [v, C.POINTER(i), C.POINTER(i)]
+                xd.XDamageCreate.restype, xd.XDamageCreate.argtypes = ul, [v, ul, i]
+                xd.XDamageDestroy.restype, xd.XDamageDestroy.argtypes = None, [v, ul]
+                xd.XDamageSubtract.restype, xd.XDamageSubtract.argtypes = None, [v, ul, ul, ul]
+                base, err = C.c_int(), C.c_int()
+                if xd.XDamageQueryExtension(self._dpy, C.byref(base), C.byref(err)):
+                    self._xd = (xd, base.value)  # XDamageNotify is event 0 of the extension
+            except (OSError, AttributeError):
+                self._xd = None
+        return self._xd
+
+    def _await_repaint(self, top: int) -> float:
+        """Right after top was redirected with no compositor: wait until the app has redrawn what
+        was covered (its drawing reaches the new pixmap as Damage events), so the first capture is
+        not the copy of the screen the pixmap started as. Waits up to REPAINT_FIRST for the first
+        drawing, then until it is quiet for REPAINT_QUIET, never more than REPAINT_WAIT. Without
+        the Damage extension, sleeps REPAINT_FIRST. Returns the seconds waited."""
+        start = time.monotonic()
+        damage = self._damage()
+        if damage is None:
+            time.sleep(REPAINT_FIRST)
+            return time.monotonic() - start
+        xd, event = damage
+        x, dpy = self._x, self._dpy
+        self._error = None
+        handle = xd.XDamageCreate(dpy, top, DAMAGE_REPORT_NON_EMPTY)
+        x.XSync(dpy, 0)
+        if not handle or self._error:
+            return time.monotonic() - start
+        ev, last = _XEvent(), None
+        try:
+            while True:
+                now = time.monotonic()
+                while x.XPending(dpy):
+                    x.XNextEvent(dpy, C.byref(ev))
+                    if ev.type == event:
+                        last = now
+                        xd.XDamageSubtract(dpy, handle, 0, 0)  # report the next drawing too
+                if now - start >= REPAINT_WAIT:
+                    break
+                if last is None and now - start >= REPAINT_FIRST:
+                    break  # nothing to redraw: the window was not covered, or the app draws nothing
+                if last is not None and now - last >= REPAINT_QUIET:
+                    break
+                time.sleep(REPAINT_POLL)
+        finally:
+            xd.XDamageDestroy(dpy, handle)
+            x.XSync(dpy, 0)
+            while x.XPending(dpy):  # events of the destroyed damage object
+                x.XNextEvent(dpy, C.byref(ev))
+        return time.monotonic() - start
 
     def _forget_gone(self) -> None:
         for top in list(self._redirected):

@@ -545,9 +545,7 @@ class Desktop:
         except CcdeskError:
             if wid is None:
                 raise
-            wid = None
-            shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
-            shot["warning"] = self._covered_warning()
+            raise CcdeskError(self._covered_refusal(window)) from None
         if wid is not None:
             shot["covered"] = True
         shot["scale"] = round(factor, 3) if factor < 1 else 1.0
@@ -1061,8 +1059,9 @@ class Desktop:
                 try:
                     self._capture(out, reg, own)
                 except (CcdeskError, OSError, ValueError):
-                    own, warning = None, self._covered_warning()
-            if own is None:
+                    # A crop of the screen would show the windows on top, not this one.
+                    raise CcdeskError(self._covered_refusal(shot_of)) from None
+            else:
                 self.backend.screenshot(str(out), reg)
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
@@ -1101,9 +1100,12 @@ class Desktop:
 
         return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
 
-    def _covered_warning(self) -> str:
-        return (f"this window is covered and its own pixels could not be read ({self.backend.window_note}): "
-                f"the picture is a crop of the screen and shows what is on top of it")
+    def _covered_refusal(self, window: Window) -> str:
+        return (f"{window.title!r} is covered by other windows and its own pixels could not be read "
+                f"({self.backend.window_note}), so no picture was taken: a crop of the screen would show "
+                f"the windows on top of it. Read it with ui_tree(window=...) if it publishes a tree; "
+                f"otherwise ask the user to uncover it, or bring it to the front with activate_window() "
+                f"if the task allows covering the user's window")
 
     def _tree_hint(self, reg: Region | None, factor: float, tokens: int) -> str | None:
         """A whole screen at full scale before any tree was read: the first shot is where the
@@ -1448,8 +1450,9 @@ class Desktop:
                        if blank_page else "the tree is nearly empty")
                 try:
                     result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
-                except (CcdeskError, OSError, ValueError):
-                    pass  # keep the (thin) tree; the model can still call screenshot()
+                except (CcdeskError, OSError, ValueError) as exc:
+                    # Keep the (thin) tree, and say why there is no picture of it.
+                    result["note"] = " ".join(filter(None, [result.get("note"), f"{why}; no picture: {exc}"]))
                 else:
                     self.a11y.forget()  # nothing to compare: actions report pixel changes instead
                     result["note"] = " ".join(filter(None, [result.get("note"),
