@@ -440,6 +440,7 @@ COVER = 0xFFFF00
 
 
 @pytest.mark.skipif(not CHROMIUM, reason="Chromium is not installed")
+@pytest.mark.skipif(not shutil.which("xdotool"), reason="xdotool is not installed")
 def test_a_browser_covered_before_its_first_capture_gives_its_own_pixels(xvfb, screen, backend, tmp_path):
     """CDB-G04's case on a desktop without a compositor: the browser draws its page itself (no
     server-painted backgrounds), it is covered before ccdesk ever redirected it, and the first
