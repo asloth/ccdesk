@@ -8,7 +8,10 @@ Requests:
   {"op": "tree", "window": str|None, "query": str|None, "page": bool, "max_nodes": int,
    "settle_ms": int}: settle_ms > 0 watches for a change before answering (see tree()).
   {"op": "resolve", "path": "3.0.1.4"}
+  {"op": "detail", "path": "3.0.1.4"}: full text of one node, up to FULL_TEXT
+  {"op": "scroll", "path": "3.0.1.4"}: reveal through Component, without input or focus
   {"op": "action", "path": "3.0.1.4", "names": ["click", ...]}
+  {"op": "select", "path": "3.0.1.4"}: select it in its parent through AT-SPI Selection
   {"op": "set", "path": "3.0.1.4", "text": str}: pass "-" as the argument and the request on stdin,
   so the text stays out of the process list.
 
@@ -51,6 +54,7 @@ MAX_VISIT = 20000
 # for huge or virtual containers (a spreadsheet's cells). Walking them took past the timeout.
 UNLISTED = "children not listed"
 MAX_TEXT = 200
+FULL_TEXT = 10_000  # desktop.MAX_TEXT; this helper cannot import ccdesk
 
 
 def desktop():
@@ -71,7 +75,7 @@ def children(obj):
             yield i, child
 
 
-def text_of(obj, role):
+def text_of(obj, role, limit=MAX_TEXT):
     """Typed value of an entry, or the text of a paragraph-like node."""
     try:
         iface = obj.get_text_iface()
@@ -80,39 +84,42 @@ def text_of(obj, role):
         count = Atspi.Text.get_character_count(obj)
         if count <= 0:
             return None
-        text = Atspi.Text.get_text(obj, 0, min(count, MAX_TEXT + 1))
+        text = Atspi.Text.get_text(obj, 0, min(count, limit + 1))
     except Exception:
         return None
     if role == "password text":
         return "•" * min(count, 8)
     # U+FFFC marks an embedded child (a link, a button...); the child is listed on its own.
     text = " ".join(text.replace("￼", " ").split())
-    if len(text) > MAX_TEXT:
-        text = text[:MAX_TEXT] + "…"
+    if len(text) > limit:
+        text = text[:limit] + ("…" if limit == MAX_TEXT else "")
     return text or None
 
 
-def child_text(obj):
+def child_text(obj, limit=MAX_TEXT):
     """Rich-text editors (X, Slack, Gmail) keep the typed text in unnamed child paragraphs."""
     parts = []
     for _, child in children(obj):
-        text = text_of(child, "")
+        text = text_of(child, "", limit)
         if text:
             parts.append(text)
-        if sum(map(len, parts)) > MAX_TEXT:
+        if sum(map(len, parts)) > limit:
             break
     text = " / ".join(parts)
-    return (text[:MAX_TEXT] + "…" if len(text) > MAX_TEXT else text) or None
+    return (text[:limit] + ("…" if limit == MAX_TEXT else "") if len(text) > limit else text) or None
 
 
-def describe(obj, path, depth):
+def describe(obj, path, depth, full=False):
     try:
         role = obj.get_role_name() or ""
         name = (obj.get_name() or "").strip()
         states = obj.get_state_set()
     except Exception:
         return None
-    node = {"path": path, "role": role, "name": name[:MAX_TEXT], "depth": depth,
+    limit = FULL_TEXT if full else MAX_TEXT
+    node = {"path": path, "role": role,
+            "name": name[:limit] + ("…" if not full and len(name) > limit else ""), "depth": depth,
+            "visible": states.contains(Atspi.StateType.VISIBLE),
             "showing": states.contains(Atspi.StateType.SHOWING)}
     try:
         ext = obj.get_extents(Atspi.CoordType.SCREEN)
@@ -121,17 +128,32 @@ def describe(obj, path, depth):
     except Exception:
         pass
     flags = [k for k, v in STATES.items() if states.contains(v)]
+    if node["visible"] and not node["showing"]:
+        flags.append("offscreen")
     if states.contains(Atspi.StateType.MANAGES_DESCENDANTS):
         flags.append(UNLISTED)
     if not states.contains(Atspi.StateType.ENABLED) and role in ACTIONABLE:
         flags.append("disabled")
     if flags:
         node["states"] = flags
-    value = text_of(obj, role)
+    value = text_of(obj, role, limit)
     if not value and role in EDITABLE:
-        value = child_text(obj)
-    if value and value != name:
-        node["value"] = value
+        value = child_text(obj, limit)
+    if full:
+        node["truncated"] = len(name) > FULL_TEXT
+        try:
+            if obj.get_text_iface() is not None:
+                count = Atspi.Text.get_character_count(obj)
+                value = ("•" * min(count, 8) if role == "password text" else
+                         Atspi.Text.get_text(obj, 0, min(count, FULL_TEXT)))
+                node["text"] = value
+                node["truncated"] |= role != "password text" and count > FULL_TEXT
+        except Exception:
+            pass
+        if role in NUMERIC and obj.get_value_iface() is not None:
+            value = str(Atspi.Value.get_current_value(obj))
+    if value and (full or value != name):
+        node["value"] = value[:FULL_TEXT]
     return node
 
 
@@ -208,8 +230,8 @@ def read_tree(req):
             truncated = True
             return
         node = describe(obj, p, depth)
-        if node is None or not node["showing"]:
-            return  # hidden subtrees (other tabs, collapsed menus, off-screen content)
+        if node is None or not node["visible"]:
+            return  # hidden subtrees: other tabs, collapsed menus and hidden panels
         here = in_page or node["role"] == "document web"
         keep = interesting(node) and (here or not page_only)
         if keep and query:
@@ -289,6 +311,30 @@ def resolve(req):
     return {"node": describe(obj, req["path"], 0)} if obj else GONE
 
 
+def detail(req):
+    obj = find(req["path"])
+    return {"node": describe(obj, req["path"], 0, full=True)} if obj else GONE
+
+
+def scroll(req):
+    """Reveal a visible element through Component only, without input or focus changes."""
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    node = describe(obj, req["path"], 0)
+    if node and node["visible"] and not node["showing"]:
+        try:
+            Atspi.Component.scroll_to(obj, Atspi.ScrollType.ANYWHERE)
+        except Exception:
+            pass
+        for _ in range(10):
+            node = describe(obj, req["path"], 0)
+            if node and node["showing"] and node.get("box"):
+                return {"scrolled": True}
+            time.sleep(0.05)
+    return {"scrolled": bool(node and node["showing"] and node.get("box"))}
+
+
 def action(req):
     """Run the first of `names` the element offers. {"action": None} means nothing ran."""
     obj = find(req["path"])
@@ -303,6 +349,56 @@ def action(req):
             i = lowered.index(want)
             return {"action": offered[i] if Atspi.Action.do_action(obj, i) else None}
     return {"action": None}
+
+
+def select(req):
+    """Select the element in its parent through Selection, the way a click on a sheet tab or a page
+    tab would, with no pointer and no focus. {"selected": None}: the parent has no Selection, or the
+    element is not one of its children."""
+    path = str(req["path"])
+    obj = find(path)
+    if obj is None:
+        return GONE
+    parent_path, _, index = path.rpartition(".")
+    parent = find(parent_path) if parent_path else None
+    if parent is None or parent.get_selection_iface() is None:
+        return {"selected": None}
+    index = int(index)
+    if Atspi.Selection.is_child_selected(parent, index):
+        return {"selected": True, "already": True}
+    if not Atspi.Selection.select_child(parent, index):
+        return {"selected": False}
+    for _ in range(10):  # the app may apply it a moment later
+        if Atspi.Selection.is_child_selected(parent, index):
+            return {"selected": True}
+        time.sleep(0.05)
+    return {"selected": False}
+
+
+def options(obj):
+    """A combo box's options as (index for Selection, name): its own children, or those of the
+    menu or list it holds (GTK puts the items in a menu)."""
+    kids = list(children(obj))
+    if len(kids) == 1 and (kids[0][1].get_role_name() or "") in ("menu", "list", "list box"):
+        kids = list(children(kids[0][1]))
+    return [(i, (c.get_name() or "").strip()) for i, c in kids]
+
+
+def choose(obj, text):
+    """Choose a combo box option by name through Selection: no popup, no pointer, no focus."""
+    found = options(obj)
+    want = text.strip().casefold()
+    match = [i for i, name in found if name.casefold() == want]
+    if not match:
+        names = ", ".join(repr(n) for _, n in found if n)[:MAX_TEXT] or "none listed"
+        return {"error": f"no option named {text!r} (options: {names})"}
+    if not Atspi.Selection.select_child(obj, match[0]):
+        return {"verified": False, "value": "", "refused": True}
+    for _ in range(10):
+        if Atspi.Selection.is_child_selected(obj, match[0]):
+            return {"verified": True}
+        time.sleep(0.05)
+    return {"verified": False, "value": text_of(obj, "combo box") or ""}
 
 
 def full_text(obj):
@@ -325,6 +421,8 @@ def set_value(req):
         Atspi.Value.set_current_value(obj, number)
         read = lambda: Atspi.Value.get_current_value(obj)
         same = lambda got: abs(got - number) < 1e-6
+    elif role == "combo box" and obj.get_selection_iface() is not None:
+        return choose(obj, text)
     elif obj.get_editable_text_iface() is not None and obj.get_text_iface() is not None:
         if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
             return {"error": "this field is read-only"}
@@ -346,6 +444,34 @@ def set_value(req):
     return {"verified": False, "value": str(got)[:MAX_TEXT]}
 
 
+def insert(req):
+    """Insert text at the caret (at the end with "at_end", or when the field has no caret) and
+    read it back. Needs no keyboard focus: an agent beside the user types this way without
+    activating the window."""
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    role, text = obj.get_role_name() or "", req["text"]
+    if role == "password text":
+        return {"error": "this is a password field: ask the user to type it themselves"}
+    if obj.get_editable_text_iface() is None or obj.get_text_iface() is None:
+        return {"inserted": False}
+    if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
+        return {"error": "this field is read-only"}
+    before = full_text(obj)
+    count = Atspi.Text.get_character_count(obj)
+    caret = Atspi.Text.get_caret_offset(obj)
+    at = caret if 0 <= caret <= count and not req.get("at_end") else count
+    if not Atspi.EditableText.insert_text(obj, at, text, len(text.encode())):
+        return {"inserted": False}
+    want = before[:at] + text + before[at:]
+    for _ in range(10):  # the app may apply it a moment later
+        if full_text(obj) == want:
+            return {"inserted": True}
+        time.sleep(0.05)
+    return {"inserted": False, "changed": full_text(obj) != before}
+
+
 def apps(_req):
     return {"apps": [{"name": app.get_name(), "pid": app.get_process_id(),
                       "windows": [f.get_name() for _, f in children(app)]}
@@ -353,7 +479,8 @@ def apps(_req):
 
 
 def handle(req):
-    ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value}
+    ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value,
+           "insert": insert, "select": select, "detail": detail, "scroll": scroll}
     try:
         return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing

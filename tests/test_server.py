@@ -76,14 +76,15 @@ def test_registered_tools(make_desk):
     assert props["screenshot"] == {"region", "path", "scale", "window"}
     assert props["manage_window"] == {"title_or_id", "action", "x", "y", "width", "height"}
     assert props["list_monitors"] == set()
-    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title", "show_change"}
-    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "show_change"}
-    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "show_change"}
+    assert props["click"] == {"x", "y", "button", "count", "force", "expect_title", "show_change", "shot"}
+    assert props["move"] == {"x", "y", "shot"}
+    assert props["drag"] == {"from_x", "from_y", "to_x", "to_y", "duration_ms", "force", "show_change", "shot"}
+    assert props["scroll"] == {"x", "y", "dx", "dy", "force", "show_change", "shot"}
     assert props["type_text"] == {"text", "submit", "replace", "force", "expect_title", "show_change"}
     assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title", "show_change"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
-    assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback"}
+    assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback", "ref"}
     assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
     assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
@@ -142,6 +143,17 @@ def test_headless_adds_instructions(make_desk):
     assert HEADLESS not in build_server(desk).instructions
     desk.headless = object()
     assert HEADLESS in build_server(desk).instructions
+
+
+def test_an_own_pointer_agent_is_told_to_work_through_the_tree(make_desk, fake):
+    from ccdesk.server import BESIDE_USER
+
+    assert BESIDE_USER not in build_server(make_desk(agent="desk-1")).instructions
+    fake.own_pointer = True
+    text = build_server(make_desk(agent="desk-1")).instructions
+    assert BESIDE_USER in text and "Avoid activate_window()" in text
+    assert 'set_value(ref, "<option name>")' in text
+    assert BESIDE_USER not in build_server(make_desk()).instructions
 
 
 class StdioClient:
@@ -246,3 +258,32 @@ def test_ui_tree_fallback_shot_becomes_a_picture(make_desk, helper, fake):
     blocks = anyio.run(call).content
     assert any(isinstance(b, ImageContent) for b in blocks)
     assert "fallback_shot" in blocks[0].text and "_picture" not in blocks[0].text
+
+
+def test_an_error_with_a_code_leads_with_it(make_desk, fake):
+    """gui_frame_stale reaches the model as `code=... input_emitted=... retry_same_request=...: message`."""
+    import anyio
+
+    desk = make_desk()
+    server = build_server(desk)
+    desk.screenshot()
+    fake.windows[1].x += 40
+
+    async def call():
+        return await server.call_tool("click", {"x": 100, "y": 100})
+
+    with pytest.raises(Exception) as err:
+        anyio.run(call)
+    # The SDK puts "Error executing tool click: " in front of our message.
+    assert ("click: code=gui_frame_stale input_emitted=false retry_same_request=false: "
+            "the window layout changed") in str(err.value)
+    assert not [c for c in fake.calls if c[0] == "click"]
+
+
+def test_instructions_say_what_the_answer_already_shows_and_stay_short():
+    """They are sent with every request: 1,728 characters before the picture came with the answer."""
+    from ccdesk.server import INSTRUCTIONS
+
+    for words in ("change_shot", "settled=false", "wait_for_change()", "show_change=true", "shot="):
+        assert words in INSTRUCTIONS
+    assert len(INSTRUCTIONS) <= 1728 + 160  # about 40 tokens more at most

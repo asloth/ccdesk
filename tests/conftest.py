@@ -134,6 +134,10 @@ class FakeBackend(Backend):
         self.calls.append(("activate", window.id))
         self.active = window.id
 
+    def focus_keyboard(self, window):
+        self.calls.append(("focus", window.id))
+        self.active = window.id
+
     def _replace_window(self, window, **fields):
         self.windows = [replace(w, **fields) if w.id == window.id else w for w in self.windows]
 
@@ -212,6 +216,10 @@ class FakeA11yHelper:
         self.tree_error: str | None = None
         self.actions: dict[str, str] = {}  # path -> the native action that element offers
         self.values: dict[str, dict] = {}  # path -> the answer to a set request
+        self.inserts: dict[str, dict] = {}  # path -> the answer to an insert request
+        self.selections: dict[str, dict] = {}  # path -> the answer to a select request
+        # More windows: a needle of the requested title -> (its accessible title, its nodes).
+        self.trees: dict[str, tuple[str, list[dict]]] = {}
         self.argvs: list[list[str]] = []
 
     def __call__(self, argv, timeout, stdin=None):
@@ -222,17 +230,26 @@ class FakeA11yHelper:
             return json.dumps({"action": self.actions.get(req["path"])})
         if req["op"] == "set":
             return json.dumps(self.values.get(req["path"], {"verified": True}))
+        if req["op"] == "insert":
+            return json.dumps(self.inserts.get(req["path"], {"inserted": True}))
+        if req["op"] == "select":
+            return json.dumps(self.selections.get(req["path"], {"selected": None}))
         if req["op"] == "apps":
             return json.dumps({"apps": self.apps})
         if req["op"] == "tree" and self.tree_error:
             return json.dumps({"error": self.tree_error, "no_window": True})
         if req["op"] == "tree":
-            nodes = list(self.nodes.values())
+            title, nodes = "Form — Mozilla Firefox", list(self.nodes.values())
+            for needle, (other, extra) in self.trees.items():
+                if needle.lower() in (req.get("window") or "").lower():
+                    title, nodes = other, [dict(n) for n in extra]
             if req.get("query"):
                 nodes = [n for n in nodes if req["query"].lower() in n["name"].lower()]
-            return json.dumps({"window": "Form — Mozilla Firefox", "app": "Firefox", "pid": 1,
+            return json.dumps({"window": title, "app": "Firefox", "pid": 1,
                                "nodes": nodes[: req["max_nodes"]], "truncated": len(nodes) > req["max_nodes"]})
         node = self.nodes.get(req["path"])
+        for _, extra in self.trees.values():
+            node = node or next((dict(n) for n in extra if n["path"] == req["path"]), None)
         return json.dumps({"node": node} if node else {"error": "element is gone; call ui_tree() again"})
 
 

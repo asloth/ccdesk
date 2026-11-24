@@ -231,11 +231,19 @@ def test_type_and_keys_go_to_the_agent_keyboard(mpx):
     assert mpx.calls == [("type_text", "hi\nthere"), ("press_key", "ctrl+l")]
 
 
-def test_activate_sets_agent_focus_and_leaves_the_window_manager_alone(mpx):
+def test_activate_sends_nothing_for_a_window_on_show(mpx):
+    # xfwm4 answers XISetFocus by activating the window and raising it over the user's (CuaDriverBench).
     b = Backend(mpx)
     b.activate_window(win("0x00400010"))
-    assert mpx.calls == [("focus", 0x400010)]
+    assert mpx.calls == []
     assert b.take_note() is None
+    assert b.active_window() is None
+
+
+def test_focus_keyboard_points_the_agent_keyboard_at_the_window(mpx):
+    b = Backend(mpx)
+    b.focus_keyboard(win("0x00400010"))
+    assert mpx.calls == [("focus", 0x400010)]
     assert b.active_window() == "0x00400010"
 
 
@@ -335,7 +343,7 @@ def test_click_checks_the_window_under_the_agent_pointer(mpx, tmp_path):
     mpx.under = [0x400010]
     assert d.click(10, 10)["window"]["id"] == "0x00400010"
     mpx.under = [0x500010]
-    with pytest.raises(PolicyError, match="the pointer at 20,20 is over 'other'"):
+    with pytest.raises(PolicyError, match=r"the point 20,20 of your window 'mine'.*covered by 'other'"):
         d.click(20, 20)
 
 

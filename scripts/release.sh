@@ -21,12 +21,25 @@ for arg in "$@"; do
   esac
 done
 [ -n "$version" ] || usage
-[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "$version is not X.Y.Z" >&2; exit 2; }
+# X.Y.Z, or a pre-release of it: 0.2.0b1, 0.2.0rc2, 0.2.0.dev3.
+[[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+((a|b|rc)[0-9]+|\.dev[0-9]+)?$ ]] \
+  || { echo "$version is not X.Y.Z, X.Y.Zb1, X.Y.Zrc1 or X.Y.Z.dev1" >&2; exit 2; }
 
 cd "$(git rev-parse --show-toplevel)"
 branch=$(git rev-parse --abbrev-ref HEAD)
-[ "$branch" = "master" ] || { echo "releases come from master, you are on $branch" >&2; exit 1; }
-[ -z "$(git status --porcelain)" ] || { echo "the working tree has changes; commit or stash them" >&2; exit 1; }
+
+# The suffix picks the channel, and the channel picks the branch: a pre-release
+# comes from develop, a stable one from master. Nothing to remember.
+if [[ "$version" =~ (a|b|rc|\.dev)[0-9]+$ ]]; then
+  channel="pre-release"; want="develop"
+else
+  channel="stable"; want="master"
+fi
+[ "$branch" = "$want" ] || { echo "$version is $channel, and those come from $want; you are on $branch" >&2; exit 1; }
+# A checkout that never ran uv has no lock yet: the first test run writes one, and that
+# one file must not block a release.
+dirty=$(git status --porcelain | grep -v -e '^?? uv.lock$' || true)
+[ -z "$dirty" ] || { echo "the working tree has changes; commit or stash them:" >&2; echo "$dirty" >&2; exit 1; }
 
 current=$(python3 -c 'import pathlib,re;print(re.search(r"^__version__ = \"([^\"]+)\"", pathlib.Path("ccdesk/__init__.py").read_text(), re.M).group(1))')
 
@@ -40,19 +53,32 @@ if [ "$version" = "$current" ]; then
     && { echo "$tag is already released; the next one needs a higher version" >&2; exit 1; }
 else
   python3 - "$current" "$version" <<'PY' || { echo "ccdesk is at $current; a release only goes up" >&2; exit 1; }
-import sys
+import re, sys
+
+LEVEL = {"dev": 0, "a": 1, "b": 2, "rc": 3}  # a plain X.Y.Z ranks above all of them
+
+
+def key(v):
+    m = re.match(r"^(\d+)\.(\d+)\.(\d+)(?:(a|b|rc)(\d+)|\.dev(\d+))?$", v)
+    if not m:
+        raise SystemExit(f"cannot read version {v!r}")
+    major, minor, patch, pre, pre_n, dev = m.groups()
+    if dev:
+        return (int(major), int(minor), int(patch), LEVEL["dev"], int(dev))
+    return (int(major), int(minor), int(patch), LEVEL[pre] if pre else 4, int(pre_n or 0))
+
+
 cur, new = sys.argv[1], sys.argv[2]
-key = lambda v: tuple(int(x) for x in v.split("."))
 raise SystemExit(0 if key(new) > key(cur) else 1)
 PY
 fi
 
 echo "updating the remote"
-git fetch --quiet origin master
-[ "$(git rev-parse master)" = "$(git rev-parse origin/master)" ] \
-  || { echo "master is not level with origin/master; pull or push first" >&2; exit 1; }
+git fetch --quiet origin "$branch"
+[ "$(git rev-parse "$branch")" = "$(git rev-parse "origin/$branch")" ] \
+  || { echo "$branch is not level with origin/$branch; pull or push first" >&2; exit 1; }
 
-echo "ccdesk $current -> $version"
+echo "ccdesk $current -> $version ($channel, from $branch)"
 if [ "$assume_yes" -eq 0 ]; then
   printf 'run the unit tests, then bump, commit, tag %s and push? [y/N] ' "$tag"
   read -r answer
@@ -82,7 +108,7 @@ PY
 fi
 
 git tag -a "$tag" -m "ccdesk $version"
-git push --quiet origin "refs/heads/master" "refs/tags/$tag"
+git push --quiet origin "refs/heads/$branch" "refs/tags/$tag"
 
 echo "pushed $tag. The workflow publishes it:"
 gh run list --workflow=release.yml --limit 1 --json status,url \

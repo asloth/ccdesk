@@ -33,6 +33,7 @@ class Backend:
         self._which = which
         # Tools run with this backend's env, not ccdesk's: it may point at another display.
         self._runner = runner or functools.partial(self._subprocess_run, env=self.env)
+        self._real_tools = runner is None  # False under tests: no direct display access then
 
     # -- process helpers -------------------------------------------------
 
@@ -127,6 +128,31 @@ class Backend:
     def screenshot(self, path: str, region: Region | None) -> None:
         self._unsupported("screenshot")
 
+    def gray_grid(self, region: Region | None, cell: int):
+        """(cols, rows, gray bytes, (x, y)) averaging cell x cell blocks of region, read straight
+        from the display server; None when this backend has no such path (the caller then uses
+        screenshot() and scale_png())."""
+        return None
+
+    # Why the last window_screenshot() / window_gray_grid() gave nothing, for the caller to show.
+    window_note: str | None = None
+
+    def window_screenshot(self, path: str, window_id: str, region: Region | None = None) -> bool:
+        """Write a PNG of the window's own content (also while other windows cover it) and return
+        True; `region` is in screen coordinates, clipped to the window's box. False when this
+        backend cannot (window_note says why): the caller then crops the screen as before."""
+        self.window_note = f"capturing one window is not supported by the {self.name} backend"
+        return False
+
+    def window_gray_grid(self, window_id: str, region: Region | None, cell: int):
+        """gray_grid() of the window's own content; None when it cannot be read (window_note)."""
+        self.window_note = f"capturing one window is not supported by the {self.name} backend"
+        return None
+
+    def window_covered(self, window_id: str) -> bool | None:
+        """Whether another visible window overlaps this window's box from above, or None if unknown."""
+        return None
+
     def scale_png(self, path: str, width: int, height: int) -> None:
         """Resize a PNG in place. ImageMagick is the only resizer; the core stays stdlib-only."""
         tool = self.first_tool("magick", "convert")
@@ -165,6 +191,11 @@ class Backend:
 
     def activate_window(self, window: Window) -> None:
         self._unsupported("activate_window")
+
+    def focus_keyboard(self, window: Window) -> None:
+        """Send later keys to this window. Only an own-pointer backend has a keyboard of its own
+        to point; everywhere else that is activation."""
+        self.activate_window(window)
 
     def move_window(self, window: Window, x: int, y: int) -> None:
         self._unsupported("moving windows")
@@ -205,6 +236,11 @@ class Backend:
 
     def current_desktop(self) -> int | None:
         """The workspace on show (as Window.desktop numbers them), or None if unknown."""
+        return None
+
+    def window_role(self, window_id: str) -> str | None:
+        """The window's WM_WINDOW_ROLE, or None if unknown. Chromium and every Electron app set
+        "browser-window", also when their class says neither (Obsidian: md.obsidian.Obsidian)."""
         return None
 
     def idle_ms(self) -> int | None:

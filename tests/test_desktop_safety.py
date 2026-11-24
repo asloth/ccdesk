@@ -47,7 +47,7 @@ def test_every_action_is_audited(make_desk, read_audit, fake):
     ]
     assert all(e["status"] == "ok" and "ts" in e for e in log)
     assert log[1]["args"] == {"x": 10, "y": 20, "button": "left", "count": 1, "force": False,
-                           "expect_title": None, "show_change": False}
+                           "expect_title": None, "show_change": None}
     # Clipboard contents never reach the log, only their length.
     assert "secret-ish" not in json.dumps(log)
     assert log[9]["args"] == {"action": "set", "text_len": 10}
@@ -210,8 +210,9 @@ def test_screenshot_results(make_desk, fake, tmp_path):
     region = d.screenshot(region="10,20,30,40", path=str(tmp_path / "out" / "r.png"))
     assert region == {
         "path": str(tmp_path / "out" / "r.png"), "width": 30, "height": 40, "approx_tokens": 2,
-        "origin": {"x": 10, "y": 20}, "note": region["note"],
+        "origin": {"x": 10, "y": 20}, "note": 'pass shot="s2" with this picture\'s own pixel coordinates', "shot": "s2",
     }
+    assert full["shot"] == "s1" and "note" not in full
     assert full["approx_tokens"] == 640
 
 
@@ -222,7 +223,8 @@ def test_screenshot_scale(make_desk, fake):
     assert fake.calls[-1] == ("scale_png", 400, 300)
     crop = d.screenshot(region="100,100,200,100", scale=0.25)
     assert (crop["width"], crop["height"]) == (50, 25)
-    assert "origin.x+px/scale" in crop["note"]
+    assert crop["note"] == 'pass shot="s2" with this picture\'s own pixel coordinates'  # one note, whatever the scale
+    assert half["note"] == 'pass shot="s1" with this picture\'s own pixel coordinates'  # 0.5 of the whole screen
     n = len(fake.calls)
     assert "scale" not in d.screenshot(scale=1)
     assert len(fake.calls) == n + 1  # no resize at full scale
@@ -555,9 +557,10 @@ def test_screenshot_of_a_window_refuses_what_is_not_on_show(make_desk, fake):
     assert not [c for c in fake.calls if c[0] == "screenshot"]
 
 
-def test_screenshot_window_and_region_conflict(make_desk):
-    with pytest.raises(ValidationError, match="not both"):
-        make_desk().screenshot(window="Terminal", region="0,0,10,10")
+def test_screenshot_window_and_region_use_window_coordinates(make_desk):
+    out = make_desk().screenshot(window="Terminal", region="0,0,10,10")
+    assert (out["width"], out["height"]) == (10, 10)
+    assert out["origin"] == {"x": 10, "y": 10}
 
 
 def test_manage_window_ignores_a_title_change(make_desk, fake):

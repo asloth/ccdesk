@@ -264,6 +264,30 @@ def test_ui_tree_diagnosis_by_title_and_toolkit(make_desk, helper, fake):
         make_desk().ui_tree(shot_fallback=False)
 
 
+def test_ui_tree_diagnosis_knows_electron_by_its_window_role(make_desk, helper, fake, monkeypatch):
+    """Obsidian (a Flatpak) has class md.obsidian.Obsidian: only WM_WINDOW_ROLE says Electron."""
+    helper.apps, helper.tree_error = OFF_BUS, "no accessible window title contains 'Obsidian'; windows: 'Telegram'"
+    fake.responses[IS_ENABLED] = "b true\n"
+    fake.windows[0].title, fake.windows[0].wm_class = "Vault - Obsidian 1.15.0", "md.obsidian.obsidian.md.obsidian.Obsidian"
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(window="Obsidian", shot_fallback=False)
+    assert "GNOME_ACCESSIBILITY" in str(err.value)  # nothing in the class says Electron
+    monkeypatch.setattr(fake, "window_role", lambda wid: "browser-window", raising=False)
+    with pytest.raises(CcdeskError) as err:
+        make_desk().ui_tree(window="Obsidian", shot_fallback=False)
+    assert "--force-renderer-accessibility" in str(err.value) and "GNOME_ACCESSIBILITY" not in str(err.value)
+
+
+def test_x11_window_role_reads_xprop():
+    from ccdesk.backends.x11 import X11Backend
+    out = {"xprop -id 0x02400004 WM_WINDOW_ROLE": 'WM_WINDOW_ROLE(STRING) = "browser-window"\n',
+           "xprop -id 0x02000016 WM_WINDOW_ROLE": "WM_WINDOW_ROLE:  not found.\n"}
+    b = X11Backend(env={"DISPLAY": ":99"}, runner=lambda argv, **kw: out[" ".join(argv)],
+                   which=lambda n: f"/usr/bin/{n}")
+    assert b.window_role("0x02400004") == "browser-window"
+    assert b.window_role("0x02000016") is None
+
+
 def test_ui_tree_diagnosis_without_a_known_window(make_desk, helper, fake):
     helper.apps, helper.tree_error = [], "no app has a window on the accessibility bus"
     with pytest.raises(CcdeskError) as err:
@@ -471,3 +495,77 @@ def test_set_value_does_not_type_over_a_value_the_app_changed(make_desk, helper,
     with pytest.raises(CcdeskError, match="holds 'ANA'"):
         d.set_value("e2", "ana")
     assert not any(c[0] == "click" for c in fake.calls)
+
+
+@pytest.mark.parametrize("action", ["click_element", "set_value"])
+def test_offscreen_actions_scroll_then_use_the_new_box(make_desk, helper, fake, monkeypatch, action):
+    d = make_desk()
+    path = "3.0.29.2"
+    helper.nodes[path].update(showing=False, visible=True, states=["offscreen"])
+    d.ui_tree()
+    calls = []
+
+    def scroll(ref):
+        calls.append(ref)
+        helper.nodes[path].update(showing=True, box=[20, 30, 100, 20], states=[])
+        return d.a11y.resolve(ref)
+
+    monkeypatch.setattr(d.a11y, "scroll_into_view", scroll)
+    if action == "set_value":
+        assert d.set_value("e2", "new")["verified"]
+    else:
+        d.click_element("e2")
+        assert ("click", 70, 40, 1, 1) in fake.calls
+    assert calls == ["e2"]
+    assert not [c for c in fake.calls if c[0] in ("scroll", "focus", "activate")]
+
+
+@pytest.mark.parametrize("action", ["click_element", "set_value"])
+def test_offscreen_refusal_names_ref_and_failed_scroll(make_desk, helper, fake, monkeypatch, action):
+    d = make_desk()
+    helper.nodes["3.0.29.2"].update(showing=False, visible=True, states=["offscreen"])
+    d.ui_tree()
+    monkeypatch.setattr(d.a11y, "scroll_into_view", lambda ref: d.a11y.resolve(ref))
+    with pytest.raises(CcdeskError, match="e2.*app did not scroll.*not on screen"):
+        getattr(d, action)("e2", *(["new"] if action == "set_value" else []))
+    assert not [c for c in fake.calls if c[0] in ("click", "scroll", "type_text", "focus", "activate")]
+
+
+def test_scroll_client_resolves_again_after_request(make_desk, helper, monkeypatch):
+    d = make_desk()
+    d.ui_tree()
+    call = d.a11y.call
+
+    def respond(req, **kwargs):
+        if req["op"] == "scroll":
+            helper.nodes[req["path"]]["box"] = [25, 50, 100, 20]
+            return {"scrolled": True}
+        return call(req, **kwargs)
+
+    monkeypatch.setattr(d.a11y, "call", respond)
+    assert d.a11y.scroll_into_view("e2")["box"] == [25, 50, 100, 20]
+    assert helper.requests[-1]["op"] == "resolve"
+
+
+def test_ui_tree_ref_returns_full_text_without_replacing_tree(make_desk, helper, monkeypatch):
+    d = make_desk()
+    name, text = "N" * 500, "a\n\n  b\t" + "z" * 9000
+    helper.nodes["3.0.29.2"]["name"] = name[:200] + "…"
+    d.ui_tree()
+    before = d.a11y._last
+    call = d.a11y.call
+
+    def respond(req, **kwargs):
+        if req["op"] == "detail":
+            return {"node": dict(helper.nodes[req["path"]], name=name, value=text, text=text)}
+        return call(req, **kwargs)
+
+    monkeypatch.setattr(d.a11y, "call", respond)
+    result = d.ui_tree(ref="e2")
+    assert result["name"] == name and result["value"] == result["text"] == text
+    assert result["count"] == 1 and d.a11y._last is before
+    helper.nodes["3.0.29.2"]["name"] = "Changed"
+    with pytest.raises(CcdeskError, match="changed since"):
+        d.ui_tree(ref="e2")
+    with pytest.raises(CcdeskError, match="unknown element"):
+        d.ui_tree(ref="e999")

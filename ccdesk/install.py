@@ -28,6 +28,29 @@ def claude_config_dir() -> Path:
     return Path(override).expanduser() if override else Path.home() / ".claude"
 
 
+def shared_skills_dir() -> Path:
+    """The cross-harness skills folder: opencode, Codex and other agents read ~/.agents/skills."""
+    return Path.home() / ".agents" / "skills"
+
+
+def link_action(link: Path, target: Path) -> tuple[str, str]:
+    """What to do at Claude Code's skill path so it points at the shared copy: (action, why).
+
+    action is "link" (create it), "replace" (an older ccdesk copy: a folder with only SKILL.md),
+    "ok" (already linked) or "leave" (something else the user put there; not touched)."""
+    if link.is_symlink():
+        if link.resolve() == target.resolve():
+            return "ok", "already linked"
+        return "leave", f"it is a link to {os.readlink(link)}, left as it is"
+    if link.is_dir():
+        if sorted(p.name for p in link.iterdir()) == ["SKILL.md"]:
+            return "replace", "an older copy from ccdesk install"
+        return "leave", "it is a folder with other files in it, left as it is"
+    if link.exists():
+        return "leave", "it is a file, left as it is"
+    return "link", ""
+
+
 def skill_source() -> Path:
     """The packaged SKILL.md (wheel install) or the repository copy (source checkout)."""
     packaged = resources.files("ccdesk") / "skill" / "SKILL.md"
@@ -50,6 +73,7 @@ class Plan:
     skill_src: Path
     skill_dst: Path
     skill_bytes: bytes
+    skill_link: Path
     commands: list[list[str]] = field(default_factory=list)
     claude: str | None = None
 
@@ -59,12 +83,19 @@ class Plan:
         lines = [f"ccdesk install{' --dry-run (nothing is written)' if dry_run else ''}", ""]
         lines.append(f"[1] {verb} write {self.skill_dst}")
         lines.append(f"    {len(self.skill_bytes)} bytes, sha256 {digest}…, copied from {self.skill_src}")
+        lines.append(f"    the shared skills folder: opencode, Codex and other agents read it")
+        action, why = link_action(self.skill_link, self.skill_dst.parent)
+        if action in ("link", "replace"):
+            lines.append(f"[2] {verb} link {self.skill_link} -> {self.skill_dst.parent}"
+                         + (f"   # replaces {why}" if action == "replace" else ""))
+        else:
+            lines.append(f"[2] {self.skill_link}: {why}")
         if self.claude:
-            for i, argv in enumerate(self.commands, start=2):
+            for i, argv in enumerate(self.commands, start=3):
                 note = "   # ignored if not registered yet" if "remove" in argv else ""
                 lines.append(f"[{i}] {verb} run: {shlex.join(argv)}{note}")
         else:
-            lines.append("[2] `claude` is not on PATH; register the server(s) yourself with:")
+            lines.append("[3] `claude` is not on PATH; register the server(s) yourself with:")
             lines += [f"    {shlex.join(argv)}" for argv in self.commands if "remove" not in argv]
         firefox = next((argv for argv in self.commands if FIREFOX_NAME in argv and "add" in argv), None)
         if firefox and not shutil.which("npx"):
@@ -89,8 +120,9 @@ def make_plan(flags: list[str], always_load: bool = False, firefox: str | None =
         add = ["claude", "mcp", "add-json", "--scope", "user", SERVER_NAME, json.dumps(config)]
     return Plan(
         skill_src=src,
-        skill_dst=claude_config_dir() / "skills" / SKILL_NAME / "SKILL.md",
+        skill_dst=shared_skills_dir() / SKILL_NAME / "SKILL.md",
         skill_bytes=src.read_bytes(),
+        skill_link=claude_config_dir() / "skills" / SKILL_NAME,
         claude=claude,
         commands=[
             ["claude", "mcp", "remove", "--scope", "user", SERVER_NAME],
@@ -102,6 +134,21 @@ def make_plan(flags: list[str], always_load: bool = False, firefox: str | None =
     )
 
 
+def link_skill(link: Path, target: Path) -> str:
+    """Point Claude Code's skill folder at the shared copy, so every harness reads one file."""
+    action, why = link_action(link, target)
+    if action == "leave":
+        return f"did not link {link}: {why}. Claude Code reads that one, not {target}"
+    if action == "ok":
+        return f"{link} already links to {target}"
+    if action == "replace":
+        (link / "SKILL.md").unlink()
+        link.rmdir()
+    link.parent.mkdir(parents=True, exist_ok=True)
+    link.symlink_to(os.path.relpath(target, link.parent), target_is_directory=True)
+    return f"linked {link} -> {target}"
+
+
 def install(flags: list[str], dry_run: bool = False, out=print, always_load: bool = False,
             firefox: str | None = None) -> int:
     plan = make_plan(flags, always_load, firefox)
@@ -111,6 +158,7 @@ def install(flags: list[str], dry_run: bool = False, out=print, always_load: boo
     plan.skill_dst.parent.mkdir(parents=True, exist_ok=True)
     plan.skill_dst.write_bytes(plan.skill_bytes)
     out(f"\nwrote {plan.skill_dst}")
+    out(link_skill(plan.skill_link, plan.skill_dst.parent))
     if firefox == "agent":
         out(f"prepared {prepare_firefox_profile()} (orange, so you can tell Claude's Firefox from yours)")
     if not plan.claude:

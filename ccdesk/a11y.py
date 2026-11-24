@@ -24,7 +24,7 @@ PYTHONS = ("/usr/bin/python3", "python3")
 MAX_CHANGES = 25
 ACTION_TIMEOUT = 5.0  # a dialog an action opens can hold the helper's reply back
 # Repeating these after the helper died is harmless; a click or a write may have run already.
-RETRY_OPS = frozenset({"apps", "tree", "resolve", "changes"})
+RETRY_OPS = frozenset({"apps", "tree", "resolve", "detail", "changes"})
 # Roles whose native action does what a left click does. Not fields: a click there is for focus.
 NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
                           "menu item", "check menu item", "radio menu item", "page tab", "switch"})
@@ -58,11 +58,12 @@ def bus_enabled(run) -> bool | None:
     return None
 
 
-def missing_hint(wm_class: str, enabled: bool | None) -> str:
-    """How to get a window that is not on the accessibility bus onto it."""
+def missing_hint(wm_class: str, enabled: bool | None, role: str | None = None) -> str:
+    """How to get a window that is not on the accessibility bus onto it. role: its WM_WINDOW_ROLE,
+    "browser-window" on every Chromium and Electron window whatever its class."""
     if enabled is False:
         return BUS_OFF_HINT
-    if any(k in wm_class.lower() for k in ("chrom", "electron")):
+    if role == "browser-window" or any(k in wm_class.lower() for k in ("chrom", "electron")):
         return "Chromium and Electron apps publish a tree only when started with --force-renderer-accessibility"
     return ("GTK apps and Firefox publish one only if accessibility was on when they started: "
             "`gsettings set org.gnome.desktop.interface toolkit-accessibility true` or GNOME_ACCESSIBILITY=1, "
@@ -76,6 +77,7 @@ class Ref:
     name: str
     dx: int = 0  # added to the element's box: the window's screen position on Wayland
     dy: int = 0
+    window: str | None = None  # the title of the window whose tree listed it
 
 
 class HelperProcess:
@@ -253,13 +255,13 @@ class A11y:
     def apps(self) -> list[dict]:
         return self.call({"op": "apps"})["apps"]
 
-    def _ref(self, n: dict, offset: tuple[int, int]) -> str:
+    def _ref(self, n: dict, offset: tuple[int, int], window: str | None = None) -> str:
         """Same element (path and role), same ref across calls, so refs from an earlier tree stay valid."""
         ref = self._by_path.get(n["path"])
         if ref is None or self.refs[ref].role != n["role"]:
             ref = f"e{len(self.refs) + 1}"
             self._by_path[n["path"]] = ref
-        self.refs[ref] = Ref(n["path"], n["role"], n["name"], *offset)
+        self.refs[ref] = Ref(n["path"], n["role"], n["name"], *offset, window=window)
         return ref
 
     def _offset(self, result: dict) -> tuple[int, int] | None:
@@ -280,7 +282,7 @@ class A11y:
             result["origin"] = {"x": offset[0], "y": offset[1]}
             for n in result["nodes"]:
                 shift(n, offset)
-        return result, [(self._ref(n, offset or (0, 0)), n) for n in result["nodes"]]
+        return result, [(self._ref(n, offset or (0, 0), result.get("window")), n) for n in result["nodes"]]
 
     def tree(self, window: str | None, query: str | None, page: bool, max_nodes: int) -> dict:
         request = {"op": "tree", "window": window, "query": query, "page": page, "max_nodes": max_nodes}
@@ -358,6 +360,23 @@ class A11y:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")
         return node
 
+    def detail(self, ref: str) -> dict:
+        key = str(ref).strip()
+        self.resolve(key)  # validate the cached identity before reading its full text
+        known = self.refs[key]
+        node = self.call({"op": "detail", "path": known.path})["node"]
+        if node is None or node["role"] != known.role or (
+                node["name"][:200] + ("…" if len(node["name"]) > 200 else "")) != known.name:
+            raise CcdeskError(f"{ref} changed since ui_tree(); call ui_tree() again")
+        shift(node, (known.dx, known.dy))
+        return {"ref": key, "window": known.window, "tree": format_node(key, node, 0),
+                "name": node["name"], "value": node.get("value"), "text": node.get("text"),
+                "count": 1, "truncated": node.get("truncated", False)}
+
+    def scroll_into_view(self, ref: str) -> dict:
+        self.call({"op": "scroll", "path": self.refs[str(ref).strip()].path}, timeout=ACTION_TIMEOUT)
+        return self.resolve(ref)  # never reuse the box from before scrolling
+
     def activate(self, ref: str) -> str | None:
         """Run the element's native click-like action. Returns its name, or None if none ran."""
         unsure = ("the app did not answer within the time limit: the action may have run (a dialog it "
@@ -371,8 +390,41 @@ class A11y:
         request = {"op": "set", "path": self.refs[ref].path, "text": text}
         return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
 
+    def insert(self, ref: str, text: str, at_end: bool = False) -> dict:
+        """Insert text at the element's caret without keyboard focus. {"inserted": False} means the
+        app took none of it (try the keyboard); "changed" says it took something else."""
+        unsure = ("the app did not answer within the time limit: the text may have been inserted. "
+                  "Check with ui_tree() before trying again")
+        request = {"op": "insert", "path": self.refs[ref].path, "text": text, "at_end": at_end}
+        return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
+
     def tree_window(self) -> str | None:
         return self._last["window"] if self._last else None
+
+    def ref_window(self, ref: str) -> str | None:
+        """The title of the window whose tree listed this ref (None for an unknown ref)."""
+        known = self.refs.get(str(ref).strip())
+        return known.window if known else None
+
+    def use_window(self, title: str) -> None:
+        """Make this window the one changes() and tree_window() follow, as if ui_tree() had read it:
+        an element action on a ref from an older tree reports the changes of its own window."""
+        with self._lock:
+            if self._last is not None and self._last["window"] == title:
+                return
+            request = {"op": "tree", "window": title, "query": None, "page": False,
+                       "max_nodes": self._last["request"]["max_nodes"] if self._last else 300}
+            result, nodes = self._read(request)
+            self._last = {"request": request, "lines": {ref: format_node(ref, n, 0) for ref, n in nodes},
+                          "window": result["window"], "secret": secret_focused(nodes)}
+
+    def select(self, ref: str) -> dict:
+        """Select the element in its parent through AT-SPI Selection (a sheet tab, a page tab): no
+        pointer, no focus. {"selected": None}: the parent offers no Selection."""
+        unsure = ("the app did not answer within the time limit: the item may have been selected. "
+                  "Check with ui_tree() before trying again")
+        return self.call({"op": "select", "path": self.refs[ref].path}, timeout=ACTION_TIMEOUT,
+                         on_timeout=unsure)
 
 
 def secret_focused(nodes: list[tuple[str, dict]]) -> bool:

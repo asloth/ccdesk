@@ -29,19 +29,38 @@ that window): verify with it instead of another look. Refs stay valid across ui_
 When a window has no useful tree, ui_tree() attaches a small picture of it (fallback_shot).
 Fall back to screenshot() for canvas, images, video, apps that publish none,
 to read layout, or to double-check something visual: the picture is in its answer. Coordinates
-are screen pixels in the image (origin top-left); for a region add the returned origin.
+are screen pixels; for a picture's own pixels (scaled or cropped) pass its shot id as shot=.
 screenshot(scale=0.5) halves each side for ~4x fewer tokens; regions are cheaper still.
-Without a tree, actions return screen_changed (and changed_area): if false, the action did
-nothing yet. Pass show_change=true to see the changed area in the answer, with no screenshot after.
+Without a tree, actions return screen_changed and changed_area: false means nothing visible
+changed (a click on a field that already had focus), or not yet. show_change=true adds a picture of that area (change_shot) to the answer, so no screenshot()
+is needed to see it; don't send both. settled=false: still moving, call wait_for_change().
 wait_for_change() waits for a page or dialog instead of wait() + screenshot. Verify with small
 regions, not the whole monitor: a screenshot result's `hint` says when you overpaid.
 Never type passwords or secrets; never dismiss dialogs you have not read.
 Destructive shortcuts (Alt+F4, Ctrl+Q, Ctrl+W, Super+Q) need confirm=true.
-To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each."""
+To fill a form from one ui_tree() look, send the steps in one batch() call instead of one request each.
+Coordinates are checked against the layout of the screenshot you measured them on: if a window moved,
+opened, closed or restacked since then, the input is refused with code=gui_frame_stale and a fresh
+screenshot comes back in the message. Read that one and plan again; force=true sends it anyway."""
 HEADLESS = """
 This server works on its own invisible screen, not the user's: it starts empty, so launch()
 the apps you need. Browsers need their own profile, e.g. `firefox --no-remote --profile DIR`
 or `chromium --user-data-dir=DIR --force-renderer-accessibility` (create DIR first)."""
+
+BESIDE_USER = """
+You have your own pointer and keyboard, and the user keeps working in their own window beside you.
+Work through the accessibility tree: list_windows(), ui_tree(window=<your window's title>), then
+click_element(ref) and set_value(ref, text); type_text right after one of those on a text field
+writes into it the same way. For a combo box use set_value(ref, "<option name>"), not clicks.
+That makes the window yours and touches neither the user's focus nor the window stacking; a ref
+from another window's tree acts in that window and makes it yours the same way (the note says so).
+click_element on a button, check box or menu item runs its accessible action, and an item without
+one (a spreadsheet's sheet tab, a page tab) is selected in its list; on anything else
+(a text field, a combo box) it is a real click, which some window managers take as
+click-to-focus and raise the window: prefer set_value there. Avoid activate_window(), and avoid type_text/press_key with no field chosen:
+they move your keyboard focus into the window, which on some window managers activates it and
+raises it over the user's. Never take the user's focus or raise your window to get past a refusal;
+force=true never sends your input into a window that is not yours."""
 
 TOOL_NAMES = (
     "screenshot", "click", "move", "drag", "scroll", "type_text", "press_key",
@@ -127,7 +146,9 @@ def slim_tools(server: MCPServer) -> None:
 
 
 def build_server(desktop: Desktop) -> MCPServer:
-    kwargs = {"name": "ccdesk", "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "")}
+    beside = bool(desktop.agent) and desktop.backend.own_pointer and not desktop.headless
+    kwargs = {"name": "ccdesk",
+              "instructions": INSTRUCTIONS + (HEADLESS if desktop.headless else "") + (BESIDE_USER if beside else "")}
     if "version" in inspect.signature(MCPServer.__init__).parameters:  # only mcp >= 2.0
         kwargs["version"] = __version__
     server = MCPServer(**kwargs)
@@ -139,7 +160,9 @@ def build_server(desktop: Desktop) -> MCPServer:
                 return compact(fn(*args, **kw))
             except CcdeskError as exc:
                 # ToolError messages reach the model; other exceptions are masked by the SDK.
-                raise ToolError(str(exc)) from exc
+                # An error with a code leads with it, so the caller can act without parsing prose.
+                head = exc.prefix()
+                raise ToolError(f"{head}: {exc}" if head else str(exc)) from exc
 
         return server.tool(annotations=ANNOTATIONS[fn.__name__], structured_output=False)(reporting)
 
@@ -148,42 +171,48 @@ def build_server(desktop: Desktop) -> MCPServer:
                    window: str | None = None) -> dict:
         """Capture the screen (or region "x,y,width,height") and show it in this answer, with path,
         width, height and approx_tokens (what it costs). scale=0.5 halves each side for ~4x fewer
-        tokens; then divide image pixels by scale to get screen pixels. path: only save it there.
-        window: capture only that window, by id or title. It is a crop of the screen, so anything
-        covering the window shows too: activate_window() it first."""
+        tokens. Its `shot` id lets click, move, scroll and drag take pixels of this picture. path: only save it there.
+        window: capture only that window, by id or title. With window, region is relative to its
+        top-left. It is a crop of the screen, so anything covering the window shows too (an --agent on X11 gets its window's own content, covered: true).
+        To see what an action changed, pass show_change=true to the action instead."""
         result = desktop.screenshot(region=region, path=path, scale=scale, window=window)
         return result if path else with_picture(result)
 
     @tool
     def click(x: int, y: int, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-              force: bool = False, expect_title: str | None = None, show_change: bool = False) -> dict:
+              force: bool = False, expect_title: str | None = None, show_change: bool | None = None,
+              shot: str | None = None) -> dict:
         """Move the pointer to (x, y) in screen pixels and click. count=2 for a double click.
-        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway.
+        shot="s3": x, y are pixels of that screenshot or change_shot, converted for you.
+        After activate_window(), refuses if (x, y) is over another window; force=true clicks anyway,
+        except for an --agent: its clicks never go into a window that is not its own.
         expect_title: refuse unless the receiving window's title contains it (a browser tab).
-        show_change=true: without a ui_tree, also show a small capture of what changed (~600 tokens at most)."""
+        show_change=true: the answer also shows a capture of what changed (at most ~600 tokens), instead of a screenshot after."""
         return with_change_shot(desktop.click(x, y, button=button, count=count, force=force,
-                                       expect_title=expect_title, show_change=show_change))
+                                       expect_title=expect_title, show_change=show_change, shot=shot))
 
     @tool
-    def move(x: int, y: int) -> dict:
-        """Move the pointer to (x, y) without clicking (e.g. to reveal a hover menu or tooltip)."""
-        return desktop.move(x, y)
+    def move(x: int, y: int, shot: str | None = None) -> dict:
+        """Move the pointer to (x, y) without clicking (e.g. to reveal a hover menu or tooltip). shot: as in click."""
+        return desktop.move(x, y, shot=shot)
 
     @tool
     def drag(from_x: int, from_y: int, to_x: int, to_y: int, duration_ms: int = 400, force: bool = False,
-             show_change: bool = False) -> dict:
-        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release. show_change: as in click."""
-        return with_change_shot(desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force, show_change=show_change))
+             show_change: bool | None = None, shot: str | None = None) -> dict:
+        """Press the left button at (from_x, from_y), move smoothly to (to_x, to_y), release. show_change, shot: as in click."""
+        return with_change_shot(desktop.drag(from_x, from_y, to_x, to_y, duration_ms=duration_ms, force=force,
+                                             show_change=show_change, shot=shot))
 
     @tool
-    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool = False) -> dict:
+    def scroll(x: int, y: int, dx: int = 0, dy: int = 0, force: bool = False, show_change: bool | None = None,
+               shot: str | None = None) -> dict:
         """Scroll the wheel with the pointer at (x, y). dy > 0 scrolls down, dx > 0 right. Units are wheel clicks.
-        show_change: as in click."""
-        return with_change_shot(desktop.scroll(x, y, dx=dx, dy=dy, force=force, show_change=show_change))
+        show_change, shot: as in click."""
+        return with_change_shot(desktop.scroll(x, y, dx=dx, dy=dy, force=force, show_change=show_change, shot=shot))
 
     @tool
     def type_text(text: str, submit: bool = False, replace: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         """Type text into the focused widget, as if from the keyboard. Click the field first. Never type secrets.
         replace=true selects all (ctrl+a) first, so the text replaces the field's contents.
         submit=true presses Return afterwards (a trailing newline does the same).
@@ -196,7 +225,7 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def press_key(key: str, modifiers: list[str] | None = None, confirm: bool = False, force: bool = False,
-                  expect_title: str | None = None, show_change: bool = False) -> dict:
+                  expect_title: str | None = None, show_change: bool | None = None) -> dict:
         """Press a key or combo: key="Return", key="ctrl+l", or key="t" with modifiers=["ctrl","shift"].
         Alt+F4, Ctrl+Q, Ctrl+W and Super+Q are refused unless confirm=true. After activate_window(),
         refuses if focus moved to another window; force=true presses anyway. expect_title: as in type_text.
@@ -213,7 +242,9 @@ def build_server(desktop: Desktop) -> MCPServer:
     @tool
     def activate_window(title_or_id: str) -> dict:
         """Raise and focus a window by id (from list_windows) or by (partial, case-insensitive) title.
-        Later clicks, keys and typing are refused if they would reach another window (force=true overrides)."""
+        Later clicks, keys and typing are refused if they would reach another window (force=true overrides).
+        With your own pointer (--own-pointer) it only records the window: keys later move your keyboard
+        focus there, which some window managers turn into raising it over the user's window."""
         return desktop.activate_window(title_or_id)
 
     @tool
@@ -235,34 +266,40 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
-        """The on-screen elements of a window as text, from the accessibility tree: one line per
+                max_nodes: int = 300, shot_fallback: bool = True, ref: str | None = None) -> dict:
+        """The visible elements of a window as text, from the accessibility tree: one line per
         button, field, checkbox, link, heading or text, with its value, states and screen box.
         Usually 5-20x cheaper than a screenshot. window: title substring (default: the active
         window). page=true: only the web page in a browser. query: only elements containing it.
+        Scrolled-out elements are flagged offscreen. Cut names end in an ellipsis.
+        ui_tree(ref="e12") reads its full name, value and Text contents, up to 10000 characters each.
         Act on a line with click_element(ref). With no useful tree (window not on the accessibility
         bus, or almost empty) it attaches a small picture of the window; shot_fallback=false: never."""
         return with_tree_shot(desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes,
-                                              shot_fallback=shot_fallback))
+                                              shot_fallback=shot_fallback, ref=ref))
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
                       force: bool = False, expect_title: str | None = None) -> dict:
-        """Click an element from the latest ui_tree() result, e.g. ref="e12". A single left click on
-        a button, checkbox, link or menu item runs its accessibility action when it has one, without
-        moving the pointer; otherwise it clicks the centre. Fails if the element changed or left the
-        screen; call ui_tree() again then. expect_title: as in click, and always a real click."""
+        """Click an element from a ui_tree() result, e.g. ref="e12"; a ref from an earlier tree acts in
+        its own window. A single left click on a button, checkbox, link or menu item runs its
+        accessibility action when it has one, without moving the pointer; an item with no action (a
+        sheet tab, a page tab) is selected in its list the same way; otherwise it clicks the centre.
+        Offscreen refs are first scrolled into view through accessibility, without input or focus.
+        Fails if the element changed or the app cannot reveal it; call ui_tree() again then.
+        expect_title: as in click, and always a real click."""
         return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
         """Replace the value of a field, slider or spin button from ui_tree() in one call, and read it
-        back: an answer means the app holds it. Refuses password fields. If the app ignores the write
+        back: an answer means the app holds it. Refuses password fields. Offscreen refs first scroll
+        into view through accessibility without input or focus changes. If the app ignores the write
         (web pages do), it clicks the field, selects all and types the text instead (typed: true)."""
         return desktop.set_value(ref, text, force=force)
 
     @tool
-    def batch(steps: list[dict], show_change: bool = False) -> dict:
+    def batch(steps: list[dict], show_change: bool | None = None) -> dict:
         """Several input steps in one call, e.g. a form from one ui_tree(): steps=[{"tool":"set_value","ref":"e3",
         "text":"Ana"},{"tool":"click_element","ref":"e7"}]. Each step takes that tool's arguments. Stops at the
         first failure; returns the changes after the last step. Other agents wait while it runs."""

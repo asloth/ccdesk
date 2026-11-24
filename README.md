@@ -1,21 +1,95 @@
 # ccdesk
 
-**Claude Code can't see your desktop on Linux. ccdesk gives it eyes and hands.**
+**Give your coding agent eyes and hands on Linux.**
 
-It also works with other MCP clients: see [Using it with opencode](#using-it-with-opencode).
+ccdesk is an MCP server for working with desktop apps: read a window, take a screenshot,
+fill a form, click a control, and check what changed. Use your desktop, or give the agent
+its own private screen while you keep using your PC.
 
-A small MCP server that lets Claude Code take screenshots, move and click the mouse, type,
-press keys, list and focus windows, use the clipboard and read the accessibility tree, plus a
-skill that teaches the safe loop: look, one action, verify.
+Includes setup for [Claude Code](#wiring-it-into-claude-code) and
+[opencode](#using-it-with-opencode), plus a computer-use skill that teaches the agent to
+look, act once, and verify.
 
-![ccdesk filling and submitting a GTK form on its own invisible screen](docs/demo.gif)
+[Quickstart](#quickstart) · [Private screen](#headless-let-it-work-while-you-use-your-pc) ·
+[Tools](#tools) · [Compatibility](#support-matrix) · [Security](#security-model)
 
-*Recorded by `bench/record_demo.py`: a real ccdesk session on a private Xvfb screen, not a mockup.*
+![ccdesk filling and submitting a real GTK form on a private screen](docs/demo.gif)
+
+*A real GTK form, filled and submitted through ccdesk on a private Xvfb screen.
+The [recording script](bench/record_demo.py) calls ccdesk directly;
+[Claude Code benchmarks](#results) measure separate agent runs.*
+
+## What you can do
+
+| Task | How ccdesk helps |
+| --- | --- |
+| Read an app's controls | The accessibility tree exposes buttons, fields, and values as text. |
+| Fill a form | Set fields and activate controls by their element references; actions report what changed. |
+| Work with visual content | Capture a window or region, then use the mouse, keyboard, or clipboard. |
+| Keep using your PC | Run the agent's apps on a private screen with `--headless`. |
+
+For browser pages, the optional [Firefox integration](#firefox-for-claude-without-the-mouse-opt-in)
+lets the agent read and act inside the page without using your mouse.
+
+## Quickstart
+
+Requires **Linux and Python 3.10+**. The commands below use `pipx` and Git to install from
+this repository on **Debian/Ubuntu with X11**. For Wayland, check the
+[support matrix](#support-matrix) and your compositor's requirements first.
+
+```sh
+sudo apt install pipx git xdotool scrot wmctrl xclip x11-utils x11-xserver-utils
+pipx install git+https://github.com/asloth/ccdesk.git
+pipx ensurepath
+```
+
+Open a new terminal if `ccdesk` is not on your PATH, then:
+
+```sh
+ccdesk doctor        # check the display, helper tools, and accessibility bus
+ccdesk install       # connect Claude Code and install the computer-use skill
+```
+
+Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. Then try:
+
+> Use ccdesk to describe my active window. Read its accessibility tree if available,
+> and take a screenshot if needed.
+
+This first task reads your screen. For an example that acts on an app, use a disposable
+form and ask the agent to fill its fields, then report the values before submitting.
+
+To give the agent its own screen, follow the [headless setup](#headless-let-it-work-while-you-use-your-pc).
+For another client, follow [opencode setup](#using-it-with-opencode).
+
+### Other distributions
+
+On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
+`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
+`xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
+monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
+one monitor only.
+
+On KDE Plasma under Wayland, the X11 tools are not what you need: see
+[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
+
+## Why it exists
+
+Desktop tasks often span apps that have no useful API or browser interface. ccdesk gives
+an MCP client a way to read and operate those apps with Linux desktop tools. Its core is
+standard-library Python; its only Python runtime dependency is the official `mcp` package.
 
 ## Results
 
+On one small GTK form benchmark, accessibility-tree reads and change reports reduced
+input tokens by **37% with `--always-load`**, compared with the agent completing the task
+without ccdesk. Median time fell from 30 to 15 seconds. These are task-specific results;
+`--always-load` also adds prompt overhead to sessions that do not use the desktop.
+
+<details>
+<summary>Benchmark table, method, and limitations</summary>
+
 Same GTK signup form filled end to end. Claude Code 2.1.304, Opus 5.5, `claude -p`, no user
-settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, median:
+settings or hooks, three runs per arm. Input tokens processed, median:
 
 | | no ccdesk | screenshots only | ui_tree + changes | + `--always-load` |
 |---|---|---|---|---|
@@ -33,42 +107,18 @@ settings or hooks, 3 runs per arm, all 9 succeeded. Input tokens processed, medi
 - Raw numbers, method and caveats: [`bench/RESULTS.md`](bench/RESULTS.md). Reproduce with
   `python bench/run.py`.
 
-## Quickstart
-
-```sh
-sudo apt install xdotool scrot wmctrl xclip x11-utils x11-xserver-utils   # Debian/Ubuntu, X11
-pipx install ccdesk  # from PyPI; today the wheel on the Releases page, or pipx install . in a checkout
-ccdesk doctor        # session type, helper tools, screen size, accessibility bus
-ccdesk install       # register the MCP server with Claude Code and install the skill
-```
-
-Restart Claude Code and run `/mcp`: `ccdesk` should be listed as connected. To try it on a
-private screen instead of yours, see [Headless](#headless-let-it-work-while-you-use-your-pc).
-
-### Other distributions
-
-On Fedora: `sudo dnf install xdotool scrot wmctrl xclip xprop xwininfo xrandr`. On Arch:
-`sudo pacman -S xdotool scrot wmctrl xclip xorg-xprop xorg-xwininfo xorg-xrandr`.
-`xwininfo` gives the size of the whole screen across monitors and `xrandr` lists the
-monitors; without them ccdesk falls back to `xdotool`, which recent releases report as
-one monitor only.
-
-On KDE Plasma under Wayland, the X11 tools are not what you need: see
-[KDE Plasma](#kde-plasma-wayland). Plasma on X11 uses the X11 tools above.
-
-## Why it exists
-
-There's no Claude Desktop app on Linux. ccdesk fills that gap with the system tools you
-probably already have (`xdotool`, `scrot`, `wmctrl`, `xclip`). The core is standard-library
-Python; the only dependency is the official `mcp` package.
+</details>
 
 ## Wiring it into Claude Code
 
-`ccdesk install` does two things:
+`ccdesk install` does three things:
 
-1. Copies `skills/computer-use/SKILL.md` to `~/.claude/skills/computer-use/SKILL.md`
-   (or `$CLAUDE_CONFIG_DIR/skills/...`).
-2. Runs `claude mcp add --scope user ccdesk -- /path/to/ccdesk mcp`, after removing any
+1. Copies `skills/computer-use/SKILL.md` to `~/.agents/skills/computer-use/SKILL.md`, the shared
+   skills folder that opencode, Codex and other agents read, so every harness gets the same file.
+2. Links `~/.claude/skills/computer-use` (or `$CLAUDE_CONFIG_DIR/skills/...`) to that folder. A
+   copy left by an older `ccdesk install` is replaced by the link. Anything else already there, a
+   link of your own or a folder with other files, is left alone, and install says so.
+3. Runs `claude mcp add --scope user ccdesk -- /path/to/ccdesk mcp`, after removing any
    earlier `ccdesk` registration.
 
 Flags you pass to `install` are forwarded to the server: `ccdesk install --read-only`,
@@ -82,17 +132,21 @@ prints the exact file, size, checksum and commands, and changes nothing:
 $ ccdesk install --dry-run
 ccdesk install --dry-run (nothing is written)
 
-[1] would write /home/hermes/.claude/skills/computer-use/SKILL.md
+[1] would write /home/hermes/.agents/skills/computer-use/SKILL.md
     6198 bytes, sha256 b0dbc9581ca05b94…, copied from /home/hermes/Projects/ccdesk/skills/computer-use/SKILL.md
-[2] would run: claude mcp remove --scope user ccdesk   # ignored if not registered yet
-[3] would run: claude mcp add --scope user ccdesk -- /home/hermes/Projects/ccdesk/.venv/bin/ccdesk mcp
+    the shared skills folder: opencode, Codex and other agents read it
+[2] would link /home/hermes/.claude/skills/computer-use -> /home/hermes/.agents/skills/computer-use
+[3] would run: claude mcp remove --scope user ccdesk   # ignored if not registered yet
+[4] would run: claude mcp add --scope user ccdesk -- /home/hermes/Projects/ccdesk/.venv/bin/ccdesk mcp
 ```
 
 To wire it by hand instead:
 
 ```sh
 claude mcp add --scope user ccdesk -- ccdesk mcp
-mkdir -p ~/.claude/skills/computer-use && cp skills/computer-use/SKILL.md ~/.claude/skills/computer-use/
+mkdir -p ~/.agents/skills/computer-use ~/.claude/skills
+cp skills/computer-use/SKILL.md ~/.agents/skills/computer-use/
+ln -s ../../.agents/skills/computer-use ~/.claude/skills/computer-use
 ```
 
 Restart Claude Code and run `/mcp`. `ccdesk` should be listed as connected.
@@ -131,13 +185,8 @@ removes this setting. Keep the command it wrote, with its full path:
 opencode's default, Code Mode, has the model call tools from code. ccdesk's loop relies on each
 result and screenshot reaching the model directly, so `codemode: false` is the recommended setting.
 
-opencode already reads the skill from `~/.claude/skills`, so `ccdesk install` covers it. Without
-Claude Code, copy it yourself:
-
-```sh
-mkdir -p ~/.config/opencode/skills/computer-use
-cp skills/computer-use/SKILL.md ~/.config/opencode/skills/computer-use/
-```
+opencode reads skills from `~/.agents/skills`, so `ccdesk install` covers it, with or without
+Claude Code on the machine.
 
 To restrict the tools, opencode's permission rules match them as `ccdesk_<tool>`.
 
@@ -322,11 +371,11 @@ while it is on.
 
 | Tool | What it does |
 | --- | --- |
-| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
-| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change=true`: see [Without a tree](#without-a-tree). |
-| `move(x, y)` | Moves the pointer (hover). |
-| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false)` | Left-button drag along a smooth path. |
-| `scroll(x, y, dx, dy, force=false, show_change=false)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
+| `screenshot(region?, path?, scale=1, window?)` | Saves a PNG and shows it in the answer, with `{path, width, height, approx_tokens}`, so seeing it takes no second request. With `path` it only saves it, and a PNG over 3.5 MB stays a file with a note. `region` is `"x,y,w,h"`; region results also include `origin`. Every picture gets a `shot` id (`"s1"`, `"s2"`...) for `shot=` below. `window` (id or title) captures just that window: a crop of the screen, so whatever covers it shows too, and it refuses a window that is minimized or on another desktop. `scale=0.5` halves each side (needs ImageMagick). |
+| `click(x, y, button="left", count=1, force=false, expect_title?, show_change=false, shot?)` | Moves the pointer and clicks. `count=2` double-clicks. `show_change`: see [Without a tree](#without-a-tree). `shot`: see below. |
+| `move(x, y, shot?)` | Moves the pointer (hover). |
+| `drag(from_x, from_y, to_x, to_y, duration_ms=400, force=false, show_change=false, shot?)` | Left-button drag along a smooth path. |
+| `scroll(x, y, dx, dy, force=false, show_change=false, shot?)` | Wheel clicks with the pointer at (x, y). `dy > 0` scrolls down. |
 | `type_text(text, submit=false, replace=false, force=false, expect_title?, show_change=false)` | Types into the focused widget. `replace=true` presses ctrl+a first; `submit=true` (or a trailing `\n`) presses Return after a short pause. |
 | `press_key(key, modifiers=[], confirm=false, force=false, expect_title?, show_change=false)` | `"Return"`, `"ctrl+l"`, or `key="t", modifiers=["ctrl","shift"]`. Shortcuts that move focus (`ctrl+t`, `ctrl+l`, `alt+d`, `F6`...) wait a moment so the next `type_text` lands in the new place. |
 | `list_windows()` | Returns `id`, `title`, `class`, `geometry`, `desktop` and `active` for each window, plus `current_desktop`. |
@@ -344,7 +393,13 @@ while it is on.
 | `launch(command)` | Starts an app without a shell. Only enabled with `--allow-launch`. |
 
 Coordinates are screen pixels with the origin at the top left, the same space as a
-full-screen screenshot.
+full-screen screenshot. With `shot="sN"` (the id of a `screenshot`, `change_shot` or
+`fallback_shot`) on `click`, `move`, `scroll`, `drag` and the same steps in `batch`, `x` and `y`
+are pixels of that picture, scaled or cropped as it is, and ccdesk converts them
+(`screen = origin + pixel / scale`, rounded, then the usual bounds check). The result reports the
+screen point used and `from_shot`. A point outside the picture, or an id older than the latest 32,
+is a validation error that says to take a new screenshot. The layout guard still compares with the
+latest delivered screenshot.
 
 ## Demo
 
@@ -367,7 +422,7 @@ Claude Code, Claude does the same thing by reading the PNG.
 < {"clicked": {"x": 249, "y": 79}, "button": "left", "count": 1}
 
 > screenshot(region='99,49,300,110')
-< {"path": "/home/hermes/.cache/ccdesk/screenshots/screen-20261019-200514-075.png", "width": 300, "height": 110, "origin": {"x": 99, "y": 49}, "note": "pixel (px,py) in this image is screen (origin.x+px, origin.y+py)"}
+< {"path": "/home/hermes/.cache/ccdesk/screenshots/screen-20261019-200514-075.png", "width": 300, "height": 110, "origin": {"x": 99, "y": 49}, "note": "pass shot=\"s2\" with this picture's own pixel coordinates", "shot": "s2"}
 
 > click(x=249, y=179)
 < {"clicked": {"x": 249, "y": 179}, "button": "left", "count": 1}
@@ -458,12 +513,27 @@ Without a tree (apps that don't publish one, or the bus switched off), `click`, 
 from before and after the action and return `screen_changed` and, if it changed,
 `changed_area`. A blinking text caret doesn't count. "Save did nothing" is then one call
 instead of a wait and two screenshots, and `wait_for_change()` replaces fixed `wait()`s for
-pages and dialogs. Each comparison costs about 0.2 s per capture (ImageMagick does the
-shrinking; without it the fields are left out).
+pages and dialogs. On X11 ccdesk reads the window straight from the X server (`XGetImage`
+through ctypes) and averages it itself: about 40 ms per capture on a 1912x1023 window, against
+220 ms for `import`, which copies the whole screen and leaves the shrinking to ImageMagick. With
+that fast capture, the after-capture is taken as soon as the window has changed and held still
+for one more capture, rather than after a fixed 0.3 s. A click on a 3840x1080 dual-monitor screen went
+from 0.85 s to 0.57 s. Other backends still use ImageMagick (without it the fields are left out).
 
-<a id="without-a-tree"></a>`show_change=true` on those same actions also puts a capture of
-`changed_area` (padded 24 px, scaled down to about 600 tokens at most) in the answer as
-`change_shot`, so the check needs no screenshot of its own. And when a screenshot taken right
+A browser started before the accessibility bus was switched on publishes its toolbars and tabs
+but an empty page. `ui_tree()` counts that as no tree, attaches `fallback_shot` and says to
+restart the browser.
+
+<a id="without-a-tree"></a>On those same actions `show_change=true` adds `change_shot`, a capture
+of `changed_area` (padded 24 px, scaled down to about 600 tokens at most, cropped to the receiving
+window) when the screen changed, so the check needs no screenshot of its own. It is off by default
+(`screen_changed`, `changed_area` and `settled` always come back); with a
+tree the answer stays text (`changes`) and carries no picture. The after-capture waits for the
+change to stop: nothing changed by 0.3 s means `screen_changed: false`; something changed means it
+keeps capturing until two captures in a row are equal, up to 1.5 s, and `settled: false` says the
+screen was still moving then, so `wait_for_change()` is the next call. The tree answers only for an
+action that lands in the window the tree is of, and only while it can be read; any other action
+compares pixels, so a stale tree no longer hides the result. When a screenshot taken right
 after an action is more than four times the size of what changed, or a `wait()` of a second
 or more follows an action, the result carries a `hint` naming the cheaper call. In a real
 session without a tree (filling three web forms of the same shape) most of the 117 screenshots were
@@ -668,14 +738,56 @@ and checks that your session bus never sees it. The other
 Wayland rows are covered by unit tests of the exact commands ccdesk builds.
 Requires Python 3.10+. The full suite passes on Python 3.14 with both `mcp` 2.3 and `mcp` 1.30.
 
-ccdesk does not replace [Cua Driver](https://github.com/trycua/cua). If `cua-driver` is on
-your `PATH`, `doctor` mentions it, but ccdesk never calls it.
+### Background input with Cua Driver
+
+```sh
+ccdesk mcp --agent helper --input cua-driver --cua-driver /path/to/cua-driver
+ccdesk doctor --cua-driver /path/to/cua-driver
+```
+
+Install [Cua Driver](https://github.com/trycua/cua) release `cua-driver-rs-v0.38.0`
+separately. `--cua-driver` is optional when that version is on `PATH`.
+`--input cua-driver` requires `--agent` and is mutually exclusive with `--own-pointer`.
+Each server owns one long-lived driver process and stops it on exit. Pointer and keyboard
+actions always request background delivery to a specific window. `activate_window()` selects
+the agent's keyboard target without activating or raising it; hidden windows are refused.
+`--yield-ms` is ignored because this input does not use the user's devices.
+
+ccdesk keeps its interface, accessibility refs, safety checks and change reports. Window
+inspection and management, screenshots and the clipboard still use its session backend.
+It optionally calls Cua Driver for input; the normal input backend remains the default.
+`doctor` reports the binary, version and conditional background availability. Availability
+does not guarantee that every application accepts background input: refusals carry a code
+and `input_emitted`, and never fall back to foreground delivery.
+When Wayland has no AT-SPI, availability is reported as unknown: the driver does not expose
+a read-only probe for its addressed compositor routes. Each target action can still refuse.
+
+On X11, cua-driver tries accessibility, then its virtual master devices on real Xorg with
+writable `/dev/uinput`, then synthetic events where supported. Xvfb cannot use the real-input
+route, and KDE/X11 disables the uinput route. On Wayland, ccdesk enables the driver's experimental
+backend in its child process. Accessibility and addressed compositor routes can work;
+ordinary virtual-pointer and portal/libei input cannot target an unfocused window. Unsupported
+actions are refused. Native window identity must match uniquely between the session and driver.
+Use a private screen for tasks that need unavailable background input.
+
+Pointer actions send screen pixels with `coordinate_frame="desktop"`, explicit `pid` and
+`window_id`, and `delivery_mode="background"`. The driver converts them to that window's
+coordinates. This avoids requiring a second screenshot from the driver; it does not use
+`scope="desktop"` or move the user's pointer.
+
+`move()` only moves the agent's visual cursor, with this explicit note:
+"hover is not delivered to the app in background mode; a task that needs hover (tooltip,
+hover-only toolbar) will later go to a private screen". It never moves the user's pointer.
+This mode does not automatically migrate tasks to another screen.
+
+Cua Driver is developed by Cua and licensed under MIT. ccdesk does not bundle it or
+`cua-perception` (AGPL).
 
 ## Development
 
 ```sh
 python -m venv .venv && . .venv/bin/activate
-pip install -e '.[test]'
+pip install -e '.[test]'      # or, with uv: uv run pytest -q
 xvfb-run -a pytest -q        # unit tests + Tk integration test on a virtual X server
 pytest -q                    # without a display the integration tests are skipped
 xvfb-run -a ccdesk doctor
@@ -708,8 +820,8 @@ ccdesk/
   safety.py       read-only / launch policy, destructive keys, JSONL audit log
   parsing.py      pure parsers: keys, regions, wmctrl/xdotool output, PNG header
   doctor.py       environment report
-  install.py      Claude Code registration and skill copy
-  backends/       x11.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
+  install.py      Claude Code registration, shared skill copy and link
+  backends/       x11.py, x11_own.py, mpx.py, xgrab.py, xerror.py, wayland.py, kde.py, vpointer.py, keycodes.py, base.py
 skills/computer-use/SKILL.md
 tests/
 ```
