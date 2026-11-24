@@ -24,7 +24,7 @@ PYTHONS = ("/usr/bin/python3", "python3")
 MAX_CHANGES = 25
 ACTION_TIMEOUT = 5.0  # a dialog an action opens can hold the helper's reply back
 # Repeating these after the helper died is harmless; a click or a write may have run already.
-RETRY_OPS = frozenset({"apps", "tree", "resolve", "changes"})
+RETRY_OPS = frozenset({"apps", "tree", "resolve", "detail", "changes"})
 # Roles whose native action does what a left click does. Not fields: a click there is for focus.
 NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
                           "menu item", "check menu item", "radio menu item", "page tab", "switch"})
@@ -359,6 +359,23 @@ class A11y:
         if node is None or node["role"] != known.role or node["name"] != known.name:
             raise CcdeskError(f"{ref} changed since ui_tree() (the page moved on); call ui_tree() again")
         return node
+
+    def detail(self, ref: str) -> dict:
+        key = str(ref).strip()
+        self.resolve(key)  # validate the cached identity before reading its full text
+        known = self.refs[key]
+        node = self.call({"op": "detail", "path": known.path})["node"]
+        if node is None or node["role"] != known.role or (
+                node["name"][:200] + ("…" if len(node["name"]) > 200 else "")) != known.name:
+            raise CcdeskError(f"{ref} changed since ui_tree(); call ui_tree() again")
+        shift(node, (known.dx, known.dy))
+        return {"ref": key, "window": known.window, "tree": format_node(key, node, 0),
+                "name": node["name"], "value": node.get("value"), "text": node.get("text"),
+                "count": 1, "truncated": node.get("truncated", False)}
+
+    def scroll_into_view(self, ref: str) -> dict:
+        self.call({"op": "scroll", "path": self.refs[str(ref).strip()].path}, timeout=ACTION_TIMEOUT)
+        return self.resolve(ref)  # never reuse the box from before scrolling
 
     def activate(self, ref: str) -> str | None:
         """Run the element's native click-like action. Returns its name, or None if none ran."""

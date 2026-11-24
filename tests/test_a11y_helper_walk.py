@@ -6,7 +6,7 @@ import types
 
 import pytest
 
-STATES = ("SHOWING", "ENABLED", "ACTIVE", "FOCUSED", "CHECKED", "SELECTED", "EXPANDED", "REQUIRED",
+STATES = ("VISIBLE", "SHOWING", "ENABLED", "ACTIVE", "FOCUSED", "CHECKED", "SELECTED", "EXPANDED", "REQUIRED",
           "MANAGES_DESCENDANTS")
 
 
@@ -28,6 +28,8 @@ class Node:
 
     def __init__(self, role, name="", states=("SHOWING", "ENABLED"), kids=()):
         self.role, self.name, self.states, self.kids = role, name, states, list(kids)
+        if "SHOWING" in states:
+            self.states = (*states, "VISIBLE")
 
     def get_role_name(self):
         Node.visits += 1
@@ -123,3 +125,71 @@ def test_text_in_an_unnamed_container_is_not_lost(helper):
     assert message in values
     # The ￼-only wrapper adds no line of its own: it carries no text.
     assert values.count(None) == 1  # just the frame, which has a name and no value
+
+
+def install_frame(atspi, kids):
+    frame = Node("frame", "Long form", ("VISIBLE", "SHOWING", "ACTIVE"), kids)
+    atspi.get_desktop = lambda _i: Node("desktop", kids=[Node("application", "app", kids=[frame])])
+
+
+def test_visible_offscreen_subtrees_share_the_node_and_visit_caps(helper, monkeypatch):
+    mod, atspi = helper
+    install_frame(atspi, [Node("panel", states=("VISIBLE",), kids=[
+        Node("entry", f"Field {i}", states=("VISIBLE", "ENABLED")) for i in range(20)]),
+        Node("panel", states=(), kids=[Node("entry", "Hidden tab")])])
+    out = mod.read_tree({"max_nodes": 3})
+    assert out["truncated"]
+    assert [n["name"] for n in out["nodes"]] == ["Long form", "Field 0", "Field 1"]
+    assert all("offscreen" in n["states"] for n in out["nodes"][1:])
+    monkeypatch.setattr(mod, "MAX_VISIT", 4)
+    out = mod.read_tree({"max_nodes": 100})
+    assert out["truncated"] and len(out["nodes"]) == 3
+
+
+def test_nodes_without_visible_are_excluded_even_when_showing(helper):
+    mod, atspi = helper
+    hidden = Node("panel", kids=[Node("entry", "Hidden child")])
+    hidden.states = ("SHOWING",)  # VISIBLE is the requirement, even for an inconsistent toolkit
+    install_frame(atspi, [hidden, Node("entry", "Below fold", states=("VISIBLE",))])
+    names = [n["name"] for n in mod.read_tree({})["nodes"]]
+    assert names == ["Long form", "Below fold"]
+
+
+def test_detail_reads_bounded_raw_text_and_masks_passwords(helper, monkeypatch):
+    mod, atspi = helper
+    raw = "line one\n\n  line two\t" + "x" * 12000
+    obj = TextNode("entry", raw, name="n" * 12000)
+    monkeypatch.setattr(mod, "find", lambda path: obj)
+    atspi.Text = types.SimpleNamespace(get_character_count=lambda o: len(o.text),
+                                     get_text=lambda o, start, end: o.text[start:end])
+    preview = mod.describe(obj, "0.0", 0)
+    assert preview["name"] == "n" * 200 + "…"
+    assert len(preview["value"]) <= 201
+    node = mod.detail({"path": "0.0"})["node"]
+    assert node["name"] == "n" * 10000
+    assert node["text"] == node["value"] == raw[:10000]
+    from ccdesk.desktop import MAX_TEXT as DESKTOP_MAX_TEXT
+    assert mod.FULL_TEXT == DESKTOP_MAX_TEXT
+    obj.role = "password text"
+    node = mod.detail({"path": "0.0"})["node"]
+    assert node["text"] == node["value"] == "•" * 8
+
+
+@pytest.mark.parametrize("supported", [True, False])
+def test_scroll_uses_component_and_rereads_showing(helper, monkeypatch, supported):
+    mod, atspi = helper
+    obj = Node("entry", "Below fold", states=("VISIBLE",))
+    monkeypatch.setattr(mod, "find", lambda path: obj)
+    monkeypatch.setattr(mod.time, "sleep", lambda _: None)
+    atspi.ScrollType = types.SimpleNamespace(ANYWHERE="anywhere")
+    calls = []
+
+    def scroll(o, where):
+        calls.append((o, where))
+        if supported:
+            o.states = ("VISIBLE", "SHOWING")
+        return supported
+
+    atspi.Component = types.SimpleNamespace(scroll_to=scroll)
+    assert mod.scroll({"path": "0.0"}) == {"scrolled": supported}
+    assert calls == [(obj, "anywhere")]
