@@ -8,7 +8,7 @@ from dataclasses import replace
 
 import pytest
 
-from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError
+from ccdesk.errors import CcdeskError, PolicyError, StaleFrameError, TargetCoveredError
 from ccdesk.parsing import Region, Window
 from tests.test_screen_changes import WHITE
 
@@ -40,6 +40,10 @@ def sent(fake):
 
 def activations(fake):
     return [c for c in fake.calls if c[0] == "activate"]
+
+
+def focuses(fake):
+    return [c for c in fake.calls if c[0] == "focus"]
 
 
 # -- A: no window-manager activation behind an ordinary action ----------------------------------
@@ -89,22 +93,25 @@ def test_a_pointer_action_on_a_hidden_target_is_refused_even_when_the_keyboard_i
     assert own.calls == []
 
 
-def test_force_sends_it_to_a_hidden_target_as_before(agent, own):
+def test_force_never_clicks_into_another_window_over_a_hidden_target(agent, own):
+    # force skipped the receiver check, so this click landed in the Terminal under the point.
     agent.activate_window(FIREFOX)
     own.hidden.add(FIREFOX)
     own.under = own.active = TERMINAL
     own.calls.clear()
-    assert "clicked" in agent.click(500, 400, force=True)
-    assert sent(own) and not activations(own)
+    with pytest.raises(TargetCoveredError, match="never sends input into a window that is not yours"):
+        agent.click(500, 400, force=True)
+    assert not sent(own) and not activations(own)
 
 
-def test_a_target_on_show_gets_its_focus_back_as_before(agent, own):
+def test_a_target_on_show_gets_the_agents_keyboard_back_without_activation(agent, own):
     agent.activate_window(FIREFOX)
     own.calls.clear()
     own.active = TERMINAL  # another window took the agent's keyboard
     r = agent.type_text("hola")
-    assert activations(own) == [("activate", FIREFOX)]
+    assert not activations(own) and focuses(own) == [("focus", FIREFOX)]
     assert r["typed_chars"] == 4 and ("type_text", "hola") in own.calls
+    assert "raises it over the user's window" in r["note"]
 
 
 def test_without_an_own_pointer_the_shared_focus_is_retaken_as_before(make_desk, fake):
@@ -159,12 +166,18 @@ def test_a_covered_target_says_what_covers_it(agent, own):
     assert not sent(own)
 
 
-def test_force_sends_it_into_the_covering_window(agent, own):
+def test_force_never_sends_a_click_into_the_covering_window(agent, own):
+    # It used to: the refusal even said "force=true sends the click anyway".
     agent.activate_window(FIREFOX)
     own.under = TERMINAL
     own.calls.clear()
-    assert agent.click(20, 20, force=True)["window"] == {"id": TERMINAL, "title": "Terminal"}
-    assert sent(own)
+    with pytest.raises(TargetCoveredError) as exc:
+        agent.click(20, 20, force=True)
+    assert "'Terminal'" in str(exc.value) and "never sends input into a window that is not yours" in str(exc.value)
+    assert not sent(own)
+    with pytest.raises(TargetCoveredError) as exc:
+        agent.click(20, 20)
+    assert "force=true" not in str(exc.value)
 
 
 def test_the_normal_mode_keeps_the_switched_windows_message(make_desk, fake):
@@ -184,9 +197,32 @@ NEEDS_TARGET = [
     lambda d, **kw: d.scroll(5, 5, dy=2, **kw),
     lambda d, **kw: d.type_text("x", **kw),
     lambda d, **kw: d.press_key("Return", **kw),
-    lambda d, **kw: d.click_element("e4", **kw),
-    lambda d, **kw: d.set_value("e2", "x", **kw),
 ]
+
+
+@pytest.mark.parametrize("call", [lambda d: d.click_element("e4"), lambda d: d.set_value("e2", "x")])
+def test_an_element_action_makes_the_trees_window_the_agents_own(agent, own, helper, call):
+    """The accessible title ("Form — Mozilla Firefox") and the window manager's ("Mozilla Firefox")
+    are spelled differently and still name one window."""
+    agent.ui_tree(window="Firefox")
+    helper.actions["3.0.29.5"] = "click"
+    own.calls.clear()
+    call(agent)
+    assert agent._target.id == FIREFOX
+    assert not activations(own) and not focuses(own)
+
+
+@pytest.mark.parametrize("call", [lambda d, **kw: d.click_element("e4", **kw),
+                                  lambda d, **kw: d.set_value("e2", "x", **kw)])
+def test_an_element_action_without_a_listed_window_is_refused(agent, own, helper, call):
+    helper.trees["Nowhere"] = ("Nowhere", [dict(FORM := helper.nodes["3.0.29.5"], path="4.0.1")])
+    agent.ui_tree(window="Nowhere")  # its window is on the bus, not in the window list
+    own.calls.clear()
+    for kw in ({}, {"force": True}):
+        with pytest.raises(PolicyError) as exc:
+            call(agent, **kw)
+        assert exc.value.code == "gui_target_required"
+    assert own.calls == []
 
 
 @pytest.mark.parametrize("call", NEEDS_TARGET)
@@ -202,6 +238,21 @@ def test_an_agent_without_a_target_is_refused_and_force_does_not_help(agent, own
     assert own.calls == []
     assert not [q for q in helper.requests if q["op"] in ("action", "set")]
     assert read_audit()[-1]["status"] == "denied"
+
+
+def test_the_own_pointer_refusal_points_at_element_actions_and_tells_the_truth(agent, own, make_desk):
+    # On xfwm4 the agent's XISetFocus activates and raises the window: the old text said it did not.
+    with pytest.raises(PolicyError) as exc:
+        agent.click(5, 5)
+    text = str(exc.value)
+    assert "ui_tree(window=" in text and "click_element() or set_value()" in text
+    assert "activate and raise the window" in text and "only records the window" in text
+    assert "Do not click something just to pick the window" in text
+    assert "only moves your keyboard focus" not in text and "would reach the user's" not in text
+    own.own_pointer = False
+    with pytest.raises(PolicyError) as exc:
+        make_desk(agent="desk-2").click(5, 5)
+    assert "would reach the user's" in str(exc.value)
 
 
 def test_ui_tree_without_a_window_is_refused_for_an_agent_without_a_target(agent, helper):
@@ -251,33 +302,36 @@ def test_the_normal_mode_needs_no_target(make_desk, fake):
     assert d.batch([{"tool": "click", "x": 5, "y": 5}])["done"] == 1
 
 
-def test_a_tree_of_another_window_does_not_skip_the_guard_for_an_agent(agent, own, helper):
-    """The tree is of the Firefox form, the agent's window is the Terminal: set_value would write
-    into a window that is not its own, and a forced click_element would use the native action."""
+def test_an_own_pointer_agent_acts_in_the_window_of_the_ref(agent, own, helper):
+    """The tree is of the Firefox form, the agent's window is the Terminal: the element actions
+    work in Firefox through accessibility and make it the agent's window, with nothing sent to the
+    window manager."""
     agent.ui_tree(window="Firefox")
     agent.activate_window(TERMINAL)
-    helper.requests.clear()
-    with pytest.raises(PolicyError, match="not 'Terminal'"):
-        agent.set_value("e2", "x", force=True)
-    assert not [q for q in helper.requests if q["op"] == "set"]
-    own.under = TERMINAL
     own.calls.clear()
+    r = agent.set_value("e2", "x")
+    assert r["verified"] and agent._target.id == FIREFOX
+    assert "your window is now 'Mozilla Firefox'" in r["note"] and "'Terminal'" in r["note"]
     helper.actions["3.0.29.5"] = "click"
-    r = agent.click_element("e4", force=True)
-    assert "activated" not in r and sent(own)  # by the pointer, through _guard, not natively
-    assert not [q for q in helper.requests if q["op"] == "action"]
+    assert agent.click_element("e4")["activated"] == "click"
+    assert own.calls == []  # no activation, no focus, no pointer
 
 
-def test_an_agents_forced_element_click_never_lands_in_another_window(agent, own, helper):
-    """The same tree of Firefox, and now the element's spot really is over Firefox: force would
-    carry the click into the user's window."""
-    agent.ui_tree(window="Firefox")
-    agent.activate_window(TERMINAL)
-    own.under = FIREFOX
-    own.calls.clear()
-    with pytest.raises(PolicyError):
-        agent.click_element("e4", force=True)
-    assert not sent(own)
+def test_a_shared_pointer_agent_is_told_what_to_call(make_desk, fake, helper):
+    """Without an own pointer activate_window() activates for real, so the agent keeps its window
+    and the refusal names the call that works."""
+    d = make_desk(agent="desk-1")
+    d.ui_tree(window="Firefox")
+    d.activate_window(TERMINAL)
+    helper.requests.clear()
+    with pytest.raises(PolicyError) as exc:
+        d.set_value("e2", "x", force=True)
+    text = str(exc.value)
+    assert f"activate_window({FIREFOX!r})" in text and "'Mozilla Firefox'" in text and "'Terminal'" in text
+    assert "call ui_tree() on that window" not in text
+    assert not [q for q in helper.requests if q["op"] == "set"]
+    d.activate_window(FIREFOX)  # what the refusal said
+    assert d.set_value("e2", "x")["verified"]
 
 
 # -- D: the layout check looks at the agent's own window ------------------------------------------------
@@ -410,3 +464,27 @@ def test_a_shot_from_before_activate_window_is_unchecked_as_before(make_desk, fa
     d.activate_window("Mozilla Firefox")
     fake.windows[1] = replace(fake.windows[1], x=400)
     assert "clicked" in d.click(100, 100, shot="s1")
+
+
+# -- F: element actions beside the user need no activation ---------------------------------------------------
+
+
+@pytest.fixture
+def form_window(own):
+    own.windows[0] = replace(own.windows[0], title="Form — Mozilla Firefox")  # the fake tree's window
+    return own
+
+
+def test_click_element_without_activate_window_sends_no_activate_or_focus(agent, form_window, helper):
+    helper.actions["3.0.29.5"] = "press"
+    agent.ui_tree(window="Form — Mozilla Firefox")
+    assert agent.click_element("e4")["activated"] == "press"
+    assert [c for c in form_window.calls if c[0] in ("activate", "focus")] == []
+    assert agent._target.id == FIREFOX
+
+
+def test_set_value_without_activate_window_sends_no_activate_or_focus(agent, form_window, helper):
+    agent.ui_tree(window="Form — Mozilla Firefox")
+    assert agent.set_value("e2", "ana@x.org")["verified"] is True
+    assert [c for c in form_window.calls if c[0] in ("activate", "focus")] == []
+    assert sent(form_window) == []

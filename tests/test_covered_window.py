@@ -8,9 +8,11 @@ from dataclasses import replace
 
 import pytest
 
-from ccdesk.desktop import DIFF_CELL
-from ccdesk.errors import StaleFrameError
+from ccdesk.backends.cua_driver import CuaDriverBackend
+from ccdesk.desktop import DIFF_CELL, Desktop
+from ccdesk.errors import CcdeskError, StaleFrameError, ValidationError
 from ccdesk.parsing import Region
+from ccdesk.safety import AuditLog
 from tests.pngutil import read_png, write_png
 
 FIREFOX = "0x01e00003"
@@ -165,12 +167,54 @@ def test_screenshot_of_a_covered_window_is_its_own_pixels(agent, own, fake):
     assert (r["width"], r["height"]) == (800, 600) and r["origin"] == {"x": 0, "y": 0}
 
 
-def test_screenshot_falls_back_to_the_screen_with_a_warning(agent, own, fake):
+def test_a_covered_window_whose_pixels_cannot_be_read_gets_no_picture(agent, own, fake):
+    """A crop of the screen would show the windows on top: the answer says so and what to do."""
     own.broken = "the Composite extension is missing"
-    r = agent.screenshot(window=FIREFOX)
-    assert "covered" not in r
-    assert "the Composite extension is missing" in r["warning"] and "what is on top" in r["warning"]
-    assert screen_shots(fake) == [("screenshot", Region(0, 0, 800, 600))]
+    with pytest.raises(CcdeskError) as exc:
+        agent.screenshot(window=FIREFOX)
+    message = str(exc.value)
+    assert "the Composite extension is missing" in message and "no picture was taken" in message
+    assert "ui_tree(window=...)" in message and "ask the user" in message
+    assert own.shots == [(FIREFOX, Region(0, 0, 800, 600))]
+    assert screen_shots(fake) == []
+    assert not any(p.stat().st_size for p in agent.shots_dir.glob("*.png"))  # no picture written
+
+
+def test_ui_tree_gives_no_picture_of_a_covered_window_it_cannot_read(agent, own, fake):
+    own.broken = "the window's pixels cannot be named"
+    with pytest.raises(CcdeskError) as exc:
+        agent._tree_fallback_shot(FIREFOX)
+    assert "no picture was taken" in str(exc.value)
+    assert screen_shots(fake) == []
+
+
+def test_a_thin_tree_of_a_covered_window_it_cannot_read_says_why_there_is_no_picture(agent, own, fake, helper):
+    own.broken = "the window's pixels cannot be named"
+    fake.windows[0] = replace(fake.windows[0], title="Form — Mozilla Firefox")  # as the bus names it
+    helper.nodes = {"1": {"path": "1", "role": "frame", "name": "Form — Mozilla Firefox", "depth": 0,
+                          "showing": True, "box": [0, 0, 800, 600]}}
+    r = agent.ui_tree(window=FIREFOX)
+    assert "fallback_shot" not in r
+    assert "no picture" in r["note"] and "cannot be named" in r["note"]
+    assert screen_shots(fake) == []
+
+
+@pytest.mark.parametrize("arm", ["own-pointer", "cua-driver"])
+def test_both_agent_backends_route_a_covered_window_to_its_own_pixels(arm, own, fake, tmp_path):
+    """The bench arms: --own-pointer (X11 underneath) and --input cua-driver (which forwards
+    capture to the session it wraps). Neither raises, activates nor focuses anything."""
+    if arm == "cua-driver":
+        # The wrapper without its driver process: capture never reaches the driver.
+        backend = CuaDriverBackend.__new__(CuaDriverBackend)
+        backend.session, backend._target, backend._note = fake, None, None
+    else:
+        backend = fake
+    desk = Desktop(backend=backend, agent="bench", audit=AuditLog(tmp_path / "audit"), shots_dir=tmp_path / "s")
+    before = fake.active
+    r = desk.screenshot(window=FIREFOX)
+    assert r["covered"] is True and read_png(r["path"]).pixel(5, 5)[:3] == OWN
+    assert own.shots == [(FIREFOX, Region(0, 0, 800, 600))] and screen_shots(fake) == []
+    assert not [c for c in fake.calls if c[0] in ("activate", "focus", "raise")] and fake.active == before
 
 
 def test_screenshot_without_agent_mode_crops_the_screen(make_desk, fake):
@@ -237,3 +281,36 @@ def test_the_picture_of_a_change_never_shows_the_window_next_to_it(make_desk, fa
     fake.effects = [(250, 150, 60, 60, (255, 255, 255))]
     shot = desk.type_text("x", show_change=True)["change_shot"]
     assert shot["origin"]["x"] + shot["width"] <= 310 and shot["origin"]["y"] + shot["height"] <= 210
+
+
+def test_window_region_is_relative_and_shot_keeps_screen_origin(make_desk, fake):
+    from ccdesk.parsing import Region
+    d = make_desk()
+    result = d.screenshot(window="Terminal", region="5,7,80,40")
+    assert ("screenshot", Region(15, 17, 80, 40)) in fake.calls
+    assert result["origin"] == {"x": 15, "y": 17}
+    assert (result["width"], result["height"]) == (80, 40)
+    d.click(3, 4, shot=result["shot"])
+    assert ("click", 18, 21, 1, 1) in fake.calls
+
+
+def test_window_region_must_fit_window(make_desk):
+    d = make_desk()
+    with pytest.raises(ValidationError, match="exceeds"):
+        d.screenshot(window="Terminal", region="290,0,20,10")
+
+
+def test_covered_window_region_reads_own_pixels(agent, own):
+    out = agent.screenshot(window="Mozilla Firefox", region="20,30,100,50")
+    assert out["covered"]
+    assert own.shots[-1] == (FIREFOX, Region(20, 30, 100, 50))
+    assert read_png(out["path"]).pixel(0, 0)[:3] == OWN
+
+
+def test_window_region_uses_unclipped_window_origin(make_desk, fake):
+    fake.windows[1] = replace(fake.windows[1], x=-30, y=-20)
+    out = make_desk().screenshot(window="Terminal", region="40,30,100,50")
+    assert out["origin"] == {"x": 10, "y": 10}
+    assert (out["width"], out["height"]) == (100, 50)
+    with pytest.raises(ValidationError, match="no visible area"):
+        make_desk().screenshot(window="Terminal", region="0,0,10,10")

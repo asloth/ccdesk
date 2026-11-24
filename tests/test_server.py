@@ -84,7 +84,7 @@ def test_registered_tools(make_desk):
     assert props["press_key"] == {"key", "modifiers", "confirm", "force", "expect_title", "show_change"}
     assert props["clipboard"] == {"action", "text"}
     assert props["activate_window"] == {"title_or_id"}
-    assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback"}
+    assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback", "ref"}
     assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
     assert props["set_value"] == {"ref", "text", "force"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
@@ -143,6 +143,17 @@ def test_headless_adds_instructions(make_desk):
     assert HEADLESS not in build_server(desk).instructions
     desk.headless = object()
     assert HEADLESS in build_server(desk).instructions
+
+
+def test_an_own_pointer_agent_is_told_to_work_through_the_tree(make_desk, fake):
+    from ccdesk.server import BESIDE_USER
+
+    assert BESIDE_USER not in build_server(make_desk(agent="desk-1")).instructions
+    fake.own_pointer = True
+    text = build_server(make_desk(agent="desk-1")).instructions
+    assert BESIDE_USER in text and "Avoid activate_window()" in text
+    assert 'set_value(ref, "<option name>")' in text
+    assert BESIDE_USER not in build_server(make_desk()).instructions
 
 
 class StdioClient:

@@ -738,8 +738,50 @@ and checks that your session bus never sees it. The other
 Wayland rows are covered by unit tests of the exact commands ccdesk builds.
 Requires Python 3.10+. The full suite passes on Python 3.14 with both `mcp` 2.3 and `mcp` 1.30.
 
-ccdesk does not replace [Cua Driver](https://github.com/trycua/cua). If `cua-driver` is on
-your `PATH`, `doctor` mentions it, but ccdesk never calls it.
+### Background input with Cua Driver
+
+```sh
+ccdesk mcp --agent helper --input cua-driver --cua-driver /path/to/cua-driver
+ccdesk doctor --cua-driver /path/to/cua-driver
+```
+
+Install [Cua Driver](https://github.com/trycua/cua) release `cua-driver-rs-v0.38.0`
+separately. `--cua-driver` is optional when that version is on `PATH`.
+`--input cua-driver` requires `--agent` and is mutually exclusive with `--own-pointer`.
+Each server owns one long-lived driver process and stops it on exit. Pointer and keyboard
+actions always request background delivery to a specific window. `activate_window()` selects
+the agent's keyboard target without activating or raising it; hidden windows are refused.
+`--yield-ms` is ignored because this input does not use the user's devices.
+
+ccdesk keeps its interface, accessibility refs, safety checks and change reports. Window
+inspection and management, screenshots and the clipboard still use its session backend.
+It optionally calls Cua Driver for input; the normal input backend remains the default.
+`doctor` reports the binary, version and conditional background availability. Availability
+does not guarantee that every application accepts background input: refusals carry a code
+and `input_emitted`, and never fall back to foreground delivery.
+When Wayland has no AT-SPI, availability is reported as unknown: the driver does not expose
+a read-only probe for its addressed compositor routes. Each target action can still refuse.
+
+On X11, cua-driver tries accessibility, then its virtual master devices on real Xorg with
+writable `/dev/uinput`, then synthetic events where supported. Xvfb cannot use the real-input
+route, and KDE/X11 disables the uinput route. On Wayland, ccdesk enables the driver's experimental
+backend in its child process. Accessibility and addressed compositor routes can work;
+ordinary virtual-pointer and portal/libei input cannot target an unfocused window. Unsupported
+actions are refused. Native window identity must match uniquely between the session and driver.
+Use a private screen for tasks that need unavailable background input.
+
+Pointer actions send screen pixels with `coordinate_frame="desktop"`, explicit `pid` and
+`window_id`, and `delivery_mode="background"`. The driver converts them to that window's
+coordinates. This avoids requiring a second screenshot from the driver; it does not use
+`scope="desktop"` or move the user's pointer.
+
+`move()` only moves the agent's visual cursor, with this explicit note:
+"hover is not delivered to the app in background mode; a task that needs hover (tooltip,
+hover-only toolbar) will later go to a private screen". It never moves the user's pointer.
+This mode does not automatically migrate tasks to another screen.
+
+Cua Driver is developed by Cua and licensed under MIT. ccdesk does not bundle it or
+`cua-perception` (AGPL).
 
 ## Development
 

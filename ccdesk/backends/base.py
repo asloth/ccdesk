@@ -192,6 +192,11 @@ class Backend:
     def activate_window(self, window: Window) -> None:
         self._unsupported("activate_window")
 
+    def focus_keyboard(self, window: Window) -> None:
+        """Send later keys to this window. Only an own-pointer backend has a keyboard of its own
+        to point; everywhere else that is activation."""
+        self.activate_window(window)
+
     def move_window(self, window: Window, x: int, y: int) -> None:
         self._unsupported("moving windows")
 

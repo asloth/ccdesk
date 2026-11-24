@@ -89,8 +89,11 @@ class OwnPointerBackend(X11Backend):
     # -- focus ------------------------------------------------------------------
 
     def activate_window(self, window: Window) -> None:
-        """Give the agent keyboard this window. The window manager is only asked to raise or map
-        it when it is not on screen (minimized, or on another desktop): that does move the user's focus."""
+        """Nothing is sent for a window on show: the agent's keyboard focus moves only when a key
+        needs it (focus_keyboard), because some window managers (xfwm4) answer XISetFocus by making
+        the window active and raising it over the user's. A window that is not on screen
+        (minimized, or on another desktop) is shown with the normal activation, which does move the
+        user's focus."""
         shown = self.window_on_show(window.id)
         other_desktop = (window.desktop is not None and window.desktop >= 0
                          and self.current_desktop() not in (None, window.desktop))
@@ -99,6 +102,10 @@ class OwnPointerBackend(X11Backend):
                 super().activate_window(window)
             self._note = ("the window was not on screen (minimized or on another desktop), so it was shown "
                           "with the normal activation; that moved your keyboard focus once")
+            self.mpx.focus(int(window.id, 16))
+
+    def focus_keyboard(self, window: Window) -> None:
+        """Point the agent's keyboard at this window (XISetFocus on its master keyboard)."""
         self.mpx.focus(int(window.id, 16))
 
     def active_window(self) -> str | None:

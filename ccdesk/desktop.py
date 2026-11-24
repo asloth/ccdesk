@@ -59,6 +59,13 @@ BATCH_TOOLS = ("click_element", "set_value", "type_text", "press_key", "click", 
                "activate_window", "wait")
 # What an agent (--agent) may only do once it has chosen its window with activate_window().
 NEEDS_TARGET = frozenset({"click", "drag", "scroll", "type_text", "press_key", "click_element", "set_value"})
+# Text roles type_text can write into through accessibility, with no keyboard focus.
+TYPABLE_ROLES = frozenset({"entry", "text", "document text"})
+# Said when an own-pointer agent's keys needed its keyboard focus moved (see _guard).
+KEY_FOCUS_NOTE = ("to reach {title!r} the keys needed your keyboard focus there (XISetFocus). On some window "
+                  "managers (xfwm4 among them) that makes the window active and raises it over the user's "
+                  "window. For a text field, set_value(ref, text), or type_text right after click_element or "
+                  "set_value on it, writes without keyboard focus")
 MAX_BATCH_STEPS = 20
 MAX_BATCH_WAIT = 5.0  # seconds per wait step: the seat is held meanwhile
 DIFF_CELL = 8  # screen pixels per cell when comparing before/after captures
@@ -174,6 +181,11 @@ class Desktop:
         self.shots_dir = Path(shots_dir) if shots_dir else cache_dir() / "screenshots"
         self._screen: tuple[int, int] | None = None
         self._target: Window | None = None  # the window from the latest activate_window()
+        # The text field of the agent's latest click_element/set_value (ref, node): an own-pointer
+        # agent's type_text writes there through accessibility instead of taking keyboard focus.
+        # at_end: after set_value the text goes on at the end (the caret of a field in a window
+        # without focus can sit anywhere); after a click, where the click put the caret.
+        self._typing_ref: tuple[str, dict, bool] | None = None
         # Pixel comparison when there is no accessibility tree: the receiving window before the
         # current action, and the screen after the latest one (wait_for_change's starting point).
         self.screen_diff = screen_diff
@@ -533,9 +545,7 @@ class Desktop:
         except CcdeskError:
             if wid is None:
                 raise
-            wid = None
-            shot, factor = self._scaled_capture(reg, TREE_SHOT_MAX_TOKENS)
-            shot["warning"] = self._covered_warning()
+            raise CcdeskError(self._covered_refusal(window)) from None
         if wid is not None:
             shot["covered"] = True
         shot["scale"] = round(factor, 3) if factor < 1 else 1.0
@@ -593,9 +603,77 @@ class Desktop:
         """An agent works in the window it chose: without one its input would go to whatever the
         user has in front. Not overridden by force."""
         if self.agent and self._target is None:
+            if self.backend.own_pointer:
+                raise TargetRequiredError(
+                    "this agent has no window yet. Call list_windows(), then ui_tree(window=<its title>) and "
+                    "act on its refs with click_element() or set_value(): that makes it your window without "
+                    "touching the user's focus or window stacking. For a click, drag or scroll at coordinates, "
+                    "call activate_window() on it first: it only records the window. Do not click something "
+                    "just to pick the window: any pointer click, and a type_text or press_key that needs your "
+                    "keyboard focus, may make some window managers (xfwm4) activate and raise the window over "
+                    "the user's (force=true does not change this)")
             raise TargetRequiredError("this agent has no window yet, so its input would reach the user's: call "
                                       "list_windows(), then activate_window() on your own window first "
                                       "(force=true does not change this)")
+
+    def _listed(self, title: str | None) -> Window | None:
+        """The one listed window an accessibility title names: the same title, else the one title
+        that contains it or is contained in it (the window manager and the accessibility bus do not
+        always spell titles the same). None when no window or several match."""
+        if not title:
+            return None
+        try:
+            windows = self.backend.list_windows()
+        except CcdeskError:
+            return None
+        exact = [w for w in windows if w.title == title]
+        if exact:
+            return exact[0] if len(exact) == 1 else None
+        want = title.casefold().strip()
+        loose = [w for w in windows if w.title and (want in w.title.casefold() or w.title.casefold().strip() in want)]
+        return loose[0] if len(loose) == 1 else None
+
+    def _tree_target(self) -> Window | None:
+        """The listed window the latest ui_tree() read, when its title names exactly one."""
+        return self._listed(self.a11y.tree_window())
+
+    def _tree_is_target(self) -> bool:
+        """Whether the latest ui_tree() (or the window of the ref acted on) is the agent's window."""
+        if self._target is None:
+            return False
+        title = self.a11y.tree_window()
+        if title == self._target.title:
+            return True
+        window = self._listed(title)
+        return window is not None and window.id == self._target.id
+
+    def _adopt_ref_window(self, ref: str) -> None:
+        """An element action works in the window its ref was read from. That window becomes the one
+        the action's changes are read from (as if ui_tree() had read it last). For an agent with no
+        window yet, it becomes its window. For an own-pointer agent (--own-pointer or --input
+        cua-driver) it also replaces an earlier window: that only records it, nothing is sent to the
+        window manager. Other agents keep their window (activate_window() activates for real)."""
+        title = self.a11y.ref_window(ref)
+        if title and title != self.a11y.tree_window():
+            try:
+                self.a11y.use_window(title)
+            except CcdeskError:
+                pass  # the window is gone: resolve() says so for the ref itself
+        if not self.agent:
+            return
+        window = self._listed(title or self.a11y.tree_window())
+        if self._target is None:
+            if window is None:
+                self._need_target()
+            self._target = window
+            return
+        if window is None or window.id == self._target.id or not self.backend.own_pointer:
+            return
+        before, self._target = self._target, window
+        self._typing_ref = None
+        self._note = " ".join(filter(None, [self._note, (
+            f"your window is now {window.title!r} ({window.id}), the window of this element; it was "
+            f"{before.title!r}. Nothing was sent to the window manager")]))
 
     def _hidden(self, window: Window) -> bool:
         """Whether the window is minimized or on another desktop, which is when showing it takes
@@ -637,26 +715,45 @@ class Desktop:
             raise PolicyError(f"{who}the window from activate_window() ({target.title!r}, {target.id}) is "
                               f"gone; call list_windows() and activate_window() again, or pass force=true")
         hidden = None  # whether the agent's window is off screen, once it matters
+        own = self.backend.own_pointer and bool(self.agent)
+        # An own-pointer agent's keys go where its keyboard focus is, which activate_window() leaves
+        # alone: they need it moved when it is in no window or in another one.
+        keys = (own and point is None and target is not None and target.id in windows
+                and (window is None or not self._belongs_to_target(window)))
+        if keys and force:
+            self._focus_keys(windows[target.id])
+            window = self._receiver(windows, point)
         if self.agent and target and not force and target.id in windows:
             away = window is not None and not self._belongs_to_target(window)
-            if away or (self.backend.own_pointer and point is not None):
+            if away or keys or (self.backend.own_pointer and point is not None):
                 hidden = self._hidden(windows[target.id])
             if hidden and self.backend.own_pointer:
+                if getattr(self.backend, "background_input", False):
+                    raise TargetHiddenError("Your target is hidden or on another desktop. Choose an on-screen "
+                                            "window or use a private screen; no input was sent.")
                 # Showing it goes through the window manager, which takes the user's keyboard focus
                 # and can switch their desktop: only activate_window() does that, on purpose.
                 raise TargetHiddenError(
                     f"your window from activate_window() ({target.title!r}, {target.id}) is minimized or on "
                     f"another desktop, so nothing was sent. activate_window({target.id!r}) would bring it onto "
                     f"the user's screen and take their keyboard focus once: do that only if the task needs it")
-            if away:
+            if keys:
+                self._focus_keys(windows[target.id])
+                window = self._receiver(windows, point)
+            elif away and not own:
                 # Another agent on this screen moved focus or raised its window over ours. We hold the
-                # seat lock, so take our window back and check again. With an own pointer that is only
-                # this agent's keyboard (the window is on show here); without one it is the shared focus.
+                # seat lock, so take our window back and check again. (An own-pointer agent's pointer
+                # input needs no focus: a window over its spot is reported as covered below.)
                 self.backend.activate_window(windows[target.id])
                 note = self.backend.take_note()
                 if note:
                     self._note = note
                 window = self._receiver(windows, point)
+        if (self.agent and force and point is not None and target and window is not None
+                and target.id in windows and not self._belongs_to_target(window)):
+            # An agent's force skips its other checks, never this one: the input would land in a
+            # window that is not its own, the user's for all it knows.
+            raise TargetCoveredError(self._covered(point, windows[target.id], window, forced=True))
         if target and not force and window is not None and not self._belongs_to_target(window):
             what = f"the pointer at {point[0]},{point[1]} is over" if point else "keyboard focus is on"
             if target.id not in windows:
@@ -664,12 +761,7 @@ class Desktop:
                                   f"activate_window() ({target.title!r}, {target.id}) is gone; call "
                                   f"list_windows() and activate_window() again, or pass force=true")
             if self.agent and point is not None and hidden is False:
-                raise TargetCoveredError(
-                    f"the point {point[0]},{point[1]} of your window {target.title!r} ({target.id}) is covered "
-                    f"by {window.title!r} ({window.id}), which belongs to the user or another agent. Do not "
-                    f"raise your window: use click_element() (it reaches a covered window when the app has an "
-                    f"accessibility tree) or the keyboard, or wait() and retry; force=true sends the click "
-                    f"anyway")
+                raise TargetCoveredError(self._covered(point, windows[target.id], window))
             raise PolicyError(f"{what} {window.title!r} ({window.id}), not {target.title!r} from "
                               f"activate_window(): the user may have switched windows. Call "
                               f"activate_window({target.id!r}) again, or pass force=true to send it anyway")
@@ -701,6 +793,30 @@ class Desktop:
                 wid, grid = None, self._snapshot(region)
             self._pending = (region, grid, wid) if grid is not None else None
         return window
+
+    def _covered(self, point: tuple[int, int], target: Window, window: Window, forced: bool = False) -> str:
+        """Why an agent's pointer input at `point` was not sent: `window` is what is under the point.
+        Inside the agent's window that means covered; outside it, the point is simply elsewhere."""
+        x, y = point
+        own = self.backend.own_pointer
+        pick = (f"click_element() or set_value() on a ref from ui_tree(window={window.title!r}) works there "
+                f"through accessibility" + (" and makes it your window; nothing is sent to the window manager"
+                                            if own else "; activate_window() on it first takes the user's focus"))
+        never = " force=true never sends input into a window that is not yours." if forced else ""
+        if target.x <= x < target.x + target.width and target.y <= y < target.y + target.height:
+            return (f"the point {x},{y} of your window {target.title!r} ({target.id}) is covered by "
+                    f"{window.title!r} ({window.id}), which belongs to the user or another agent, so nothing "
+                    f"was sent. Do not raise your window: act on it with click_element() or set_value() on refs "
+                    f"from ui_tree(window={target.title!r}), which reach a covered window through "
+                    f"accessibility, or wait() and retry.{never}")
+        return (f"the point {x},{y} is outside your window {target.title!r} ({target.id}): it is over "
+                f"{window.title!r} ({window.id}), so nothing was sent. To act in {window.title!r}, "
+                f"{pick}.{never}")
+
+    def _focus_keys(self, window: Window) -> None:
+        self.backend.focus_keyboard(window)
+        if not getattr(self.backend, "background_input", False):  # cua-driver addresses keys: nothing moved
+            self._note = " ".join(filter(None, [self._note, KEY_FOCUS_NOTE.format(title=window.title)]))
 
     def _in_trees_window(self, window: Window | None) -> bool:
         """Whether an action on this window is covered by the latest ui_tree(). The titles come from
@@ -932,10 +1048,19 @@ class Desktop:
     def screenshot(self, region=None, path: str | None = None, scale: float = 1.0, window: str | None = None) -> dict:
         def do():
             self._ready()
-            if region and window:
-                raise ValidationError("pass region or window, not both")
             shot_of, reg, unchecked = self._shown_window_region(window) if window else (None, None, False)
-            reg = reg or parse_region(region, self.screen_size())
+            if window and region:
+                local = parse_region(region, (shot_of.width, shot_of.height))
+                if local:
+                    x, y = shot_of.x + local.x, shot_of.y + local.y
+                    x0, y0 = max(x, reg.x), max(y, reg.y)
+                    x1 = min(x + local.width, reg.x + reg.width)
+                    y1 = min(y + local.height, reg.y + reg.height)
+                    if x1 <= x0 or y1 <= y0:
+                        raise ValidationError("the requested window region has no visible area on this screen")
+                    reg = Region(x0, y0, x1 - x0, y1 - y0)
+            else:
+                reg = reg or parse_region(region, self.screen_size())
             factor = check_scale(scale)
             out = self._shot_path(path)
             own, warning = self._own_pixels(shot_of), None
@@ -943,8 +1068,9 @@ class Desktop:
                 try:
                     self._capture(out, reg, own)
                 except (CcdeskError, OSError, ValueError):
-                    own, warning = None, self._covered_warning()
-            if own is None:
+                    # A crop of the screen would show the windows on top, not this one.
+                    raise CcdeskError(self._covered_refusal(shot_of)) from None
+            else:
                 self.backend.screenshot(str(out), reg)
             if not out.exists():
                 raise CcdeskError(f"screenshot tool reported success but {out} was not written")
@@ -983,9 +1109,12 @@ class Desktop:
 
         return self._act("screenshot", {"region": region, "path": path, "scale": scale, "window": window}, do)
 
-    def _covered_warning(self) -> str:
-        return (f"this window is covered and its own pixels could not be read ({self.backend.window_note}): "
-                f"the picture is a crop of the screen and shows what is on top of it")
+    def _covered_refusal(self, window: Window) -> str:
+        return (f"{window.title!r} is covered by other windows and its own pixels could not be read "
+                f"({self.backend.window_note}), so no picture was taken: a crop of the screen would show "
+                f"the windows on top of it. Read it with ui_tree(window=...) if it publishes a tree; "
+                f"otherwise ask the user to uncover it, or bring it to the front with activate_window() "
+                f"if the task allows covering the user's window")
 
     def _tree_hint(self, reg: Region | None, factor: float, tokens: int) -> str | None:
         """A whole screen at full scale before any tree was read: the first shot is where the
@@ -1041,6 +1170,7 @@ class Desktop:
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             window = self._guard(force, (px, py), expect_title, layout=True, shot=shot)
+            self._typing_ref = None  # the click may have moved the app's focus to another field
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
             return self._changes(self._from(self._with_window(
@@ -1057,7 +1187,11 @@ class Desktop:
             self._yielded = self._yield_to_user()
             self.backend.move(px, py)
             self._show_cursor(px, py)
-            return self._from(self._with_window({"moved": {"x": px, "y": py}}, None), shot)
+            result = self._from(self._with_window({"moved": {"x": px, "y": py}}, None), shot)
+            note = self.backend.take_note()
+            if note:
+                result["note"] = note
+            return result
 
         return self._act("move", {"x": x, "y": y} | ({"shot": shot} if shot is not None else {}), do)
 
@@ -1069,6 +1203,7 @@ class Desktop:
             x1, y1 = self._screen_point(shot, to_x, to_y)
             ms = check_int("duration_ms", duration_ms, 0, 10_000)
             window = self._guard(force, (x0, y0), layout=True, shot=shot)
+            self._typing_ref = None
             self.backend.drag(x0, y0, x1, y1, ms)
             self._show_cursor(x1, y1)
             return self._changes(self._from(self._with_window(
@@ -1114,6 +1249,10 @@ class Desktop:
             if self.a11y.on_secret_field():
                 raise PolicyError("the focused field is a password field: ccdesk does not type into those. "
                                   "Ask the user to type it themselves")
+            if not enter and expect_title is None and body:
+                written = self._insert_typed(body, bool(replace), force)
+                if written is not None:
+                    return written
             window = self._guard(force, expect_title=expect_title)
             if replace:
                 self.backend.press_key(SELECT_ALL)
@@ -1143,6 +1282,7 @@ class Desktop:
             self.policy.check_key(combo, bool(confirm))
             self._ready()
             window = self._guard(force, expect_title=expect_title)
+            self._typing_ref = None  # Tab, Return or a shortcut can move the app's focus
             self.backend.press_key(combo)
             if moves_focus(combo):
                 self.backend.sleep(FOCUS_SETTLE)  # so a type_text right after lands in the new place
@@ -1186,6 +1326,7 @@ class Desktop:
             self._yielded = self._yield_to_user()
             self.backend.activate_window(window)
             self._target = window  # input tools now refuse to go anywhere else (see _guard)
+            self._typing_ref = None
             # Raising a window restacks and refocuses: any screenshot taken before this is stale.
             # (An agent's picture only depends on its own window, which this does not move.)
             if not self.agent:
@@ -1194,6 +1335,12 @@ class Desktop:
                     self._shot_layouts.clear()
             result = self._with_window({"activated": window.to_dict()}, None)
             note = self.backend.take_note()
+            if (self.agent and self.backend.own_pointer and not note
+                    and not getattr(self.backend, "background_input", False)):
+                note = ("recorded as your window; nothing was focused or raised. click_element and "
+                        "set_value work in it as it is. type_text and press_key move your keyboard focus "
+                        "there first, which on some window managers activates and raises it over the user's "
+                        "window: prefer set_value for text")
             if note:
                 result["note"] = note
             return result
@@ -1274,8 +1421,12 @@ class Desktop:
         return self._act("list_monitors", {}, do)
 
     def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True, ref: str | None = None) -> dict:
         def do():
+            if ref is not None:
+                result = self.a11y.detail(ref)
+                result["approx_tokens"] = len(result["tree"]) // 4
+                return result
             limit = check_int("max_nodes", max_nodes, 1, 2000)
             if window is None:
                 self._need_target()  # no window named: it would read the one the user has in front
@@ -1312,8 +1463,9 @@ class Desktop:
                        if blank_page else "the tree is nearly empty")
                 try:
                     result["fallback_shot"] = self._tree_fallback_shot(result.get("window"))
-                except (CcdeskError, OSError, ValueError):
-                    pass  # keep the (thin) tree; the model can still call screenshot()
+                except (CcdeskError, OSError, ValueError) as exc:
+                    # Keep the (thin) tree, and say why there is no picture of it.
+                    result["note"] = " ".join(filter(None, [result.get("note"), f"{why}; no picture: {exc}"]))
                 else:
                     self.a11y.forget()  # nothing to compare: actions report pixel changes instead
                     result["note"] = " ".join(filter(None, [result.get("note"),
@@ -1321,15 +1473,17 @@ class Desktop:
             return result
 
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
-                "shot_fallback": shot_fallback}
+                "shot_fallback": shot_fallback, "ref": ref}
         return self._act("ui_tree", args, do,
-                         loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
+                         loggable=lambda r: {k: v for k, v in r.items() if k not in {"tree", "name", "value", "text"}})
 
     def _own_window_title(self) -> str | None:
         """With an own pointer, the title of the window the agent's keyboard is in. The helper's
         default is the frame AT-SPI marks active, which follows the user's focus, not the agent's."""
         if not self.backend.own_pointer:
             return None
+        if self.agent and self._target is not None:
+            return self._target.title
         try:
             wid = self.backend.active_window()
             if not wid:
@@ -1362,21 +1516,31 @@ class Desktop:
                       expect_title: str | None = None) -> dict:
         def do():
             self._ready()
-            self._need_target()
+            self._adopt_ref_window(str(ref).strip())
             btn = parse_button(button)
             n = check_int("count", count, 1, 10)
             node = self.a11y.resolve(ref)
             label = f'{node["role"]} {node["name"]!r}'
-            if not node.get("showing") or not node.get("box"):
-                raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            node = self._reveal_element(ref, node, force, require_box=True)
             # expect_title takes the pointer path: only _guard checks the window that receives the click.
             if (btn == 1 and n == 1 and expect_title is None and node["role"] in NATIVE_ROLES
                     and self._may_skip_pointer(force)):
                 self._before_native()
                 action = self.a11y.activate(str(ref).strip())
                 if action:
+                    self._typing_ref = None
                     self._cursor_to_node(node)
                     return self._changes(self._in_tree_window({"activated": action, "element": label}))
+                # No action (LibreOffice's sheet tabs, some page tabs): a click on it selects it in
+                # its parent, which AT-SPI Selection does with no pointer. Pointer only without one.
+                picked = self.a11y.select(str(ref).strip()).get("selected")
+                if picked:
+                    self._typing_ref = None
+                    self._cursor_to_node(node)
+                    return self._changes(self._in_tree_window({"selected": label, "via": "accessibility"}))
+                if picked is False:
+                    raise CcdeskError(f"{ref} ({label}) did not become selected through accessibility. Check "
+                                      f"with ui_tree(); don't repeat it blindly")
             x, y, w, h = node["box"]
             px, py = self._point(x + w // 2, y + h // 2)
             # An agent's force never carries a click into a window that is not its own: with a tree
@@ -1386,19 +1550,92 @@ class Desktop:
             window = self._guard(forced, (px, py), expect_title)
             self.backend.click(px, py, btn, n)
             self._show_cursor(px, py)
+            self._remember_typing(str(ref).strip(), node, at_end=False)
             return self._changes(self._with_window({"clicked": {"x": px, "y": py}, "element": label,
                                                     "button": button, "count": n}, window))
 
         return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force,
                                              "expect_title": expect_title}, do)
 
+    def _reveal_element(self, ref: str, node: dict, force: bool, require_box: bool = False) -> dict:
+        attempted = "offscreen" in node.get("states", ())
+        if attempted:
+            if not self._may_skip_pointer(force):
+                raise PolicyError(self._other_window(ref))
+            node = self.a11y.scroll_into_view(ref)
+        if not node.get("showing") or (require_box and not node.get("box")):
+            why = "the app did not scroll it into view through accessibility. It " if attempted else ""
+            raise CcdeskError(f"{ref} ({node['role']} {node['name']!r}): {why}"
+                              "is not on screen; scroll it into view, then call ui_tree() again")
+        return node
+
     def _may_skip_pointer(self, force: bool) -> bool:
         """A native action reaches its element wherever the pointer and focus are, so _guard has
         nothing to check, unless the tree is of another window than activate_window() chose. For an
         agent, force does not skip it: a tree of a window that is not its own never does."""
         if self.agent:
-            return self._target is not None and self.a11y.tree_window() == self._target.title
-        return force or self._target is None or self.a11y.tree_window() == self._target.title
+            return self._tree_is_target()
+        return force or self._target is None or self._tree_is_target()
+
+    def _other_window(self, ref: str) -> str:
+        """The refusal for an element in another window than this agent's: what to call instead."""
+        title = self.a11y.ref_window(ref) or self.a11y.tree_window()
+        window = self._listed(title)
+        if window is None:
+            return (f"{ref} is in {title!r}, which is not one listed window (none or several match that "
+                    f"title), and your window is {self._target.title!r}. Call list_windows(), then "
+                    f"activate_window(<its id>) and ui_tree() on it")
+        if not self.agent:
+            return (f"{ref} is in {window.title!r}, not {self._target.title!r} from activate_window(); call "
+                    f"activate_window({window.id!r}) first, or pass force=true")
+        return (f"{ref} is in {window.title!r} ({window.id}), not your window {self._target.title!r}. Call "
+                f"activate_window({window.id!r}) first: that activates it and takes the user's focus, so do it "
+                f"only if the task needs that window (force=true does not change this)")
+
+    def _remember_typing(self, ref: str, node: dict, at_end: bool) -> None:
+        """Where an own-pointer agent's next type_text goes without keyboard focus, if anywhere."""
+        mine = self._tree_is_target()
+        self._typing_ref = (ref, node, at_end) if mine and node.get("role") in TYPABLE_ROLES else None
+
+    def _insert_typed(self, body: str, replace: bool, force: bool) -> dict | None:
+        """type_text for an own-pointer agent whose keyboard is not in its window: write into the
+        field of its latest click_element/set_value through accessibility, so no focus moves.
+        None: not possible here, so type with the keyboard."""
+        if not (self.agent and self.backend.own_pointer and self._typing_ref and self._target):
+            return None
+        try:
+            wid = self.backend.active_window()
+        except CcdeskError:
+            wid = None
+        if wid == self._target.id or not self._tree_is_target():
+            return None  # the keyboard already reaches the window, or the refs are of another one
+        ref, node, at_end = self._typing_ref
+        label = f'{node["role"]} {node["name"]!r}'
+        self._need_target()
+        self._before_native()
+        try:
+            if replace:
+                answer = self.a11y.set_value(ref, body)
+                done, changed = answer.get("verified"), not answer.get("refused")
+            else:
+                answer = self.a11y.insert(ref, body, at_end)
+                done, changed = answer.get("inserted"), answer.get("changed")
+        except CcdeskError as exc:
+            if "unknown element" in str(exc) or "changed since" in str(exc):
+                self._typing_ref = None
+                return None
+            raise
+        if not done:
+            if changed:
+                raise CcdeskError(f"{ref} ({label}) changed, but not to the text sent: the app filtered or "
+                                  f"reformatted it. Check the field; don't repeat this blindly")
+            return None
+        self._cursor_to_node(node)
+        result = {"typed_chars": len(body), "into": label, "via": "accessibility",
+                  "note": "written into the field through accessibility: your keyboard focus did not move"}
+        if replace:
+            result["replaced"] = True
+        return self._changes(self._in_tree_window(result))
 
     def _before_native(self) -> None:
         self._yielded = self._yield_to_user()
@@ -1411,6 +1648,9 @@ class Desktop:
         if self._yielded:
             result["yielded_ms"] = self._yielded
         result["window"] = {"title": self.a11y.tree_window()}
+        if self._note:  # e.g. that this element's window is now the agent's
+            result["note"] = " ".join(filter(None, [result.get("note"), self._note]))
+            self._note = None
         return result
 
     def set_value(self, ref: str, text: str, force: bool = False) -> dict:
@@ -1420,19 +1660,17 @@ class Desktop:
                 raise ValidationError("text must be a string")
             if len(text) > MAX_TEXT:
                 raise ValidationError(f"text is longer than {MAX_TEXT} characters")
-            self._need_target()
             key = str(ref).strip()
+            self._adopt_ref_window(key)
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
-            if not node.get("showing"):
-                raise CcdeskError(f"{key} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            node = self._reveal_element(key, node, force)
             if not self._may_skip_pointer(force):
-                raise PolicyError(f"{key} is in {self.a11y.tree_window()!r}, not {self._target.title!r} from "
-                                  f"activate_window(); call ui_tree() on that window"
-                                  + ("" if self.agent else ", or pass force=true"))
+                raise PolicyError(self._other_window(key))
             self._before_native()
             answer = self.a11y.set_value(key, text)
             self._cursor_to_node(node)
+            self._remember_typing(key, node, at_end=True)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
                 # The write was ignored, not changed: web pages (Firefox, Chromium) take the call
                 # and keep the old value. Type it the way a person would instead.
@@ -1554,9 +1792,13 @@ class Desktop:
 
         def do():
             if self.agent and self._target is None:
-                for name, _ in checked:  # before any step is sent, not halfway
+                for name, args in checked:  # before any step is sent, not halfway
                     if name == "activate_window":
                         break
+                    if (name in ("click_element", "set_value")
+                            and self._listed(self.a11y.ref_window(str(args.get("ref", "")).strip())
+                                             or self.a11y.tree_window()) is not None):
+                        break  # it makes the window of its ref this agent's own
                     if name in NEEDS_TARGET:
                         self._need_target()
             done: list[dict] = []

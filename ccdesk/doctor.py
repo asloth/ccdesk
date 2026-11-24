@@ -24,7 +24,9 @@ def _mcp_version() -> str | None:
 
 
 def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=None,
-                 headless=None, cursor=None) -> dict:
+                 headless=None, cursor=None, cua_driver: str | None = None) -> dict:
+    from ccdesk.backends.cua_driver import report as cua_report
+
     env = backend.env
     problem = backend.available()
     tools = backend.tools_report()
@@ -43,6 +45,9 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         "monitors": [],
         "scale": {},
         "cua_driver": backend.which("cua-driver"),
+        "cua_driver_input": ({"binary": backend.binary, "version": backend.driver.version,
+                              **backend.status} if getattr(backend, "background_input", False)
+                             else cua_report(backend, cua_driver)),
         "mcp": _mcp_version(),
         "policy": {"read_only": policy.read_only, "allow_launch": policy.allow_launch,
                    "confirm_keys": [str(c) for c in policy.confirm_keys], "yield_ms": policy.yield_ms},
@@ -81,7 +86,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
     for cap in report["missing"]:
         names = " or ".join(backend.TOOLS[cap])
         warnings.append(f"no tool for {cap}: install {names}")
-    if backend.name == "wayland":
+    if backend.name == "wayland" and not getattr(backend, "background_input", False):
         warnings.append(
             "Wayland: outside sway and Hyprland, the keyboard and any compositor without a virtual "
             "pointer need ydotoold running with /dev/uinput access; "
@@ -90,10 +95,11 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
         if env.get("DISPLAY"):
             warnings.append("XWayland is available: set CCDESK_BACKEND=x11 to drive X11 apps only")
     elif backend.name == "kde":
-        warnings.append(
-            "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
-            "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
-        )
+        if not getattr(backend, "background_input", False):
+            warnings.append(
+                "KDE Plasma: input goes through ydotool (/dev/uinput), moved in relative steps and "
+                "corrected against the position KWin reports; keys and text assume a US layout and ASCII"
+            )
         if not tools.get("windows", {}).get("kdotool"):
             warnings.append("window listing and control on KDE needs kdotool 0.3 or newer (AUR: kdotool, or "
                             "`cargo install kdotool`). Without it clicks and drags are refused, because "
@@ -118,7 +124,7 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
             warnings.append("wmctrl not found: window listing falls back to xdotool + xprop")
         else:
             warnings.append("wmctrl not found: window listing falls back to xdotool (no desktop numbers)")
-    if backend.own_pointer and not backend.click_guard.active():
+    if backend.own_pointer and not getattr(backend, "background_input", False) and not backend.click_guard.active():
         warnings.append("own pointer: your window manager is not bspwm, and a click by the agent may move "
                         "your keyboard focus (the window manager's click-to-focus). Only bspwm is handled")
     report["a11y"] = _a11y_report(a11y, warnings, private=bool(headless and headless.private_bus),
@@ -129,10 +135,6 @@ def build_report(backend: Backend, policy: Policy, audit_path: str | Path, a11y=
                         "and run `ccdesk firefox --off`")
     if report["mcp"] is None:
         warnings.append("python package 'mcp' is not installed: `ccdesk mcp` will not start")
-    if report["cua_driver"]:
-        warnings.append(
-            f"cua-driver found at {report['cua_driver']}; ccdesk works independently and does not use it"
-        )
     return report
 
 
@@ -157,6 +159,8 @@ def housekeeping(backend: Backend) -> dict:
 def _own_pointer(backend: Backend) -> dict:
     """The agent's own pointer and keyboard (`ccdesk mcp --own-pointer`): their device ids when
     in use, else whether it could be used here and, if not, why."""
+    if getattr(backend, "background_input", False):
+        return {"enabled": False, "available": False, "reason": "using cua-driver background input"}
     if backend.own_pointer:
         return {**backend.mpx.info(), "bspwm_click_guard": backend.click_guard.active()}
     reason = unavailable_reason(backend.name, backend.which)
@@ -223,7 +227,11 @@ def format_report(report: dict) -> str:
         f"ui_tree:      {', '.join(report['a11y']['apps']) or 'no apps' if report['a11y']['ready'] else 'unavailable'}",
         "a11y bus:     " + {True: "on", False: "off (org.a11y.Status IsEnabled=false)",
                             None: "unknown"}[report["a11y"].get("bus_enabled")],
-        f"cua-driver:   {report['cua_driver'] or 'not found'}",
+        f"cua-driver:   {report.get('cua_driver_input', {}).get('binary') or report['cua_driver'] or 'not found'}",
+        "cua version:  " + (report.get("cua_driver_input", {}).get("version") or "unknown"),
+        "cua input:    " + {True: "available (target dependent)", False: "unavailable", None: "unknown"}[
+            report.get("cua_driver_input", {}).get("available", False)]
+        + "; " + (report.get("cua_driver_input", {}).get("reason") or "unknown"),
         "firefox:      " + (("running, automation " + ("on" if report["firefox"]["automation"] else "off"))
                             if report["firefox"]["running"] else "not running")
         + ("; Claude's own Firefox is running" if report["firefox"].get("agent_running") else ""),

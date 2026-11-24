@@ -324,7 +324,7 @@ class XQuery:
             return found
         return self._call(go)
 
-    def window_at(self, px: int, py: int) -> int:
+    def window_at(self, px: int, py: int, *, ignore_titles: tuple[str, ...] = ()) -> int:
         """The client window at a screen point, without moving any pointer: the topmost viewable
         InputOutput child of the root that holds the point, resolved to the window with WM_STATE.
         The root itself when nothing does. The agents' drawn cursors are skipped. Window shapes
@@ -338,7 +338,8 @@ class XQuery:
                 if not (a.x <= px < a.x + a.width + span and a.y <= py < a.y + a.height + span):
                     continue
                 client = self._client(child)
-                if self._title(client).startswith(TITLE_PREFIX) or self._title(child).startswith(TITLE_PREFIX):
+                prefixes = (TITLE_PREFIX, *ignore_titles)
+                if self._title(client).startswith(prefixes) or self._title(child).startswith(prefixes):
                     continue
                 return client
             return self._root

@@ -11,13 +11,14 @@ gi.require_version("Gtk", "3.0")
 from gi.repository import GLib, Gtk  # noqa: E402
 
 state_path = sys.argv[1]
-state = {"ready": False, "clicks": 0, "agree": False, "entry": "", "level": 50}
+state = {"ready": False, "clicks": 0, "agree": False, "entry": "", "level": 50, "priority": "Medium"}
 
 
 def save(*_):
     state["entry"] = entry.get_text()
     state["agree"] = check.get_active()
     state["level"] = round(scale.get_value())
+    state["priority"] = combo.get_active_text()
     tmp = state_path + ".tmp"
     with open(tmp, "w") as fh:
         json.dump(state, fh)
@@ -52,7 +53,13 @@ scale = Gtk.Scale.new_with_range(Gtk.Orientation.HORIZONTAL, 0, 100, 1)  # takes
 scale.set_value(50)
 scale.get_accessible().set_name("Level")
 scale.connect("value-changed", save)
-for w in (button, label, entry, check, scale):
+combo = Gtk.ComboBoxText()
+for option in ("Low", "Medium", "High"):
+    combo.append_text(option)
+combo.set_active(1)
+combo.get_accessible().set_name("Priority")
+combo.connect("changed", save)
+for w in (button, label, entry, check, scale, combo):
     box.pack_start(w, False, False, 0)
 win.add(box)
 win.show_all()
