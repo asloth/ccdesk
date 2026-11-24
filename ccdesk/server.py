@@ -172,8 +172,8 @@ def build_server(desktop: Desktop) -> MCPServer:
         """Capture the screen (or region "x,y,width,height") and show it in this answer, with path,
         width, height and approx_tokens (what it costs). scale=0.5 halves each side for ~4x fewer
         tokens. Its `shot` id lets click, move, scroll and drag take pixels of this picture. path: only save it there.
-        window: capture only that window, by id or title. It is a crop of the screen, so anything
-        covering the window shows too (an --agent on X11 gets its window's own content, covered: true).
+        window: capture only that window, by id or title. With window, region is relative to its
+        top-left. It is a crop of the screen, so anything covering the window shows too (an --agent on X11 gets its window's own content, covered: true).
         To see what an action changed, pass show_change=true to the action instead."""
         result = desktop.screenshot(region=region, path=path, scale=scale, window=window)
         return result if path else with_picture(result)
@@ -266,15 +266,17 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def ui_tree(window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
-        """The on-screen elements of a window as text, from the accessibility tree: one line per
+                max_nodes: int = 300, shot_fallback: bool = True, ref: str | None = None) -> dict:
+        """The visible elements of a window as text, from the accessibility tree: one line per
         button, field, checkbox, link, heading or text, with its value, states and screen box.
         Usually 5-20x cheaper than a screenshot. window: title substring (default: the active
         window). page=true: only the web page in a browser. query: only elements containing it.
+        Scrolled-out elements are flagged offscreen. Cut names end in an ellipsis.
+        ui_tree(ref="e12") reads its full name, value and Text contents, up to 10000 characters each.
         Act on a line with click_element(ref). With no useful tree (window not on the accessibility
         bus, or almost empty) it attaches a small picture of the window; shot_fallback=false: never."""
         return with_tree_shot(desktop.ui_tree(window=window, query=query, page=page, max_nodes=max_nodes,
-                                              shot_fallback=shot_fallback))
+                                              shot_fallback=shot_fallback, ref=ref))
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
@@ -283,14 +285,16 @@ def build_server(desktop: Desktop) -> MCPServer:
         its own window. A single left click on a button, checkbox, link or menu item runs its
         accessibility action when it has one, without moving the pointer; an item with no action (a
         sheet tab, a page tab) is selected in its list the same way; otherwise it clicks the centre.
-        Fails if the element changed or left the screen; call ui_tree() again then. expect_title: as
-        in click, and always a real click."""
+        Offscreen refs are first scrolled into view through accessibility, without input or focus.
+        Fails if the element changed or the app cannot reveal it; call ui_tree() again then.
+        expect_title: as in click, and always a real click."""
         return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def set_value(ref: str, text: str, force: bool = False) -> dict:
         """Replace the value of a field, slider or spin button from ui_tree() in one call, and read it
-        back: an answer means the app holds it. Refuses password fields. If the app ignores the write
+        back: an answer means the app holds it. Refuses password fields. Offscreen refs first scroll
+        into view through accessibility without input or focus changes. If the app ignores the write
         (web pages do), it clicks the field, selects all and types the text instead (typed: true)."""
         return desktop.set_value(ref, text, force=force)
 

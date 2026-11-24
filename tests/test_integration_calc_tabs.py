@@ -67,7 +67,10 @@ def test_click_element_selects_a_calc_sheet_tab_without_the_pointer(tmp_path):
 
         def tabs():
             try:
-                tree = desk.ui_tree(window="two.fods", query="")["tree"]
+                # Offscreen controls share the node cap. Search for the tabs instead of
+                # assuming they fit after every menu and toolbar in the default tree.
+                tree = "\n".join(desk.ui_tree(window="two.fods", query=name)["tree"]
+                                 for name in ("Ledger", "Controls"))
             except CcdeskError:
                 return {}
             out = {}

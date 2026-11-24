@@ -10,7 +10,7 @@ import pytest
 
 from ccdesk.backends.cua_driver import CuaDriverBackend
 from ccdesk.desktop import DIFF_CELL, Desktop
-from ccdesk.errors import CcdeskError, StaleFrameError
+from ccdesk.errors import CcdeskError, StaleFrameError, ValidationError
 from ccdesk.parsing import Region
 from ccdesk.safety import AuditLog
 from tests.pngutil import read_png, write_png
@@ -281,3 +281,36 @@ def test_the_picture_of_a_change_never_shows_the_window_next_to_it(make_desk, fa
     fake.effects = [(250, 150, 60, 60, (255, 255, 255))]
     shot = desk.type_text("x", show_change=True)["change_shot"]
     assert shot["origin"]["x"] + shot["width"] <= 310 and shot["origin"]["y"] + shot["height"] <= 210
+
+
+def test_window_region_is_relative_and_shot_keeps_screen_origin(make_desk, fake):
+    from ccdesk.parsing import Region
+    d = make_desk()
+    result = d.screenshot(window="Terminal", region="5,7,80,40")
+    assert ("screenshot", Region(15, 17, 80, 40)) in fake.calls
+    assert result["origin"] == {"x": 15, "y": 17}
+    assert (result["width"], result["height"]) == (80, 40)
+    d.click(3, 4, shot=result["shot"])
+    assert ("click", 18, 21, 1, 1) in fake.calls
+
+
+def test_window_region_must_fit_window(make_desk):
+    d = make_desk()
+    with pytest.raises(ValidationError, match="exceeds"):
+        d.screenshot(window="Terminal", region="290,0,20,10")
+
+
+def test_covered_window_region_reads_own_pixels(agent, own):
+    out = agent.screenshot(window="Mozilla Firefox", region="20,30,100,50")
+    assert out["covered"]
+    assert own.shots[-1] == (FIREFOX, Region(20, 30, 100, 50))
+    assert read_png(out["path"]).pixel(0, 0)[:3] == OWN
+
+
+def test_window_region_uses_unclipped_window_origin(make_desk, fake):
+    fake.windows[1] = replace(fake.windows[1], x=-30, y=-20)
+    out = make_desk().screenshot(window="Terminal", region="40,30,100,50")
+    assert out["origin"] == {"x": 10, "y": 10}
+    assert (out["width"], out["height"]) == (100, 50)
+    with pytest.raises(ValidationError, match="no visible area"):
+        make_desk().screenshot(window="Terminal", region="0,0,10,10")

@@ -162,7 +162,10 @@ A whole form is typically 100-600 tokens; one full-monitor screenshot is ~2,800.
   Chromium and Electron pointer input, for example): use the app's tree, or say the task needs a
   private screen. With `input_emitted=true` it may have arrived: check before repeating it.
 - Independent actions (filling several fields) can go in one turn; check each `changes`.
-- Only what is on screen is listed. Scroll, then call `ui_tree()` again for more.
+- Visible content below the fold is listed as `offscreen`; hidden tabs and panels stay out.
+  `click_element` and `set_value` first scroll those refs through accessibility without input or focus changes.
+- Cut names end in an ellipsis. `ui_tree(ref="e39")` reads the full name, value and Text contents,
+  up to 10000 characters each.
 - Fall back to screenshots when the tree is empty or wrong: apps that do not publish one
   (`doctor().a11y.apps` lists those that do), canvas or image content, games, or when you
   need to see the layout. `doctor()` warnings say how to switch accessibility on.
@@ -208,7 +211,8 @@ ui_tree()  ->  click_element / set_value / type_text  ->  its `changes`  ->  ...
   `list_monitors()` gives each monitor's `x, y, width, height`; pass that as the
   `region` to see one monitor at full resolution.
 - **One window at a time.** `screenshot(window="Title")` captures just that window, cheaper
-  than the full screen. It is a crop, so `activate_window()` first if something may cover it.
+  than the full screen. Add `region="x,y,width,height"` for a crop relative to the window's top-left.
+  An agent on X11 can read its covered window without activating it.
 - **Arranging windows.** `manage_window` moves, resizes, minimizes, maximizes and restores.
   Check `changed` in the result: `false` means its box and visibility stayed the same (already
   like that, or ignored), so screenshot to be sure. These are the user's windows,

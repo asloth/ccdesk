@@ -1048,10 +1048,19 @@ class Desktop:
     def screenshot(self, region=None, path: str | None = None, scale: float = 1.0, window: str | None = None) -> dict:
         def do():
             self._ready()
-            if region and window:
-                raise ValidationError("pass region or window, not both")
             shot_of, reg, unchecked = self._shown_window_region(window) if window else (None, None, False)
-            reg = reg or parse_region(region, self.screen_size())
+            if window and region:
+                local = parse_region(region, (shot_of.width, shot_of.height))
+                if local:
+                    x, y = shot_of.x + local.x, shot_of.y + local.y
+                    x0, y0 = max(x, reg.x), max(y, reg.y)
+                    x1 = min(x + local.width, reg.x + reg.width)
+                    y1 = min(y + local.height, reg.y + reg.height)
+                    if x1 <= x0 or y1 <= y0:
+                        raise ValidationError("the requested window region has no visible area on this screen")
+                    reg = Region(x0, y0, x1 - x0, y1 - y0)
+            else:
+                reg = reg or parse_region(region, self.screen_size())
             factor = check_scale(scale)
             out = self._shot_path(path)
             own, warning = self._own_pixels(shot_of), None
@@ -1412,8 +1421,12 @@ class Desktop:
         return self._act("list_monitors", {}, do)
 
     def ui_tree(self, window: str | None = None, query: str | None = None, page: bool = False,
-                max_nodes: int = 300, shot_fallback: bool = True) -> dict:
+                max_nodes: int = 300, shot_fallback: bool = True, ref: str | None = None) -> dict:
         def do():
+            if ref is not None:
+                result = self.a11y.detail(ref)
+                result["approx_tokens"] = len(result["tree"]) // 4
+                return result
             limit = check_int("max_nodes", max_nodes, 1, 2000)
             if window is None:
                 self._need_target()  # no window named: it would read the one the user has in front
@@ -1460,9 +1473,9 @@ class Desktop:
             return result
 
         args = {"window": window, "query": query, "page": page, "max_nodes": max_nodes,
-                "shot_fallback": shot_fallback}
+                "shot_fallback": shot_fallback, "ref": ref}
         return self._act("ui_tree", args, do,
-                         loggable=lambda r: {k: v for k, v in r.items() if k != "tree"})
+                         loggable=lambda r: {k: v for k, v in r.items() if k not in {"tree", "name", "value", "text"}})
 
     def _own_window_title(self) -> str | None:
         """With an own pointer, the title of the window the agent's keyboard is in. The helper's
@@ -1508,8 +1521,7 @@ class Desktop:
             n = check_int("count", count, 1, 10)
             node = self.a11y.resolve(ref)
             label = f'{node["role"]} {node["name"]!r}'
-            if not node.get("showing") or not node.get("box"):
-                raise CcdeskError(f"{ref} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            node = self._reveal_element(ref, node, force, require_box=True)
             # expect_title takes the pointer path: only _guard checks the window that receives the click.
             if (btn == 1 and n == 1 and expect_title is None and node["role"] in NATIVE_ROLES
                     and self._may_skip_pointer(force)):
@@ -1544,6 +1556,18 @@ class Desktop:
 
         return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force,
                                              "expect_title": expect_title}, do)
+
+    def _reveal_element(self, ref: str, node: dict, force: bool, require_box: bool = False) -> dict:
+        attempted = "offscreen" in node.get("states", ())
+        if attempted:
+            if not self._may_skip_pointer(force):
+                raise PolicyError(self._other_window(ref))
+            node = self.a11y.scroll_into_view(ref)
+        if not node.get("showing") or (require_box and not node.get("box")):
+            why = "the app did not scroll it into view through accessibility. It " if attempted else ""
+            raise CcdeskError(f"{ref} ({node['role']} {node['name']!r}): {why}"
+                              "is not on screen; scroll it into view, then call ui_tree() again")
+        return node
 
     def _may_skip_pointer(self, force: bool) -> bool:
         """A native action reaches its element wherever the pointer and focus are, so _guard has
@@ -1640,8 +1664,7 @@ class Desktop:
             self._adopt_ref_window(key)
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
-            if not node.get("showing"):
-                raise CcdeskError(f"{key} ({label}) is not on screen; scroll it into view, then call ui_tree() again")
+            node = self._reveal_element(key, node, force)
             if not self._may_skip_pointer(force):
                 raise PolicyError(self._other_window(key))
             self._before_native()

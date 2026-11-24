@@ -557,9 +557,10 @@ def test_screenshot_of_a_window_refuses_what_is_not_on_show(make_desk, fake):
     assert not [c for c in fake.calls if c[0] == "screenshot"]
 
 
-def test_screenshot_window_and_region_conflict(make_desk):
-    with pytest.raises(ValidationError, match="not both"):
-        make_desk().screenshot(window="Terminal", region="0,0,10,10")
+def test_screenshot_window_and_region_use_window_coordinates(make_desk):
+    out = make_desk().screenshot(window="Terminal", region="0,0,10,10")
+    assert (out["width"], out["height"]) == (10, 10)
+    assert out["origin"] == {"x": 10, "y": 10}
 
 
 def test_manage_window_ignores_a_title_change(make_desk, fake):
