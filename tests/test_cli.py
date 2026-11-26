@@ -213,7 +213,7 @@ def test_only_stdlib_and_mcp_are_imported():
         mods = set(_imported_modules(path)) - allowed
         if path.name == "server.py":
             mods -= {"mcp"}
-        if path.name in ("a11y_helper.py", "cursor_helper.py", "calc_clipboard.py"):
+        if path.name in ("a11y_helper.py", "cursor_helper.py"):
             mods -= {"gi", "cairo"}  # runs in a separate system Python, never imported by ccdesk
         if mods:
             offenders[str(path.relative_to(ROOT))] = sorted(mods)

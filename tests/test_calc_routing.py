@@ -20,10 +20,10 @@ def calc_desk(make_desk, helper, fake, monkeypatch):
     return desk
 
 
-def test_public_write_forwards_address_and_clipboard_note(calc_desk, helper, fake):
-    helper.values[PATH] = {"verified": True, "note": "clipboard was used briefly"}
-    result = calc_desk.set_value("e4", "text", cell="B7")
-    assert result["verified"] and result["note"] == "clipboard was used briefly"
+def test_public_numeric_write_forwards_address(calc_desk, helper, fake):
+    helper.values[PATH] = {"verified": True}
+    result = calc_desk.set_value("e4", "42", cell="B7")
+    assert result["verified"]
     assert next(q for q in helper.requests if q["op"] == "set")["cell"] == "B7"
     assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text")]
 
@@ -65,3 +65,22 @@ def test_generic_table_cells_keep_their_pointer_route(make_desk, helper, fake):
     fake.calls.clear()
     desk.click_element("e4")
     assert [c for c in fake.calls if c[0] == "click"]
+
+
+@pytest.mark.parametrize("text", ["hello", "=1+2"])
+@pytest.mark.parametrize("single_ref", [False, True])
+def test_unsupported_text_code_reaches_public_caller(calc_desk, helper, fake, text, single_ref):
+    ref = "e4"
+    if single_ref:
+        helper.nodes[PATH].update(role="table cell", calc_cell=True)
+        calc_desk.ui_tree(window="Firefox")
+        ref = next(k for k, v in calc_desk.a11y.refs.items() if v.role == "table cell")
+    helper.values[PATH] = {"error": "Calc numbers work through set_value. Text needs activate_window "
+                                   "(takes the user's focus).", "code": "background_text_unsupported"}
+    with pytest.raises(CcdeskError) as caught:
+        calc_desk.set_value(ref, text, **({} if single_ref else {"cell": "B7"}))
+    assert caught.value.code == "background_text_unsupported"
+    assert caught.value.input_emitted is False
+    assert caught.value.retry_same_request is False
+    assert "code=background_text_unsupported" in caught.value.prefix()
+    assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text", "clipboard_set", "activate")]

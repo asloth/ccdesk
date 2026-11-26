@@ -1685,8 +1685,6 @@ class Desktop:
                     raise CcdeskError("Calc write was not verified; check the cell before retrying")
                 self._typing_ref = None
                 result = {"set": cell or label, "verified": True, "chars": len(text)}
-                if answer.get("note"):
-                    result["note"] = answer["note"]
                 return self._changes(self._in_tree_window(result))
             if not answer["verified"] and node["role"] in TYPABLE_ROLES:
                 self._check_text_fallback(key, label)

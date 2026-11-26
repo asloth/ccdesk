@@ -21,15 +21,12 @@ class Cell(Node):
     def get_value_iface(self):
         return True
 
-    def get_attributes(self):
-        return {"Formula": self.table.formula.lstrip("=")}
-
 
 class Table(Node):
     def __init__(self):
         super().__init__("table", "Sheet1")
         self.generation = 0
-        self.text, self.value, self.formula = "old", 0, ""
+        self.text, self.value = "old", 0
         self.selected = (0, 0)
         self.count = 1
         self.frame = Node("frame", "Calc")
@@ -77,24 +74,6 @@ def calc(helper, monkeypatch):
                      get_selected_child=lambda _, i: resolve(table, *table.selected))
     a.Value = NS(set_current_value=value, get_current_value=lambda _: table.value)
     a.Text = NS(get_text=read, get_character_count=lambda _: len(table.text))
-    paste = Node("push button", "Paste")
-    paste.get_action_iface = lambda: True
-    toolbar = Node("tool bar", "Standard", kids=[paste])
-    table.frame.kids.append(toolbar)
-    a.Action = NS(get_n_actions=lambda _: 1, get_action_name=lambda _, i: "press",
-                  do_action=lambda _, i: apply_paste())
-    def apply_paste():
-        table.text = table.payload if not table.payload.startswith("=") else "3"
-        table.formula = table.payload if table.payload.startswith("=") else ""
-        table.generation += 1
-        return True
-    class Clipboard:
-        def __init__(self, text):
-            calls.append(("clipboard", text))
-            table.payload = text
-        def restore(self):
-            calls.append(("restore",))
-    monkeypatch.setattr(mod, "CalcClipboard", Clipboard)
     monkeypatch.setattr(mod.time, "sleep", lambda _: None)
     monkeypatch.setattr(mod, "find", lambda _: table)
     return mod, a, table, calls
@@ -116,11 +95,15 @@ def test_number_readbacks_use_fresh_proxies(calc, text):
 
 
 @pytest.mark.parametrize("text", ["hello", "=1+2", "NaN", "Infinity", "12 USD", "1,200", " 5", "2026-11-26", "", "1_000"])
-def test_text_formula_and_non_numbers_use_clipboard(calc, text):
+def test_text_formula_and_non_numbers_are_unsupported_without_mutation(calc, text):
+    _, a, table, calls = calc
+    a.Value.set_current_value = lambda *_: pytest.fail("unsupported text must not write Value")
     result = set_cell(calc, text)
-    assert result["verified"] is True
-    assert "clipboard was used briefly" in result["note"]
-    assert calc[3] == [("clipboard", text), ("clear",), ("select", 98305), ("restore",)]
+    assert result["code"] == "background_text_unsupported"
+    assert "numbers work through set_value" in result["error"]
+    assert "activate_window takes the user's focus" in result["error"]
+    assert not result.get("verified")
+    assert table.text == "old" and not calls
 
 
 def test_single_cell_ref_is_resolved_by_position(calc, monkeypatch):
@@ -136,28 +119,16 @@ def test_invalid_addresses_never_write(calc, address):
     assert not calc[3]
 
 
-@pytest.mark.parametrize("failure", ["clear", "select", "count", "wrong_cell", "paste_missing", "press_missing", "paste_refused", "read_mismatch", "read_stale", "formula_mismatch", "restore"])
-def test_paste_failure_restores_clipboard_without_fallback(calc, monkeypatch, failure):
-    mod, a, table, calls = calc
+@pytest.mark.parametrize("failure", ["clear", "select", "count", "wrong_cell"])
+def test_selection_failure_is_explicit_without_fallback(calc, failure):
+    mod, a, table, _ = calc
     if failure == "clear": a.Selection.clear_selection = lambda _: False
     if failure == "select": a.Selection.select_child = lambda *_: False
     if failure == "count": table.count = 2
     if failure == "wrong_cell": a.Selection.get_selected_child = lambda *_: Cell(table, 1, 1)
-    if failure == "paste_missing": table.frame.kids = [table]
-    if failure == "press_missing": a.Action.get_action_name = lambda *_: "click"
-    if failure == "paste_refused": a.Action.do_action = lambda *_: False
-    if failure == "read_mismatch": a.Text.get_text = lambda *_: "wrong"
-    if failure == "read_stale": a.Text.get_text = lambda *_: (_ for _ in ()).throw(RuntimeError("stale"))
-    if failure == "formula_mismatch":
-        monkeypatch.setattr(Cell, "get_attributes", lambda _: {"Formula": "=0"})
-    if failure == "restore":
-        def restore(_):
-            calls.append(("restore",))
-            raise ValueError("restore failed")
-        monkeypatch.setattr(mod.CalcClipboard, "restore", restore)
-    result = set_cell(calc, "=1+2" if failure == "formula_mismatch" else "hello")
-    assert "error" in result and not result.get("verified")
-    assert calls[-1] == ("restore",)
+    result = mod.handle({"op": "calc_select", "path": "0.0", "cell": "B7"})
+    assert "error" in result and not result.get("selected")
+    assert table.text == "old"
 
 
 @pytest.mark.parametrize("failure", ["refused", "value", "text", "stale"])
@@ -184,24 +155,10 @@ def test_temporary_stale_read_re_resolves_by_coordinates(calc):
     assert len(attempts) == 2
 
 
-def test_toolbar_search_ignores_menu_paste(calc):
-    mod, _, table, _ = calc
-    table.frame.kids = [table, Node("menu bar", kids=[Node("push button", "Paste")])]
-    assert "toolbar Paste" in set_cell(calc, "hello")["error"]
-
-
 def test_distant_click_selects_exact_cell_without_walking(calc):
     mod, _, _, calls = calc
     assert mod.handle({"op": "calc_select", "path": "0.0", "cell": "AA1001"}) == {"selected": True}
     assert calls == [("clear",), ("select", 1000 * 16384 + 26)]
-
-
-def test_clipboard_snapshot_failure_never_selects(calc, monkeypatch):
-    mod, _, _, calls = calc
-    def fail(_): raise ValueError("cannot save clipboard")
-    monkeypatch.setattr(mod, "CalcClipboard", fail)
-    assert "cannot save clipboard" in set_cell(calc, "hello")["error"]
-    assert not calls
 
 
 def test_gone_cell_never_writes(calc, monkeypatch):
@@ -210,10 +167,10 @@ def test_gone_cell_never_writes(calc, monkeypatch):
     assert set_cell(calc, "hello") == mod.GONE
 
 
-@pytest.mark.parametrize("failure", ["no_table", "no_table_iface", "no_cell_iface", "bad_position", "no_value", "no_selection", "bad_index", "no_selected", "no_frame"])
+@pytest.mark.parametrize("failure", ["no_table", "no_table_iface", "no_cell_iface", "bad_position", "no_value", "no_selection", "bad_index", "no_selected"])
 def test_invalid_interfaces_and_coordinates_fail_closed(calc, monkeypatch, failure):
     mod, a, table, calls = calc
-    request = {"op": "set", "path": "0.0", "text": "hello", "cell": "B7"}
+    request = {"op": "set", "path": "0.0", "text": "42", "cell": "B7"}
     if failure in ("no_table", "no_cell_iface", "bad_position"):
         request.pop("cell")
         cell = Cell(table)
@@ -226,32 +183,10 @@ def test_invalid_interfaces_and_coordinates_fail_closed(calc, monkeypatch, failu
     if failure == "no_selection": table.get_selection_iface = lambda: None
     if failure == "bad_index": a.Table.get_index_at = lambda *_: -1
     if failure == "no_selected": a.Selection.get_selected_child = lambda *_: None
-    if failure == "no_frame": table.get_parent = lambda: None
+    if failure in ("no_selection", "bad_index", "no_selected"):
+        request["op"] = "calc_select"
     assert "error" in mod.handle(request)
-    if calls: assert calls[-1] == ("restore",)
-
-
-@pytest.mark.parametrize("response", [None, b"", b'{"error":"cannot save clipboard"}\n'])
-def test_clipboard_transport_failure_closes_input_for_restore(helper, monkeypatch, response):
-    import io
-    mod, _ = helper
-    proc = NS(stdin=io.StringIO(), stdout=io.BytesIO(response or b""))
-    monkeypatch.setattr(mod.subprocess, "Popen", lambda *a, **kw: proc)
-    monkeypatch.setattr(mod.io_select, "select", lambda *a: ([proc.stdout] if response is not None else [], [], []))
-    with pytest.raises(ValueError):
-        mod.CalcClipboard("text")
-    assert proc.stdin.closed
-
-
-def test_clipboard_restore_transport_closes_both_streams(helper, monkeypatch):
-    import io
-    mod, _ = helper
-    clipboard = object.__new__(mod.CalcClipboard)
-    clipboard.proc = NS(stdin=io.StringIO(), stdout=io.StringIO('{"error":"restore refused"}\n'))
-    monkeypatch.setattr(mod.io_select, "select", lambda *a: ([clipboard.proc.stdout], [], []))
-    with pytest.raises(ValueError, match="restore refused"):
-        clipboard.restore()
-    assert clipboard.proc.stdin.closed and clipboard.proc.stdout.closed
+    assert table.text == "old"
 
 
 def test_calc_identity_is_exposed_without_changing_other_table_cells(calc):

@@ -297,7 +297,7 @@ def build_server(desktop: Desktop) -> MCPServer:
         back: an answer means the app holds it. Refuses password fields. Offscreen refs first scroll
         into view through accessibility without input or focus changes. If the app ignores the write
         (web pages do), it clicks the field, selects all and types the text instead (typed: true).
-        cell: A1 address on a Calc sheet table ref; text/formulas briefly use and restore CLIPBOARD."""
+        cell: A1 address on a Calc sheet table ref; only plain numbers can be written in background."""
         return desktop.set_value(ref, text, force=force, cell=cell)
 
     @tool
