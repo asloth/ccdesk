@@ -1724,8 +1724,8 @@ class Desktop:
         if background:
             raise CcdeskError(
                 f"{key} ({label}): direct text writing is unsupported in the background. "
-                "Ask the user to bring the window forward with activate_window (this disturbs "
-                "the user's focus), or skip the field.", code="background_text_unsupported")
+                "Bring the window forward with activate_window (this takes the user's focus) "
+                "or skip the field.", code="background_text_unsupported")
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()

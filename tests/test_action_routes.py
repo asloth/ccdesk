@@ -68,6 +68,20 @@ def test_failed_action_is_not_repeated(atspi_helper, monkeypatch):
     assert calls == [0]
 
 
+@pytest.mark.parametrize("actions,expected", [
+    (("check", "uncheck"), "check"), (("uncheck", "check"), "check"),
+    (("check",), "check"), (("uncheck",), "uncheck"),
+])
+def test_firefox_checkbox_uses_native_check_action(atspi_helper, monkeypatch, actions, expected):
+    mod, atspi = atspi_helper
+    obj = Widget("check box", "Remember me", actions=actions)
+    setup(mod, atspi, monkeypatch, obj)
+    calls = []
+    atspi.Action.do_action = lambda o, i: calls.append(o.actions[i]) or True
+    assert mod.action({"path": "0", "names": NATIVE_ACTIONS}) == {"action": expected}
+    assert calls == [expected]
+
+
 @pytest.mark.parametrize("selection,changes,action,success", [
     (True, True, "select", True), (False, True, "select", True),
     (False, False, "select", False), (False, True, "open", False),
@@ -163,7 +177,8 @@ def test_text_refusal_before_any_pointer_input(make_desk, helper, fake, no_settl
             d.set_value("e2", "new", force=True)
     assert caught.value.code == "background_text_unsupported"
     assert caught.value.input_emitted is False
-    assert "activate_window" in str(caught.value) and "skip" in str(caught.value)
+    assert ("Bring the window forward with activate_window (this takes the user's focus) "
+            "or skip the field.") in str(caught.value)
     assert not [c for c in fake.calls if c[0] in ("click", "move", "type_text", "press_key", "focus", "activate")]
 
 

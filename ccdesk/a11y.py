@@ -29,7 +29,7 @@ RETRY_OPS = frozenset({"apps", "tree", "resolve", "detail", "changes"})
 NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
                           "menu item", "check menu item", "radio menu item", "page tab", "switch"})
 # Prefer click-like actions advertised by Chromium, GTK, Qt and Firefox, in this order.
-NATIVE_ACTIONS = ("press", "click", "activate", "select", "toggle", "jump")
+NATIVE_ACTIONS = ("press", "click", "activate", "select", "toggle", "jump", "check", "uncheck")
 BUS_STATUS = ["busctl", "--user", "get-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled"]
 ENABLE_BUS = "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true"
 TOOLKIT_HINT = (
