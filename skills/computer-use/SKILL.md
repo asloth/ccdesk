@@ -13,6 +13,11 @@ server was started with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
 
+Covered windows: `set_value` can select Chromium options and write GTK entries through
+accessibility with readback. `click_element` uses advertised button actions without a pointer.
+Chromium/Electron text fields may refuse direct writes: `background_text_unsupported` means
+ask to bring the window forward with `activate_window` (disturbs the user), or skip the field.
+
 **Headless mode.** If `doctor()` shows `headless`, you have your own invisible screen and the
 user keeps using theirs. It starts empty: `launch()` the apps you need, then `wait(2)`. A
 browser the user has open locks its profile, so start yours with a separate one, e.g.
