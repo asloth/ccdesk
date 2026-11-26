@@ -20,8 +20,13 @@ ccdesk pays for one Python start and one AT-SPI handshake per session instead of
 """
 
 import json
+import math
+import re
+import select as io_select
+import subprocess
 import sys
 import time
+from pathlib import Path
 
 try:
     import gi
@@ -121,6 +126,11 @@ def describe(obj, path, depth, full=False):
             "name": name[:limit] + ("…" if not full and len(name) > limit else ""), "depth": depth,
             "visible": states.contains(Atspi.StateType.VISIBLE),
             "showing": states.contains(Atspi.StateType.SHOWING)}
+    if role == "table cell":
+        try:
+            node["calc_cell"] = obj.get_value_iface() is not None and obj.get_table_cell_iface() is not None
+        except Exception:
+            pass
     try:
         ext = obj.get_extents(Atspi.CoordType.SCREEN)
         if ext.width > 0 and ext.height > 0:
@@ -405,12 +415,205 @@ def full_text(obj):
     return Atspi.Text.get_text(obj, 0, Atspi.Text.get_character_count(obj))
 
 
+def calc_target(req, obj):
+    """Resolve sheet coordinates without enumerating Calc's virtual children."""
+    if req.get("cell") is not None:
+        if obj.get_role_name() != "table" or obj.get_table_iface() is None:
+            raise ValueError("cell requires a sheet table ref with the Table interface")
+        match = re.fullmatch(r"([A-Za-z]{1,3})([1-9][0-9]{0,6})", str(req["cell"]))
+        if not match:
+            raise ValueError("cell must be an A1 address, for example B7")
+        col = 0
+        for letter in match[1].upper():
+            col = col * 26 + ord(letter) - ord("A") + 1
+        row, col = int(match[2]) - 1, col - 1
+        table = obj
+    else:
+        if obj.get_role_name() != "table cell" or obj.get_table_cell_iface() is None:
+            raise ValueError("expected a Calc table cell with TableCell")
+        table = obj.get_parent()
+        if table is None or table.get_role_name() != "table" or table.get_table_iface() is None:
+            raise ValueError("cell has no sheet table")
+        position = Atspi.TableCell.get_position(obj)
+        if not position[0]:
+            raise ValueError("cannot read the cell's row and column")
+        row, col = position[1:]
+    if not (0 <= row < Atspi.Table.get_n_rows(table) and 0 <= col < Atspi.Table.get_n_columns(table)):
+        raise ValueError("cell address is outside the sheet")
+    cell = Atspi.Table.get_accessible_at(table, row, col)
+    if cell is None or cell.get_role_name() != "table cell" or cell.get_value_iface() is None:
+        raise ValueError("target is not a Calc cell with Value")
+    return table, row, col
+
+
+def calc_select(table, row, col):
+    if table.get_selection_iface() is None:
+        raise ValueError("sheet has no Selection interface")
+    index = Atspi.Table.get_index_at(table, row, col)
+    if index < 0 or not Atspi.Selection.clear_selection(table):
+        raise ValueError("cannot clear the sheet selection")
+    if not Atspi.Selection.select_child(table, index):
+        raise ValueError("cannot select the requested cell")
+    if Atspi.Selection.get_n_selected_children(table) != 1:
+        raise ValueError("sheet selection must contain exactly one cell")
+    selected = Atspi.Selection.get_selected_child(table, 0)
+    if selected is None or tuple(Atspi.TableCell.get_position(selected)) != (True, row, col):
+        raise ValueError("sheet selected a different cell")
+
+
+def calc_click(req):
+    obj = find(req["path"])
+    if obj is None:
+        return GONE
+    table, row, col = calc_target(req, obj)
+    calc_select(table, row, col)
+    return {"selected": True}
+
+
+def plain_number(text):
+    # No dates, currency, NaN/Inf, whitespace, formulas, or locale coercion.
+    if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", text):
+        return None
+    number = float(text)
+    return number if math.isfinite(number) else None
+
+
+def calc_toolbar(table, name):
+    frame = table
+    for _ in range(30):
+        if frame.get_role_name() in ("frame", "dialog"):
+            break
+        frame = frame.get_parent()
+        if frame is None:
+            raise ValueError("cannot resolve the Calc window")
+    else:
+        raise ValueError("cannot resolve the Calc window within 30 ancestors")
+    visited = 0
+
+    def walk(obj, toolbar=False):
+        nonlocal visited
+        visited += 1
+        if visited > MAX_VISIT:
+            return
+        role = obj.get_role_name()
+        toolbar = toolbar or role == "tool bar"
+        if toolbar and role == "push button" and obj.get_name() == name and obj.get_action_iface() is not None:
+            for i in range(Atspi.Action.get_n_actions(obj)):
+                if Atspi.Action.get_action_name(obj, i) == "press":
+                    yield obj, i
+        # Never enumerate a sheet, nor descend into menus to find Paste.
+        if role in ("table", "menu", "menu bar", "menu item"):
+            return
+        for _, child in children(obj):
+            if visited >= MAX_VISIT:
+                break
+            yield from walk(child, toolbar)
+
+    target = next(walk(frame), None)
+    if target is None:
+        raise ValueError(f"Calc toolbar {name} press action is unavailable")
+    return target
+
+
+class CalcClipboard:
+    """An isolated GTK owner snapshots all clipboard formats and restores them even on EOF."""
+    def __init__(self, text):
+        self.proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("calc_clipboard.py"))],
+                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                                     stderr=subprocess.DEVNULL, text=True, start_new_session=True)
+        try:
+            self.send({"text": text})
+            self.reply("ready")
+        except Exception:
+            self.proc.stdin.close()  # EOF asks the owner to restore any saved clipboard.
+            self.proc.stdout.close()
+            raise
+
+    def send(self, value):
+        self.proc.stdin.write(json.dumps(value) + "\n")
+        self.proc.stdin.flush()
+
+    def reply(self, expected):
+        if not io_select.select([self.proc.stdout], [], [], 3)[0]:
+            raise ValueError("clipboard owner timed out; restoration may still be pending")
+        line = self.proc.stdout.readline()
+        if not line:
+            raise ValueError("clipboard owner stopped unexpectedly")
+        result = json.loads(line)
+        if result.get("error"):
+            raise ValueError(result["error"])
+        if result.get(expected) is not True:
+            raise ValueError(f"clipboard owner did not confirm {expected}")
+
+    def restore(self):
+        try:
+            self.send({"restore": True})
+            self.reply("restored")
+        finally:
+            self.proc.stdin.close()
+            self.proc.stdout.close()
+
+
+def calc_set(req, obj):
+    table, row, col = calc_target(req, obj)
+    text = req["text"]
+    number = plain_number(text)
+    clipboard = None
+    try:
+        if number is not None:
+            cell = Atspi.Table.get_accessible_at(table, row, col)
+            if not Atspi.Value.set_current_value(cell, number):
+                raise ValueError("Calc refused the numeric cell write")
+        else:
+            clipboard = CalcClipboard(text)
+            calc_select(table, row, col)
+            button, index = calc_toolbar(table, "Paste")  # fresh after selection
+            if not Atspi.Action.do_action(button, index):
+                raise ValueError("Calc toolbar Paste refused the action")
+        last = None
+        for _ in range(10):
+            try:
+                cell = Atspi.Table.get_accessible_at(table, row, col)  # old proxies go stale
+                got = full_text(cell)
+                if number is not None:
+                    value = Atspi.Value.get_current_value(cell)
+                    same = value == number and plain_number(got) == number
+                elif text.startswith("="):
+                    # Calc Text is the computed display. Formula identity is exposed by
+                    # the cell's extended attributes, not by its display or numeric Value.
+                    formula = cell.get_attributes().get("Formula")
+                    same = bool(formula) and formula in (text, text[1:])
+                else:
+                    same = got == text
+                if same:
+                    result = {"verified": True, "value": got}
+                    if clipboard:
+                        result["note"] = "The clipboard was used briefly and its previous contents restored."
+                    return result
+                last = f"readback mismatch: cell holds {got!r}"
+            except Exception as exc:
+                last = f"cell readback failed: {exc}"
+            time.sleep(0.05)
+        raise ValueError(f"Calc {last}; check the cell before retrying")
+    except Exception as exc:
+        if clipboard:
+            raise ValueError(f"{exc}. The clipboard was used briefly; restoring its previous contents") from exc
+        raise
+    finally:
+        if clipboard:
+            try:
+                clipboard.restore()
+            except Exception as exc:
+                raise ValueError(f"The clipboard was used briefly but restoration failed: {exc}") from exc
+
+
 def set_value(req):
     """Write a value and read it back, so the answer is what the app holds, not what was sent."""
     obj = find(req["path"])
     if obj is None:
         return GONE
     role, text = obj.get_role_name() or "", req["text"]
+    if (role == "table cell" and obj.get_value_iface() is not None) or req.get("cell") is not None: return calc_set(req, obj)
     if role == "password text":
         return {"error": "this is a password field: ask the user to type it themselves"}
     if role in NUMERIC and obj.get_value_iface() is not None:
@@ -480,7 +683,7 @@ def apps(_req):
 
 def handle(req):
     ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value,
-           "insert": insert, "select": select, "detail": detail, "scroll": scroll}
+           "insert": insert, "select": select, "detail": detail, "scroll": scroll, "calc_select": calc_click}
     try:
         return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing

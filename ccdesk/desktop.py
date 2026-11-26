@@ -1513,7 +1513,7 @@ class Desktop:
                 f"{missing_hint(win.wm_class, enabled, self.backend.window_role(win.id))}. Until then, work from screenshots")
 
     def click_element(self, ref: str, button: str = "left", count: int = 1, force: bool = False,
-                      expect_title: str | None = None) -> dict:
+                      expect_title: str | None = None, cell: str | None = None) -> dict:
         def do():
             self._ready()
             self._adopt_ref_window(str(ref).strip())
@@ -1521,6 +1521,15 @@ class Desktop:
             n = check_int("count", count, 1, 10)
             node = self.a11y.resolve(ref)
             label = f'{node["role"]} {node["name"]!r}'
+            if cell is not None or node.get("calc_cell"):
+                if btn != 1 or n != 1 or expect_title is not None:
+                    raise ValidationError("Calc cell selection requires one left click without expect_title")
+                if not self._may_skip_pointer(force):
+                    raise PolicyError(self._other_window(ref))
+                self._before_native()
+                self.a11y.calc_select(str(ref).strip(), cell=cell)
+                self._typing_ref = None
+                return self._changes(self._in_tree_window({"selected": cell or label, "via": "accessibility"}))
             node = self._reveal_element(ref, node, force, require_box=True)
             # expect_title takes the pointer path: only _guard checks the window that receives the click.
             if (btn == 1 and n == 1 and expect_title is None and node["role"] in NATIVE_ROLES
@@ -1555,7 +1564,7 @@ class Desktop:
                                                     "button": button, "count": n}, window))
 
         return self._act("click_element", {"ref": ref, "button": button, "count": count, "force": force,
-                                             "expect_title": expect_title}, do)
+                                             "expect_title": expect_title, "cell": cell}, do)
 
     def _reveal_element(self, ref: str, node: dict, force: bool, require_box: bool = False) -> dict:
         attempted = "offscreen" in node.get("states", ())
@@ -1653,7 +1662,7 @@ class Desktop:
             self._note = None
         return result
 
-    def set_value(self, ref: str, text: str, force: bool = False) -> dict:
+    def set_value(self, ref: str, text: str, force: bool = False, cell: str | None = None) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str):
@@ -1664,11 +1673,21 @@ class Desktop:
             self._adopt_ref_window(key)
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
-            node = self._reveal_element(key, node, force)
+            calc = cell is not None or bool(node.get("calc_cell"))
+            if not calc:
+                node = self._reveal_element(key, node, force)
             if not self._may_skip_pointer(force):
                 raise PolicyError(self._other_window(key))
             self._before_native()
-            answer = self.a11y.set_value(key, text)
+            answer = self.a11y.set_value(key, text, cell=cell) if cell is not None else self.a11y.set_value(key, text)
+            if calc:
+                if not answer.get("verified"):
+                    raise CcdeskError("Calc write was not verified; check the cell before retrying")
+                self._typing_ref = None
+                result = {"set": cell or label, "verified": True, "chars": len(text)}
+                if answer.get("note"):
+                    result["note"] = answer["note"]
+                return self._changes(self._in_tree_window(result))
             self._cursor_to_node(node)
             self._remember_typing(key, node, at_end=True)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
@@ -1680,7 +1699,7 @@ class Desktop:
                                   f"rejected it. Check the field; don't repeat this blindly")
             return self._changes(self._in_tree_window({"set": label, "verified": True, "chars": len(text)}))
 
-        return self._act("set_value", {"ref": ref, "text": text, "force": force}, do)
+        return self._act("set_value", {"ref": ref, "text": text, "force": force, "cell": cell}, do)
 
     def _type_into(self, key: str, node: dict, label: str, text: str, force: bool) -> dict:
         """set_value's fallback: click the field, select all, type, and read the value back."""

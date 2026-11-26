@@ -384,11 +384,19 @@ class A11y:
         request = {"op": "action", "path": self.refs[ref].path, "names": list(NATIVE_ACTIONS)}
         return self.call(request, timeout=ACTION_TIMEOUT, on_timeout=unsure)["action"]
 
-    def set_value(self, ref: str, text: str) -> dict:
+    def set_value(self, ref: str, text: str, cell: str | None = None) -> dict:
         unsure = ("the app did not answer within the time limit: the value may have been set. "
                   "Check with ui_tree() before trying again")
         request = {"op": "set", "path": self.refs[ref].path, "text": text}
+        if cell is not None:
+            request["cell"] = cell
         return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
+
+    def calc_select(self, ref: str, cell: str | None = None) -> dict:
+        request = {"op": "calc_select", "path": self.refs[ref].path}
+        if cell is not None:
+            request["cell"] = cell
+        return self.call(request, timeout=ACTION_TIMEOUT)
 
     def insert(self, ref: str, text: str, at_end: bool = False) -> dict:
         """Insert text at the element's caret without keyboard focus. {"inserted": False} means the
