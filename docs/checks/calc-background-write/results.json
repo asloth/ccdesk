@@ -1,0 +1,163 @@
+[
+  {
+    "cell": "A1",
+    "text": "43",
+    "result": {
+      "set": "A1",
+      "verified": true,
+      "chars": 2,
+      "window": {
+        "title": "cells.fods \u2014 LibreOffice Calc"
+      },
+      "changes": "no change in the window yet (slow apps: wait(1), then ui_tree())"
+    },
+    "before": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "after": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "transient_changes": [],
+    "clipboard": "previous clipboard"
+  },
+  {
+    "cell": "B7",
+    "text": "final background text",
+    "result": {
+      "set": "B7",
+      "verified": true,
+      "chars": 21,
+      "note": "The clipboard was used briefly and its previous contents restored.",
+      "window": {
+        "title": "cells.fods \u2014 LibreOffice Calc"
+      },
+      "changes": "no change in the window yet (slow apps: wait(1), then ui_tree())"
+    },
+    "before": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "after": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "transient_changes": [],
+    "clipboard": "previous clipboard"
+  },
+  {
+    "cell": "C8",
+    "text": "=2+3",
+    "result": {
+      "set": "C8",
+      "verified": true,
+      "chars": 4,
+      "note": "The clipboard was used briefly and its previous contents restored.",
+      "window": {
+        "title": "cells.fods \u2014 LibreOffice Calc"
+      },
+      "changes": "no change in the window yet (slow apps: wait(1), then ui_tree())"
+    },
+    "before": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "after": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "transient_changes": [],
+    "clipboard": "previous clipboard"
+  }
+]
