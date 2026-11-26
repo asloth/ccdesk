@@ -1715,7 +1715,10 @@ class Desktop:
         background = getattr(self.backend, "background_input", False)
         window = self._listed(self.a11y.ref_window(key) or self.a11y.tree_window())
         if self.agent and self.backend.own_pointer:
-            background = True
+            try:
+                background = background or window is None or self.backend.active_window() != window.id
+            except CcdeskError:
+                background = True
         if window is not None:
             background = background or self.backend.window_covered(window.id)
         if background:

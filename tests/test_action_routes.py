@@ -201,3 +201,16 @@ def test_verified_gtk_write_and_toolbar_click_work_while_covered(make_desk, help
     assert d.set_value("e2", "new")["verified"]
     assert d.click_element("e4")["activated"] == "click"
     assert not [c for c in fake.calls if c[0] in ("click", "move", "type_text", "press_key", "focus", "activate")]
+
+
+def test_own_pointer_foreground_keeps_typing_fallback(make_desk, helper, fake, monkeypatch, no_settle):
+    fake.own_pointer = True
+    fake.active = fake.windows[0].id
+    monkeypatch.setattr(fake, "window_covered", lambda _: False)
+    path = "3.0.29.2"
+    helper.values[path] = {"verified": False, "value": "me@x.org", "refused": True}
+    monkeypatch.setattr(fake, "type_text", lambda text: helper.nodes[path].update(value=text))
+    d = make_desk(agent="routes")
+    d.ui_tree(window="Firefox")
+    assert d.set_value("e2", "new")["typed"] is True
+    assert any(c[0] == "click" for c in fake.calls)
