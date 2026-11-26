@@ -1,0 +1,290 @@
+[
+  {
+    "value": "old",
+    "selected": {
+      "set": "combo box 'Select'",
+      "verified": true,
+      "chars": 3,
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "pressed": {
+      "activated": "press",
+      "element": "push button 'Submit'",
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "refusal": {
+      "code": "background_text_unsupported",
+      "input_emitted": false,
+      "message": "e16 (entry 'Input'): direct text writing is unsupported in the background. Ask the user to bring the window forward with activate_window (this disturbs the user's focus), or skip the field."
+    },
+    "before": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "after": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "samples": 153,
+    "all_samples_unchanged": true,
+    "status": {
+      "state": {
+        "Input": "old",
+        "Textarea": "old",
+        "Select": "old"
+      },
+      "events": [
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:",
+        "change:Select:",
+        "input:Select:old",
+        "change:Select:old",
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:old",
+        "change:Select:old"
+      ],
+      "submitted": {
+        "dom": [
+          "old",
+          "old",
+          "old"
+        ],
+        "state": {
+          "Input": "old",
+          "Textarea": "old",
+          "Select": "old"
+        }
+      }
+    }
+  },
+  {
+    "value": "new",
+    "selected": {
+      "set": "combo box 'Select'",
+      "verified": true,
+      "chars": 3,
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "pressed": {
+      "activated": "press",
+      "element": "push button 'Submit'",
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "refusal": {
+      "code": "background_text_unsupported",
+      "input_emitted": false,
+      "message": "e16 (entry 'Input'): direct text writing is unsupported in the background. Ask the user to bring the window forward with activate_window (this disturbs the user's focus), or skip the field."
+    },
+    "before": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "after": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "samples": 67,
+    "all_samples_unchanged": true,
+    "status": {
+      "state": {
+        "Input": "old",
+        "Textarea": "old",
+        "Select": "new"
+      },
+      "events": [
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:",
+        "change:Select:",
+        "input:Select:old",
+        "change:Select:old",
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:old",
+        "change:Select:old",
+        "input:Select:new",
+        "change:Select:new"
+      ],
+      "submitted": {
+        "dom": [
+          "old",
+          "old",
+          "new"
+        ],
+        "state": {
+          "Input": "old",
+          "Textarea": "old",
+          "Select": "new"
+        }
+      }
+    }
+  },
+  {
+    "value": "old",
+    "selected": {
+      "set": "combo box 'Select'",
+      "verified": true,
+      "chars": 3,
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "pressed": {
+      "activated": "press",
+      "element": "push button 'Submit'",
+      "window": {
+        "title": "Background fields - Chromium"
+      }
+    },
+    "refusal": {
+      "code": "background_text_unsupported",
+      "input_emitted": false,
+      "message": "e16 (entry 'Input'): direct text writing is unsupported in the background. Ask the user to bring the window forward with activate_window (this disturbs the user's focus), or skip the field."
+    },
+    "before": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "after": {
+      "active": [
+        44040208,
+        0
+      ],
+      "stack": [
+        12582931,
+        29360131,
+        44040208,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "focus": 44040208
+    },
+    "samples": 65,
+    "all_samples_unchanged": true,
+    "status": {
+      "state": {
+        "Input": "old",
+        "Textarea": "old",
+        "Select": "old"
+      },
+      "events": [
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:",
+        "change:Select:",
+        "input:Select:old",
+        "change:Select:old",
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:old",
+        "change:Select:old",
+        "input:Select:new",
+        "change:Select:new",
+        "input:Select:old",
+        "change:Select:old"
+      ],
+      "submitted": {
+        "dom": [
+          "old",
+          "old",
+          "old"
+        ],
+        "state": {
+          "Input": "old",
+          "Textarea": "old",
+          "Select": "old"
+        }
+      }
+    }
+  }
+]

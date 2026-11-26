@@ -1688,6 +1688,8 @@ class Desktop:
                 if answer.get("note"):
                     result["note"] = answer["note"]
                 return self._changes(self._in_tree_window(result))
+            if not answer["verified"] and node["role"] in TYPABLE_ROLES:
+                self._check_text_fallback(key, label)
             self._cursor_to_node(node)
             self._remember_typing(key, node, at_end=True)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
@@ -1703,6 +1705,7 @@ class Desktop:
 
     def _type_into(self, key: str, node: dict, label: str, text: str, force: bool) -> dict:
         """set_value's fallback: click the field, select all, type, and read the value back."""
+        self._check_text_fallback(key, label)
         x, y, w, h = node["box"]
         px, py = self._point(x + w // 2, y + h // 2)
         window = self._guard(force, (px, py))
@@ -1725,6 +1728,23 @@ class Desktop:
                 return self._changes(self._with_window(result, window))
         raise CcdeskError(f"{key} ({label}) ignored the direct write, and after clicking it and typing it holds "
                           f"{got!r}. Check the field with a screenshot; don't repeat this blindly")
+
+    def _check_text_fallback(self, key: str, label: str) -> None:
+        """Refuse pointer typing before any input or cursor movement in background windows."""
+        background = getattr(self.backend, "background_input", False)
+        window = self._listed(self.a11y.ref_window(key) or self.a11y.tree_window())
+        if self.agent and self.backend.own_pointer:
+            try:
+                background = background or window is None or self.backend.active_window() != window.id
+            except CcdeskError:
+                background = True
+        if window is not None:
+            background = background or self.backend.window_covered(window.id)
+        if background:
+            raise CcdeskError(
+                f"{key} ({label}): direct text writing is unsupported in the background. "
+                "Bring the window forward with activate_window (this takes the user's focus) "
+                "or skip the field.", code="background_text_unsupported")
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()
