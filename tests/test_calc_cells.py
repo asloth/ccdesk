@@ -119,18 +119,6 @@ def test_invalid_addresses_never_write(calc, address):
     assert not calc[3]
 
 
-@pytest.mark.parametrize("failure", ["clear", "select", "count", "wrong_cell"])
-def test_selection_failure_is_explicit_without_fallback(calc, failure):
-    mod, a, table, _ = calc
-    if failure == "clear": a.Selection.clear_selection = lambda _: False
-    if failure == "select": a.Selection.select_child = lambda *_: False
-    if failure == "count": table.count = 2
-    if failure == "wrong_cell": a.Selection.get_selected_child = lambda *_: Cell(table, 1, 1)
-    result = mod.handle({"op": "calc_select", "path": "0.0", "cell": "B7"})
-    assert "error" in result and not result.get("selected")
-    assert table.text == "old"
-
-
 @pytest.mark.parametrize("failure", ["refused", "value", "text", "stale"])
 def test_numeric_failure_requires_both_readbacks(calc, failure):
     _, a, _, calls = calc
@@ -155,19 +143,13 @@ def test_temporary_stale_read_re_resolves_by_coordinates(calc):
     assert len(attempts) == 2
 
 
-def test_distant_click_selects_exact_cell_without_walking(calc):
-    mod, _, _, calls = calc
-    assert mod.handle({"op": "calc_select", "path": "0.0", "cell": "AA1001"}) == {"selected": True}
-    assert calls == [("clear",), ("select", 1000 * 16384 + 26)]
-
-
 def test_gone_cell_never_writes(calc, monkeypatch):
     mod = calc[0]
     monkeypatch.setattr(mod, "find", lambda _: None)
     assert set_cell(calc, "hello") == mod.GONE
 
 
-@pytest.mark.parametrize("failure", ["no_table", "no_table_iface", "no_cell_iface", "bad_position", "no_value", "no_selection", "bad_index", "no_selected"])
+@pytest.mark.parametrize("failure", ["no_table", "no_table_iface", "no_cell_iface", "bad_position", "no_value"])
 def test_invalid_interfaces_and_coordinates_fail_closed(calc, monkeypatch, failure):
     mod, a, table, calls = calc
     request = {"op": "set", "path": "0.0", "text": "42", "cell": "B7"}
@@ -180,11 +162,6 @@ def test_invalid_interfaces_and_coordinates_fail_closed(calc, monkeypatch, failu
         if failure == "bad_position": a.TableCell.get_position = lambda _: (False, -1, -1)
     if failure == "no_table_iface": table.get_table_iface = lambda: None
     if failure == "no_value": monkeypatch.setattr(Cell, "get_value_iface", lambda _: None)
-    if failure == "no_selection": table.get_selection_iface = lambda: None
-    if failure == "bad_index": a.Table.get_index_at = lambda *_: -1
-    if failure == "no_selected": a.Selection.get_selected_child = lambda *_: None
-    if failure in ("no_selection", "bad_index", "no_selected"):
-        request["op"] = "calc_select"
     assert "error" in mod.handle(request)
     assert table.text == "old"
 

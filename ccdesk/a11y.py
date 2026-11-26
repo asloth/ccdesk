@@ -392,12 +392,6 @@ class A11y:
             request["cell"] = cell
         return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
 
-    def calc_select(self, ref: str, cell: str | None = None) -> dict:
-        request = {"op": "calc_select", "path": self.refs[ref].path}
-        if cell is not None:
-            request["cell"] = cell
-        return self.call(request, timeout=ACTION_TIMEOUT)
-
     def insert(self, ref: str, text: str, at_end: bool = False) -> dict:
         """Insert text at the element's caret without keyboard focus. {"inserted": False} means the
         app took none of it (try the keyboard); "changed" says it took something else."""

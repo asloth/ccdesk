@@ -352,4 +352,3 @@ mouse, and is refused if they keep going; then wait and retry, or ask them.
 - On Wayland, `list_windows` may be unsupported. Navigate by screenshots and clicks alone.
 
 Calc background writes: use set_value(cell_ref, text) or set_value(sheet_table_ref, text, cell="B7"); plain numbers use Value. Text/formulas return background_text_unsupported and need activate_window, which takes the user's focus.
-Select visible or distant Calc cells with click_element(sheet_table_ref, cell="B7") or a cell ref; selection uses AT-SPI without pointer or key events.

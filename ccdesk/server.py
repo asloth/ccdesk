@@ -280,16 +280,15 @@ def build_server(desktop: Desktop) -> MCPServer:
 
     @tool
     def click_element(ref: str, button: Literal["left", "middle", "right"] = "left", count: int = 1,
-                      force: bool = False, expect_title: str | None = None, cell: str | None = None) -> dict:
+                      force: bool = False, expect_title: str | None = None) -> dict:
         """Click an element from a ui_tree() result, e.g. ref="e12"; a ref from an earlier tree acts in
         its own window. A single left click on a button, checkbox, link or menu item runs its
         accessibility action when it has one, without moving the pointer; an item with no action (a
         sheet tab, a page tab) is selected in its list the same way; otherwise it clicks the centre.
         Offscreen refs are first scrolled into view through accessibility, without input or focus.
         Fails if the element changed or the app cannot reveal it; call ui_tree() again then.
-        cell: A1 address on a Calc sheet table ref, selected through accessibility without input.
         expect_title: as in click, and always a real click."""
-        return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title, cell=cell)
+        return desktop.click_element(ref, button=button, count=count, force=force, expect_title=expect_title)
 
     @tool
     def set_value(ref: str, text: str, force: bool = False, cell: str | None = None) -> dict:

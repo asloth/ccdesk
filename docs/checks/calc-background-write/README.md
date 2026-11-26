@@ -1,4 +1,4 @@
-# Covered Calc numeric writes and selection
+# Covered Calc numeric writes
 
 Only plain numbers can be written through `set_value(cell_ref, text)` or
 `set_value(sheet_table_ref, text, cell="B7")`. The helper writes through AT-SPI
@@ -77,3 +77,11 @@ The same wrapper is retained as `test-private-bus.py` in this directory.
 
 After restricting background writes to numbers, the full requested wrapper run passed:
 **1019 passed, 27 skipped, 1 xfailed in 180.44 seconds**.
+
+## Cell selection removed (2026-11-26)
+
+`click_element(..., cell=...)` and the AT-SPI Selection route for Calc cells were removed before merge.
+`Selection.select_child` on a Calc sheet makes LibreOffice release and retake PRIMARY (2 owner-change
+callbacks per selection, `docs/checks/calc-xdnd-text` on fix/calc-xdnd-text, 500f24d). That changes the user's
+middle-click selection, the same kind of disturbance as borrowing CLIPBOARD. Numeric `set_value` never selects and
+is unaffected. The selection lines above describe the measurement made before the removal.

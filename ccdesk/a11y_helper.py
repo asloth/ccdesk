@@ -469,30 +469,6 @@ def calc_target(req, obj):
     return table, row, col
 
 
-def calc_select(table, row, col):
-    if table.get_selection_iface() is None:
-        raise ValueError("sheet has no Selection interface")
-    index = Atspi.Table.get_index_at(table, row, col)
-    if index < 0 or not Atspi.Selection.clear_selection(table):
-        raise ValueError("cannot clear the sheet selection")
-    if not Atspi.Selection.select_child(table, index):
-        raise ValueError("cannot select the requested cell")
-    if Atspi.Selection.get_n_selected_children(table) != 1:
-        raise ValueError("sheet selection must contain exactly one cell")
-    selected = Atspi.Selection.get_selected_child(table, 0)
-    if selected is None or tuple(Atspi.TableCell.get_position(selected)) != (True, row, col):
-        raise ValueError("sheet selected a different cell")
-
-
-def calc_click(req):
-    obj = find(req["path"])
-    if obj is None:
-        return GONE
-    table, row, col = calc_target(req, obj)
-    calc_select(table, row, col)
-    return {"selected": True}
-
-
 def plain_number(text):
     # No dates, currency, NaN/Inf, whitespace, formulas, or locale coercion.
     if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", text):
@@ -606,7 +582,7 @@ def apps(_req):
 
 def handle(req):
     ops = {"apps": apps, "tree": tree, "resolve": resolve, "action": action, "set": set_value,
-           "insert": insert, "select": select, "detail": detail, "scroll": scroll, "calc_select": calc_click}
+           "insert": insert, "select": select, "detail": detail, "scroll": scroll}
     try:
         return ops[req["op"]](req)
     except Exception as exc:  # report, never traceback into the MCP server's stdout parsing

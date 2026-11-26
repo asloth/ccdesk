@@ -44,20 +44,6 @@ def test_failed_write_cannot_type(calc_desk, helper, fake, answer):
     assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text")]
 
 
-def test_distant_click_uses_exclusive_selection(calc_desk, monkeypatch, fake):
-    calls = []
-    monkeypatch.setattr(calc_desk.a11y, "calc_select", lambda ref, cell=None: calls.append((ref, cell)) or {"selected": True})
-    assert calc_desk.click_element("e4", cell="AA1001")["via"] == "accessibility"
-    assert calls == [("e4", "AA1001")]
-    assert not [c for c in fake.calls if c[0] == "click"]
-
-
-@pytest.mark.parametrize("kwargs", [{"button": "right"}, {"count": 2}, {"expect_title": "Firefox"}])
-def test_address_never_turns_into_pointer_click(calc_desk, kwargs):
-    with pytest.raises(ValidationError):
-        calc_desk.click_element("e4", cell="B7", **kwargs)
-
-
 def test_generic_table_cells_keep_their_pointer_route(make_desk, helper, fake):
     helper.nodes[PATH]["role"] = "table cell"
     desk = make_desk()
