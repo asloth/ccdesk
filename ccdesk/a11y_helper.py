@@ -22,11 +22,8 @@ ccdesk pays for one Python start and one AT-SPI handshake per session instead of
 import json
 import math
 import re
-import select as io_select
-import subprocess
 import sys
 import time
-from pathlib import Path
 
 try:
     import gi
@@ -478,133 +475,30 @@ def plain_number(text):
     return number if math.isfinite(number) else None
 
 
-def calc_toolbar(table, name):
-    frame = table
-    for _ in range(30):
-        if frame.get_role_name() in ("frame", "dialog"):
-            break
-        frame = frame.get_parent()
-        if frame is None:
-            raise ValueError("cannot resolve the Calc window")
-    else:
-        raise ValueError("cannot resolve the Calc window within 30 ancestors")
-    visited = 0
-
-    def walk(obj, toolbar=False):
-        nonlocal visited
-        visited += 1
-        if visited > MAX_VISIT:
-            return
-        role = obj.get_role_name()
-        toolbar = toolbar or role == "tool bar"
-        if toolbar and role == "push button" and obj.get_name() == name and obj.get_action_iface() is not None:
-            for i in range(Atspi.Action.get_n_actions(obj)):
-                if Atspi.Action.get_action_name(obj, i) == "press":
-                    yield obj, i
-        # Never enumerate a sheet, nor descend into menus to find Paste.
-        if role in ("table", "menu", "menu bar", "menu item"):
-            return
-        for _, child in children(obj):
-            if visited >= MAX_VISIT:
-                break
-            yield from walk(child, toolbar)
-
-    target = next(walk(frame), None)
-    if target is None:
-        raise ValueError(f"Calc toolbar {name} press action is unavailable")
-    return target
-
-
-class CalcClipboard:
-    """An isolated GTK owner snapshots all clipboard formats and restores them even on EOF."""
-    def __init__(self, text):
-        self.proc = subprocess.Popen([sys.executable, str(Path(__file__).with_name("calc_clipboard.py"))],
-                                     stdin=subprocess.PIPE, stdout=subprocess.PIPE,
-                                     stderr=subprocess.DEVNULL, text=True, start_new_session=True)
-        try:
-            self.send({"text": text})
-            self.reply("ready")
-        except Exception:
-            self.proc.stdin.close()  # EOF asks the owner to restore any saved clipboard.
-            self.proc.stdout.close()
-            raise
-
-    def send(self, value):
-        self.proc.stdin.write(json.dumps(value) + "\n")
-        self.proc.stdin.flush()
-
-    def reply(self, expected):
-        if not io_select.select([self.proc.stdout], [], [], 3)[0]:
-            raise ValueError("clipboard owner timed out; restoration may still be pending")
-        line = self.proc.stdout.readline()
-        if not line:
-            raise ValueError("clipboard owner stopped unexpectedly")
-        result = json.loads(line)
-        if result.get("error"):
-            raise ValueError(result["error"])
-        if result.get(expected) is not True:
-            raise ValueError(f"clipboard owner did not confirm {expected}")
-
-    def restore(self):
-        try:
-            self.send({"restore": True})
-            self.reply("restored")
-        finally:
-            self.proc.stdin.close()
-            self.proc.stdout.close()
-
-
 def calc_set(req, obj):
     table, row, col = calc_target(req, obj)
-    text = req["text"]
-    number = plain_number(text)
-    clipboard = None
-    try:
-        if number is not None:
-            cell = Atspi.Table.get_accessible_at(table, row, col)
-            if not Atspi.Value.set_current_value(cell, number):
-                raise ValueError("Calc refused the numeric cell write")
-        else:
-            clipboard = CalcClipboard(text)
-            calc_select(table, row, col)
-            button, index = calc_toolbar(table, "Paste")  # fresh after selection
-            if not Atspi.Action.do_action(button, index):
-                raise ValueError("Calc toolbar Paste refused the action")
-        last = None
-        for _ in range(10):
-            try:
-                cell = Atspi.Table.get_accessible_at(table, row, col)  # old proxies go stale
-                got = full_text(cell)
-                if number is not None:
-                    value = Atspi.Value.get_current_value(cell)
-                    same = value == number and plain_number(got) == number
-                elif text.startswith("="):
-                    # Calc Text is the computed display. Formula identity is exposed by
-                    # the cell's extended attributes, not by its display or numeric Value.
-                    formula = cell.get_attributes().get("Formula")
-                    same = bool(formula) and formula in (text, text[1:])
-                else:
-                    same = got == text
-                if same:
-                    result = {"verified": True, "value": got}
-                    if clipboard:
-                        result["note"] = "The clipboard was used briefly and its previous contents restored."
-                    return result
-                last = f"readback mismatch: cell holds {got!r}"
-            except Exception as exc:
-                last = f"cell readback failed: {exc}"
-            time.sleep(0.05)
-        raise ValueError(f"Calc {last}; check the cell before retrying")
-    except Exception as exc:
-        if clipboard:
-            raise ValueError(f"{exc}. The clipboard was used briefly; restoring its previous contents") from exc
-        raise
-    finally:
-        if clipboard:
-            try:
-                clipboard.restore()
-            except Exception as exc:
-                raise ValueError(f"The clipboard was used briefly but restoration failed: {exc}") from exc
+    number = plain_number(req["text"])
+    if number is None:
+        return {"error": "Calc numbers work through set_value. Text and formulas need the window "
+                         "in front: activate_window takes the user's focus. Then enter the text "
+                         "through the foreground window.",
+                "code": "background_text_unsupported"}
+    cell = Atspi.Table.get_accessible_at(table, row, col)
+    if not Atspi.Value.set_current_value(cell, number):
+        raise ValueError("Calc refused the numeric cell write")
+    last = None
+    for _ in range(10):
+        try:
+            cell = Atspi.Table.get_accessible_at(table, row, col)  # old proxies go stale
+            got = full_text(cell)
+            value = Atspi.Value.get_current_value(cell)
+            if value == number and plain_number(got) == number:
+                return {"verified": True, "value": got}
+            last = f"readback mismatch: cell holds {got!r}"
+        except Exception as exc:
+            last = f"cell readback failed: {exc}"
+        time.sleep(0.05)
+    raise ValueError(f"Calc {last}; check the cell before retrying")
 
 
 def set_value(req):

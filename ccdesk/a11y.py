@@ -202,7 +202,7 @@ class A11y:
                 continue
             self._python = py
             if "error" in result:
-                raise (WindowNotFound if result.get("no_window") else CcdeskError)(result["error"])
+                raise (WindowNotFound if result.get("no_window") else CcdeskError)(result["error"], code=result.get("code"))
             return result
         hint = "; ".join(errors) or "no python3 found"
         raise UnsupportedError(

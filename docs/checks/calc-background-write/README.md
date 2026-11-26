@@ -1,4 +1,18 @@
-# Covered Calc cell writes
+# Covered Calc numeric writes and selection
+
+Only plain numbers can be written through `set_value(cell_ref, text)` or
+`set_value(sheet_table_ref, text, cell="B7")`. The helper writes through AT-SPI
+Value, reacquires the cell by row/column, and verifies both Value and Text.
+`click_element(sheet_table_ref, cell="AA1001")` exclusively selects the requested
+cell through AT-SPI Selection without enumerating the sheet's virtual children.
+
+Non-numeric text and formulas return the structured error
+`background_text_unsupported`. Numbers work through `set_value`; text needs the
+window in front. Calling `activate_window` takes the user's focus. The caller must
+then enter text through the foreground window; `set_value` does not automatically
+activate, click or type into a Calc cell.
+
+## Retained numeric evidence
 
 Measured 2026-11-26 in disposable `t-calc-check`, created with:
 
@@ -6,44 +20,60 @@ Measured 2026-11-26 in disposable `t-calc-check`, created with:
 docker run -d --name t-calc-check --shm-size=2g -e CUA_RESOLUTION=1920x1080 ghcr.io/trycua/linux:24.04
 ```
 
-Installed `libreoffice-calc libreoffice-gtk3 python3-pyatspi python3-xlib python3-tk libatk-adaptor libglib2.0-bin xclip` in this container. Calc 24.2.7.2 used `SAL_USE_VCLPLUGIN=gtk3`, `SAL_ACCESSIBILITY_ENABLED=1`, `GTK_MODULES=gail:atk-bridge`, an isolated profile, `DISPLAY=:1` and `DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cua-desktop/bus`. The fixture and sentinel came from `spike/background-cell-edit:docs/spikes/background-cell-edit/{cells.fods,sentinel.py}`. The initial Tip of the Day dialog was identified and dismissed during preparation. The sentinel was activated last, above Calc.
+Calc 24.2.7.2 used `SAL_USE_VCLPLUGIN=gtk3`, `SAL_ACCESSIBILITY_ENABLED=1`,
+`GTK_MODULES=gail:atk-bridge`, an isolated profile, `DISPLAY=:1` and
+`DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cua-desktop/bus`. The fixture and sentinel
+came from `spike/background-cell-edit:docs/spikes/background-cell-edit/{cells.fods,sentinel.py}`.
+The initial Tip of the Day dialog was identified and dismissed during preparation.
+The sentinel was activated last, above Calc.
 
-`check.py` runs public `Desktop.set_value` against a sheet table ref found with `ui_tree(window="cells.fods", query="Sheet")`, through the real persistent helper. `query` avoids exhausting the tree's node cap on Calc's offscreen menus. Copy `ccdesk/` to `/tmp/ccdesk`, the fixture to `/tmp/cells.fods`, and the sentinel to `/tmp/sentinel.py` in the container. Start Calc and the sentinel as user `cua`, enable toolkit accessibility, then run:
+`results.json` retains only the numeric request and its focus, stacking, pointer and
+key observations from the original measurement. It is historical numeric evidence,
+not a new live run following the product decision. `A1=43` returned `verified: true`;
+an independent fresh read returned Text `43` and Value `43.0`.
 
-```sh
-docker exec -u cua -e DISPLAY=:1 -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cua-desktop/bus t-calc-check python3 /tmp/calc-check.py
-```
-
-The final requests use different values from the earlier exploration, so the old contents cannot satisfy readback. `results.json` contains the complete final before/after records and 5 ms monitor observations.
-
-| Cell | Requested | Independent fresh readback | Verified |
-| --- | --- | --- | --- |
-| A1 | `43` | Text `43`, Value `43.0` | true |
-| B7 | `final background text` | Text `final background text` | true |
-| C8 | `=2+3` | Text `5`, Value `5.0`, Formula attribute `2+3` | true |
-
-All three operations preserved:
+The numeric operation preserved:
 
 - `_NET_ACTIVE_WINDOW`: `[31457297, 0]` (User activity).
 - Full `_NET_CLIENT_LIST_STACKING`: `[16777235, 29360414, 31457297, 14680067, 14680079, 14680083]`.
 - Pointer: `[960, 540]`.
 - Sentinel key log: empty.
-- Every sampled state: zero observed transient changes. Sampling cannot exclude changes shorter than its interval.
+- Every sampled state: zero observed transient changes at 5 ms sampling intervals.
+  Sampling cannot exclude shorter changes.
 
-Text and formula answers explicitly report brief clipboard use and restoration. Each final request restored `previous clipboard`. A separately resolved toolbar Save persisted the document; `saved-cells.fods` contains numeric 43, the exact string, and `table:formula="of:=2+3"` with numeric value 5. Saving was outside the monitored write intervals.
+The original selection check found exactly one selected cell at `(1000, 26)` after
+public `click_element(table_ref, cell="AA1001")`. Numeric writes and exclusive
+selection remain covered by unit tests, including stale proxies, invalid addresses,
+selection failures and mismatched readbacks.
 
-`extra-check.py` additionally put binary bytes containing NUL and 0xff in an `image/png` clipboard target, wrote D9 through Desktop, and compared the complete target snapshot before/after. Both bytes and target type/format matched. Injecting a selection error after taking clipboard ownership also restored that same binary snapshot. Public `click_element(table_ref, cell="AA1001")` returned accessibility selection; an independent AT-SPI check found exactly one cell at `(1000, 26)`. These extra checks do not claim a monitored noninterference run.
+`check.py` now exercises only numeric writes and exclusive selection. Copy `ccdesk/`
+to `/tmp/ccdesk`, the fixture to `/tmp/cells.fods`, the sentinel to `/tmp/sentinel.py`
+and the check to `/tmp/calc-check.py` in a disposable container. Start Calc and the
+sentinel as user `cua`, enable toolkit accessibility, then run:
 
-The Formula attribute omits the leading equals sign on this Calc build. Matching only the computed Text would not prove that the requested formula landed; the helper compares the original formula attribute too. Numeric writes require both Text and Value readback. Stale reads reacquire the cell by row/column.
+```sh
+docker exec -u cua -e DISPLAY=:1 -e DBUS_SESSION_BUS_ADDRESS=unix:path=/run/cua-desktop/bus t-calc-check python3 /tmp/calc-check.py
+```
+
+The disposable container was removed after evidence extraction. Neither
+`bench-xfce` nor `bench-xfce-2` was accessed. Document saving remains a separate
+operation from `set_value`.
 
 ## Suite environment
 
-The plain `xvfb-run -a uv run pytest -q` attempt encountered three Wayland failures when the host accessibility socket stopped responding. `dbus-run-session` alone was insufficient on this host: its AT-SPI launcher tried to use dbus-broker/systemd services unavailable in the isolated session. `test-private-bus.py` starts private session and accessibility buses directly, starts its registry, then runs the exact Xvfb/uv/pytest command without excluding tests or changing the test suite. It cleans up its own buses afterward. The affected Wayland module passed there (4 passed, 1 existing xfail). The final complete run passed: **1035 passed, 27 skipped, 1 xfailed in 179.27 seconds**, including all 74 Calc-specific unit tests. No test was excluded by the wrapper.
+The host accessibility socket stopped responding during an earlier plain Xvfb
+run. `dbus-run-session` alone was insufficient because the AT-SPI launcher tried
+to use unavailable dbus-broker/systemd services. `test-private-bus.py` starts
+private session and accessibility buses directly, starts its registry, runs
+`xvfb-run -a uv run pytest -q` without excluding tests, and cleans up its buses.
 
 Run from the repository root:
 
 ```sh
-python3 docs/checks/calc-background-write/test-private-bus.py
+python3 /tmp/ccdesk-private-bus-tests.py
 ```
 
-The disposable container was removed after evidence extraction. Neither `bench-xfce` nor `bench-xfce-2` was accessed. No benchmark-wide pass is claimed, and document saving remains a separate operation from `set_value`.
+The same wrapper is retained as `test-private-bus.py` in this directory.
+
+After restricting background writes to numbers, the full requested wrapper run passed:
+**1019 passed, 27 skipped, 1 xfailed in 180.44 seconds**.

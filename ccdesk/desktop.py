@@ -1685,8 +1685,6 @@ class Desktop:
                     raise CcdeskError("Calc write was not verified; check the cell before retrying")
                 self._typing_ref = None
                 result = {"set": cell or label, "verified": True, "chars": len(text)}
-                if answer.get("note"):
-                    result["note"] = answer["note"]
                 return self._changes(self._in_tree_window(result))
             self._cursor_to_node(node)
             self._remember_typing(key, node, at_end=True)
