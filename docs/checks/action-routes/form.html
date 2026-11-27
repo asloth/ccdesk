@@ -1,0 +1,14 @@
+<!doctype html><meta charset="utf-8"><title>Background fields</title>
+<form><label>Input <input aria-label="Input" value="old"></label>
+<label>Textarea <textarea aria-label="Textarea">old</textarea></label>
+<label>Select <select aria-label="Select"><option>old</option><option>new</option></select></label>
+<button type="submit">Submit</button></form><pre id="status" aria-live="polite"></pre>
+<script>
+let events=[]; let state={Input:'old',Textarea:'old',Select:'old'};
+const status=document.querySelector('#status');
+function show(extra={}) {status.textContent=JSON.stringify({state,events,...extra});}
+document.querySelectorAll('input,textarea,select').forEach(e=>{
+ for (let type of ['input','change']) e.addEventListener(type,()=>{events.push(type+':'+e.ariaLabel+':'+e.value); state[e.ariaLabel]=e.value;show();});
+});
+document.querySelector('form').addEventListener('submit',e=>{e.preventDefault();show({submitted:{dom:[...document.querySelectorAll('input,textarea,select')].map(e=>e.value),state:{...state}}});});show();
+</script>

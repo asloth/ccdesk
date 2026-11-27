@@ -13,6 +13,11 @@ server was started with `--allow-launch`).
 
 Every action lands on the user's actual screen. Be deliberate and keep it short.
 
+Covered windows: `set_value` can select Chromium options and write GTK entries through
+accessibility with readback. `click_element` uses advertised button actions without a pointer.
+Chromium/Electron text fields may refuse direct writes: `background_text_unsupported` means
+bring the window forward with `activate_window` (this takes the user's focus) or skip the field.
+
 **Headless mode.** If `doctor()` shows `headless`, you have your own invisible screen and the
 user keeps using theirs. It starts empty: `launch()` the apps you need, then `wait(2)`. A
 browser the user has open locks its profile, so start yours with a separate one, e.g.
@@ -345,3 +350,5 @@ mouse, and is refused if they keep going; then wait and retry, or ask them.
 - `PolicyError ... --read-only`: the server is in read-only mode. Describe the steps for
   the user instead.
 - On Wayland, `list_windows` may be unsupported. Navigate by screenshots and clicks alone.
+
+Calc background writes: use set_value(cell_ref, text) or set_value(sheet_table_ref, text, cell="B7"); plain numbers use Value. Text/formulas return background_text_unsupported and need activate_window, which takes the user's focus.

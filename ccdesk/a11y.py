@@ -28,8 +28,8 @@ RETRY_OPS = frozenset({"apps", "tree", "resolve", "detail", "changes"})
 # Roles whose native action does what a left click does. Not fields: a click there is for focus.
 NATIVE_ROLES = frozenset({"push button", "toggle button", "button", "check box", "radio button", "link",
                           "menu item", "check menu item", "radio menu item", "page tab", "switch"})
-# Toolkits' names for it: GTK click, Qt Press and Toggle, Firefox press, jump, check and uncheck.
-NATIVE_ACTIONS = ("click", "press", "toggle", "jump", "check", "uncheck")
+# Prefer click-like actions advertised by Chromium, GTK, Qt and Firefox, in this order.
+NATIVE_ACTIONS = ("press", "click", "activate", "select", "toggle", "jump", "check", "uncheck")
 BUS_STATUS = ["busctl", "--user", "get-property", "org.a11y.Bus", "/org/a11y/bus", "org.a11y.Status", "IsEnabled"]
 ENABLE_BUS = "busctl --user set-property org.a11y.Bus /org/a11y/bus org.a11y.Status IsEnabled b true"
 TOOLKIT_HINT = (
@@ -202,7 +202,7 @@ class A11y:
                 continue
             self._python = py
             if "error" in result:
-                raise (WindowNotFound if result.get("no_window") else CcdeskError)(result["error"])
+                raise (WindowNotFound if result.get("no_window") else CcdeskError)(result["error"], code=result.get("code"))
             return result
         hint = "; ".join(errors) or "no python3 found"
         raise UnsupportedError(
@@ -384,10 +384,12 @@ class A11y:
         request = {"op": "action", "path": self.refs[ref].path, "names": list(NATIVE_ACTIONS)}
         return self.call(request, timeout=ACTION_TIMEOUT, on_timeout=unsure)["action"]
 
-    def set_value(self, ref: str, text: str) -> dict:
+    def set_value(self, ref: str, text: str, cell: str | None = None) -> dict:
         unsure = ("the app did not answer within the time limit: the value may have been set. "
                   "Check with ui_tree() before trying again")
         request = {"op": "set", "path": self.refs[ref].path, "text": text}
+        if cell is not None:
+            request["cell"] = cell
         return self.call(request, timeout=ACTION_TIMEOUT, private=True, on_timeout=unsure)
 
     def insert(self, ref: str, text: str, at_end: bool = False) -> dict:
