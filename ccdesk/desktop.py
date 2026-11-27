@@ -1653,7 +1653,7 @@ class Desktop:
             self._note = None
         return result
 
-    def set_value(self, ref: str, text: str, force: bool = False) -> dict:
+    def set_value(self, ref: str, text: str, force: bool = False, cell: str | None = None) -> dict:
         def do():
             self._ready()
             if not isinstance(text, str):
@@ -1664,11 +1664,21 @@ class Desktop:
             self._adopt_ref_window(key)
             node = self.a11y.resolve(key)
             label = f'{node["role"]} {node["name"]!r}'
-            node = self._reveal_element(key, node, force)
+            calc = cell is not None or bool(node.get("calc_cell"))
+            if not calc:
+                node = self._reveal_element(key, node, force)
             if not self._may_skip_pointer(force):
                 raise PolicyError(self._other_window(key))
             self._before_native()
-            answer = self.a11y.set_value(key, text)
+            answer = self.a11y.set_value(key, text, cell=cell) if cell is not None else self.a11y.set_value(key, text)
+            if calc:
+                if not answer.get("verified"):
+                    raise CcdeskError("Calc write was not verified; check the cell before retrying")
+                self._typing_ref = None
+                result = {"set": cell or label, "verified": True, "chars": len(text)}
+                return self._changes(self._in_tree_window(result))
+            if not answer["verified"] and node["role"] in TYPABLE_ROLES:
+                self._check_text_fallback(key, label)
             self._cursor_to_node(node)
             self._remember_typing(key, node, at_end=True)
             if not answer["verified"] and shown(answer.get("value")) == shown(node.get("value")) and node.get("box"):
@@ -1680,10 +1690,11 @@ class Desktop:
                                   f"rejected it. Check the field; don't repeat this blindly")
             return self._changes(self._in_tree_window({"set": label, "verified": True, "chars": len(text)}))
 
-        return self._act("set_value", {"ref": ref, "text": text, "force": force}, do)
+        return self._act("set_value", {"ref": ref, "text": text, "force": force, "cell": cell}, do)
 
     def _type_into(self, key: str, node: dict, label: str, text: str, force: bool) -> dict:
         """set_value's fallback: click the field, select all, type, and read the value back."""
+        self._check_text_fallback(key, label)
         x, y, w, h = node["box"]
         px, py = self._point(x + w // 2, y + h // 2)
         window = self._guard(force, (px, py))
@@ -1706,6 +1717,23 @@ class Desktop:
                 return self._changes(self._with_window(result, window))
         raise CcdeskError(f"{key} ({label}) ignored the direct write, and after clicking it and typing it holds "
                           f"{got!r}. Check the field with a screenshot; don't repeat this blindly")
+
+    def _check_text_fallback(self, key: str, label: str) -> None:
+        """Refuse pointer typing before any input or cursor movement in background windows."""
+        background = getattr(self.backend, "background_input", False)
+        window = self._listed(self.a11y.ref_window(key) or self.a11y.tree_window())
+        if self.agent and self.backend.own_pointer:
+            try:
+                background = background or window is None or self.backend.active_window() != window.id
+            except CcdeskError:
+                background = True
+        if window is not None:
+            background = background or self.backend.window_covered(window.id)
+        if background:
+            raise CcdeskError(
+                f"{key} ({label}): direct text writing is unsupported in the background. "
+                "Bring the window forward with activate_window (this takes the user's focus) "
+                "or skip the field.", code="background_text_unsupported")
 
     def clipboard(self, action: str = "get", text: str | None = None) -> dict:
         action = str(action or "").strip().lower()

@@ -1,0 +1,72 @@
+"""Public Calc routes must bypass reveal/pointer/type fallbacks, including on failure."""
+import pytest
+
+from ccdesk.errors import CcdeskError, ValidationError
+
+PATH = "3.0.29.5"
+
+
+@pytest.fixture
+def calc_desk(make_desk, helper, fake, monkeypatch):
+    helper.nodes[PATH].update(role="table", name="Sheet1", showing=False, box=None, states=["offscreen"])
+    desk = make_desk()
+    desk.ui_tree(window="Firefox")
+    fake.calls.clear()
+    def fail(*args, **kwargs):
+        raise AssertionError("Calc must never reveal, move the cursor, or type")
+    monkeypatch.setattr(desk, "_reveal_element", fail)
+    monkeypatch.setattr(desk, "_cursor_to_node", fail)
+    monkeypatch.setattr(desk, "_type_into", fail)
+    return desk
+
+
+def test_public_numeric_write_forwards_address(calc_desk, helper, fake):
+    helper.values[PATH] = {"verified": True}
+    result = calc_desk.set_value("e4", "42", cell="B7")
+    assert result["verified"]
+    assert next(q for q in helper.requests if q["op"] == "set")["cell"] == "B7"
+    assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text")]
+
+
+def test_single_cell_write_has_no_address_or_fallback(calc_desk, helper):
+    helper.nodes[PATH].update(role="table cell", calc_cell=True)
+    calc_desk.ui_tree(window="Firefox")
+    ref = next(k for k, v in calc_desk.a11y.refs.items() if v.role == "table cell")
+    assert calc_desk.set_value(ref, "42")["verified"]
+    assert "cell" not in next(q for q in helper.requests if q["op"] == "set")
+
+
+@pytest.mark.parametrize("answer", [{"verified": False, "refused": True}, {"error": "readback mismatch"}])
+def test_failed_write_cannot_type(calc_desk, helper, fake, answer):
+    helper.values[PATH] = answer
+    with pytest.raises(CcdeskError):
+        calc_desk.set_value("e4", "text", cell="B7")
+    assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text")]
+
+
+def test_generic_table_cells_keep_their_pointer_route(make_desk, helper, fake):
+    helper.nodes[PATH]["role"] = "table cell"
+    desk = make_desk()
+    desk.ui_tree(window="Firefox")
+    fake.calls.clear()
+    desk.click_element("e4")
+    assert [c for c in fake.calls if c[0] == "click"]
+
+
+@pytest.mark.parametrize("text", ["hello", "=1+2"])
+@pytest.mark.parametrize("single_ref", [False, True])
+def test_unsupported_text_code_reaches_public_caller(calc_desk, helper, fake, text, single_ref):
+    ref = "e4"
+    if single_ref:
+        helper.nodes[PATH].update(role="table cell", calc_cell=True)
+        calc_desk.ui_tree(window="Firefox")
+        ref = next(k for k, v in calc_desk.a11y.refs.items() if v.role == "table cell")
+    helper.values[PATH] = {"error": "Calc numbers work through set_value. Text needs activate_window "
+                                   "(takes the user's focus).", "code": "background_text_unsupported"}
+    with pytest.raises(CcdeskError) as caught:
+        calc_desk.set_value(ref, text, **({} if single_ref else {"cell": "B7"}))
+    assert caught.value.code == "background_text_unsupported"
+    assert caught.value.input_emitted is False
+    assert caught.value.retry_same_request is False
+    assert "code=background_text_unsupported" in caught.value.prefix()
+    assert not [c for c in fake.calls if c[0] in ("click", "press_key", "type_text", "clipboard_set", "activate")]

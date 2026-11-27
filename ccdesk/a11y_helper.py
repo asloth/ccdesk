@@ -20,6 +20,8 @@ ccdesk pays for one Python start and one AT-SPI handshake per session instead of
 """
 
 import json
+import math
+import re
 import sys
 import time
 
@@ -121,6 +123,11 @@ def describe(obj, path, depth, full=False):
             "name": name[:limit] + ("…" if not full and len(name) > limit else ""), "depth": depth,
             "visible": states.contains(Atspi.StateType.VISIBLE),
             "showing": states.contains(Atspi.StateType.SHOWING)}
+    if role == "table cell":
+        try:
+            node["calc_cell"] = obj.get_value_iface() is not None and obj.get_table_cell_iface() is not None
+        except Exception:
+            pass
     try:
         ext = obj.get_extents(Atspi.CoordType.SCREEN)
         if ext.width > 0 and ext.height > 0:
@@ -348,6 +355,8 @@ def action(req):
         if want in lowered:
             i = lowered.index(want)
             return {"action": offered[i] if Atspi.Action.do_action(obj, i) else None}
+    if len(offered) == 1:
+        return {"action": (offered[0] or "action 0") if Atspi.Action.do_action(obj, 0) else None}
     return {"action": None}
 
 
@@ -385,24 +394,113 @@ def options(obj):
 
 
 def choose(obj, text):
-    """Choose a combo box option by name through Selection: no popup, no pointer, no focus."""
+    """Choose by name through Selection or an option action, without opening a popup."""
     found = options(obj)
-    want = text.strip().casefold()
-    match = [i for i, name in found if name.casefold() == want]
+    want = text.strip()
+    match = ([i for i, name in found if name == want]
+             or [i for i, name in found if name.casefold() == want.casefold()])
     if not match:
         names = ", ".join(repr(n) for _, n in found if n)[:MAX_TEXT] or "none listed"
         return {"error": f"no option named {text!r} (options: {names})"}
-    if not Atspi.Selection.select_child(obj, match[0]):
-        return {"verified": False, "value": "", "refused": True}
-    for _ in range(10):
-        if Atspi.Selection.is_child_selected(obj, match[0]):
+    index = match[0]
+    if obj.get_selection_iface() is not None and Atspi.Selection.select_child(obj, index):
+        for _ in range(10):
+            if Atspi.Selection.is_child_selected(obj, index):
+                return {"verified": True}
+            time.sleep(0.05)
+    # Chromium exposes options below a menu, but refuses Selection.select_child.
+    # Invoke only the option's advertised select action, never the combo's open action.
+    kids = list(children(obj))
+    if len(kids) == 1 and (kids[0][1].get_role_name() or "") in ("menu", "list", "list box"):
+        parent = kids[0][1]
+        if (parent.get_selection_iface() is not None
+                and Atspi.Selection.is_child_selected(parent, index)):
             return {"verified": True}
-        time.sleep(0.05)
+        option = parent.get_child_at_index(index)
+        if option is not None and option.get_action_iface() is not None:
+            for i in range(Atspi.Action.get_n_actions(option)):
+                if (Atspi.Action.get_action_name(option, i) or "").casefold() == "select":
+                    if not Atspi.Action.do_action(option, i):
+                        break
+                    expected = dict(found)[index]
+                    for _ in range(10):
+                        if ((obj.get_name() or "").strip() == expected
+                                or text_of(obj, "combo box") == expected
+                                or (parent.get_selection_iface() is not None
+                                    and Atspi.Selection.is_child_selected(parent, index))):
+                            return {"verified": True}
+                        time.sleep(0.05)
+                    break
     return {"verified": False, "value": text_of(obj, "combo box") or ""}
 
 
 def full_text(obj):
     return Atspi.Text.get_text(obj, 0, Atspi.Text.get_character_count(obj))
+
+
+def calc_target(req, obj):
+    """Resolve sheet coordinates without enumerating Calc's virtual children."""
+    if req.get("cell") is not None:
+        if obj.get_role_name() != "table" or obj.get_table_iface() is None:
+            raise ValueError("cell requires a sheet table ref with the Table interface")
+        match = re.fullmatch(r"([A-Za-z]{1,3})([1-9][0-9]{0,6})", str(req["cell"]))
+        if not match:
+            raise ValueError("cell must be an A1 address, for example B7")
+        col = 0
+        for letter in match[1].upper():
+            col = col * 26 + ord(letter) - ord("A") + 1
+        row, col = int(match[2]) - 1, col - 1
+        table = obj
+    else:
+        if obj.get_role_name() != "table cell" or obj.get_table_cell_iface() is None:
+            raise ValueError("expected a Calc table cell with TableCell")
+        table = obj.get_parent()
+        if table is None or table.get_role_name() != "table" or table.get_table_iface() is None:
+            raise ValueError("cell has no sheet table")
+        position = Atspi.TableCell.get_position(obj)
+        if not position[0]:
+            raise ValueError("cannot read the cell's row and column")
+        row, col = position[1:]
+    if not (0 <= row < Atspi.Table.get_n_rows(table) and 0 <= col < Atspi.Table.get_n_columns(table)):
+        raise ValueError("cell address is outside the sheet")
+    cell = Atspi.Table.get_accessible_at(table, row, col)
+    if cell is None or cell.get_role_name() != "table cell" or cell.get_value_iface() is None:
+        raise ValueError("target is not a Calc cell with Value")
+    return table, row, col
+
+
+def plain_number(text):
+    # No dates, currency, NaN/Inf, whitespace, formulas, or locale coercion.
+    if not re.fullmatch(r"[+-]?(?:[0-9]+(?:\.[0-9]*)?|\.[0-9]+)(?:[eE][+-]?[0-9]+)?", text):
+        return None
+    number = float(text)
+    return number if math.isfinite(number) else None
+
+
+def calc_set(req, obj):
+    table, row, col = calc_target(req, obj)
+    number = plain_number(req["text"])
+    if number is None:
+        return {"error": "Calc numbers work through set_value. Text and formulas need the window "
+                         "in front: activate_window takes the user's focus. Then enter the text "
+                         "through the foreground window.",
+                "code": "background_text_unsupported"}
+    cell = Atspi.Table.get_accessible_at(table, row, col)
+    if not Atspi.Value.set_current_value(cell, number):
+        raise ValueError("Calc refused the numeric cell write")
+    last = None
+    for _ in range(10):
+        try:
+            cell = Atspi.Table.get_accessible_at(table, row, col)  # old proxies go stale
+            got = full_text(cell)
+            value = Atspi.Value.get_current_value(cell)
+            if value == number and plain_number(got) == number:
+                return {"verified": True, "value": got}
+            last = f"readback mismatch: cell holds {got!r}"
+        except Exception as exc:
+            last = f"cell readback failed: {exc}"
+        time.sleep(0.05)
+    raise ValueError(f"Calc {last}; check the cell before retrying")
 
 
 def set_value(req):
@@ -411,6 +509,7 @@ def set_value(req):
     if obj is None:
         return GONE
     role, text = obj.get_role_name() or "", req["text"]
+    if (role == "table cell" and obj.get_value_iface() is not None) or req.get("cell") is not None: return calc_set(req, obj)
     if role == "password text":
         return {"error": "this is a password field: ask the user to type it themselves"}
     if role in NUMERIC and obj.get_value_iface() is not None:
@@ -421,14 +520,17 @@ def set_value(req):
         Atspi.Value.set_current_value(obj, number)
         read = lambda: Atspi.Value.get_current_value(obj)
         same = lambda got: abs(got - number) < 1e-6
-    elif role == "combo box" and obj.get_selection_iface() is not None:
+    elif role == "combo box":
         return choose(obj, text)
     elif obj.get_editable_text_iface() is not None and obj.get_text_iface() is not None:
         if not obj.get_state_set().contains(Atspi.StateType.EDITABLE):
             return {"error": "this field is read-only"}
         if not Atspi.EditableText.set_text_contents(obj, text):
-            # Refused: say what it holds, so ccdesk can type it instead (web pages do this).
-            return {"verified": False, "value": full_text(obj)[:MAX_TEXT], "refused": True}
+            # Some GTK editors reject replacement but accept delete followed by insertion.
+            if not (Atspi.EditableText.delete_text(obj, 0, -1)
+                    and Atspi.EditableText.insert_text(obj, 0, text, len(text.encode()))):
+                got = full_text(obj)
+                return {"verified": False, "value": got[:MAX_TEXT], "refused": True}
         read, same = lambda: full_text(obj), lambda got: got == text
     elif role in EDITABLE:
         # A text field with no way to write it directly (Chromium's web entries): ccdesk types it.

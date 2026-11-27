@@ -86,7 +86,7 @@ def test_registered_tools(make_desk):
     assert props["activate_window"] == {"title_or_id"}
     assert props["ui_tree"] == {"window", "query", "page", "max_nodes", "shot_fallback", "ref"}
     assert props["click_element"] == {"ref", "button", "count", "force", "expect_title"}
-    assert props["set_value"] == {"ref", "text", "force"}
+    assert props["set_value"] == {"ref", "text", "force", "cell"}
     assert props["wait_for_change"] == {"region", "timeout", "settle_ms"}
     assert by_name["click"]["inputSchema"]["required"] == ["x", "y"]
 

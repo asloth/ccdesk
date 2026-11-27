@@ -1,0 +1,54 @@
+[
+  {
+    "cell": "A1",
+    "text": "43",
+    "result": {
+      "set": "A1",
+      "verified": true,
+      "chars": 2,
+      "window": {
+        "title": "cells.fods \u2014 LibreOffice Calc"
+      },
+      "changes": "no change in the window yet (slow apps: wait(1), then ui_tree())"
+    },
+    "before": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "after": {
+      "active": [
+        31457297,
+        0
+      ],
+      "stack": [
+        16777235,
+        29360414,
+        31457297,
+        14680067,
+        14680079,
+        14680083
+      ],
+      "pointer": [
+        960,
+        540
+      ],
+      "keys": ""
+    },
+    "transient_changes": []
+  }
+]
